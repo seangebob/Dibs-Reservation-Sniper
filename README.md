@@ -1,4 +1,4 @@
-# Reservation (NO NAME)
+# Reservation (Dibs)
 *reserves different restaurants + recreational places in KW area by just one prompt*
 
 Below is the high-level system architecture outlining how user requests flow from the front-end website through the AI orchestration engine and down to execution or clarification paths.
@@ -85,3 +85,61 @@ System Design Breakdown:
     - Redis Cache & Queue, Manages background job scheduling with backoff/jitter strategies to execute tasks smoothly without getting rate-limited by third-party services
 
 ---
+
+## Milestone 1: Natural-language parser
+
+The first milestone is implemented as an isolated FastAPI service under `src/reservation_nlp`. It accepts raw user text, resolves relative dates in the `America/Toronto` timezone, and returns exactly five validated fields. Missing or ambiguous values remain `null` and produce one targeted question; no booking or search is executed at this stage.
+
+### Setup (PowerShell)
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[test]"
+$env:OPENAI_API_KEY = "your-api-key"
+$env:OPENAI_MODEL = "gpt-5.6"
+.\.venv\Scripts\python.exe -m uvicorn reservation_nlp.api:app --reload
+```
+
+Run the server command manually because it remains active until stopped. Configuration variables are documented in `.env.example`; the application does not automatically load `.env` files or commit secrets.
+
+### API contract
+
+`POST /v1/intents/parse`
+
+```json
+{
+  "prompt": "Book Cote for four next Saturday at 7 pm"
+}
+```
+
+Complete response:
+
+```json
+{
+  "restaurant": "Cote",
+  "party_size": 4,
+  "date": "2026-08-22",
+  "preferred_time": "19:00",
+  "missing_info": null
+}
+```
+
+Clarification response:
+
+```json
+{
+  "restaurant": "Cote",
+  "party_size": null,
+  "date": "2026-08-22",
+  "preferred_time": "19:00",
+  "missing_info": "How many people are in your party?"
+}
+```
+
+Run deterministic tests without making model API calls:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest
+```
+
+The provider uses OpenAI's Responses API with native Pydantic structured output, following the [official Structured Outputs guide](https://platform.openai.com/docs/guides/structured-outputs). Content from that guide was rephrased for compliance with licensing restrictions.
