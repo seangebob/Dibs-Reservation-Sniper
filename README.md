@@ -1,4 +1,4 @@
-# Reservation (Dibs)
+# Dibs, a sniper for reservations.
 *reserves different restaurants + recreational places in KW area by just one prompt*
 
 Below is the high-level system architecture outlining how user requests flow from the front-end website through the AI orchestration engine and down to execution or clarification paths.

@@ -10,7 +10,6 @@ dist/
 # Secrets and local configuration
 .env
 .env.*
-!.env.example
 
 # IDE and OS
 .vscode/
