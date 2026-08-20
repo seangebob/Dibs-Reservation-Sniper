@@ -147,3 +147,5 @@ dibs/
 │
 ├── docker-compose.yml        # Redis + PostgreSQL
 └── README.md
+
+THIS SHOULD BE DONE BY AUGUST 21ST
