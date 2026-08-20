@@ -1,4 +1,4 @@
-"""Environment-backed application configuration."""
+"""Environment-backed backend configuration."""
 
 from dataclasses import dataclass
 import os
@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 class ConfigurationError(RuntimeError):
-    """Raised when required service configuration is missing or invalid."""
+    """Raised when required backend configuration is missing or invalid."""
 
 
 @dataclass(frozen=True, slots=True)

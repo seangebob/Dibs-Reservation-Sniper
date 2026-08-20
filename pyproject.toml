@@ -3,9 +3,9 @@ requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "reservation-nlp"
-version = "0.1.0"
-description = "Natural-language reservation intent parser for KW venues"
+name = "dibs-backend"
+version = "0.2.0"
+description = "AI orchestration backend for KW venue reservations"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi==0.141.1",
@@ -22,9 +22,10 @@ test = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["backend*"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
-pythonpath = ["src"]
+pythonpath = ["."]
 testpaths = ["tests"]
