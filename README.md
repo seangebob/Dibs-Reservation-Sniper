@@ -1,5 +1,5 @@
-# Dibs, a sniper for reservations.
-*reserves different restaurants + recreational places in KW area by just one prompt*
+# Dibs, a Reservation Sniper.
+*reserves different restaurants + recreational places in KW.*
 
 Below is the high-level system architecture outlining how user requests flow from the front-end website through the AI orchestration engine and down to execution or clarification paths.
 
@@ -199,9 +199,22 @@ A `MOCK_BOOKED` response includes the validated `intent`, considered `slots`, an
 Mock slots follow `backend/data/venues.py` so they stay plausible: fifteen-minute
 starts inside that venue's hours for that weekday, nothing that would run past
 closing, per-slot table sizes so a large party sees fewer options than a couple,
-and no availability on statutory closures or sold-out dates. The same request
+and no availability on holiday closures or sold-out dates. The same request
 always produces the same slot identifiers. Venues outside the catalog fall back
 to a generic KW profile rather than being rejected.
+
+Holidays are computed, not hard-coded, for every year in `SUPPORTED_YEARS`,
+including the movable ones (Easter from the Gregorian computus, Family Day,
+Victoria Day, the Civic Holiday, Labour Day, and Thanksgiving Monday). They fall
+into three behaviours:
+
+- **Closed** — New Year's Day, Good Friday, Easter Sunday, Thanksgiving Monday,
+  Christmas Day, and Boxing Day return no slots at all.
+- **Closed for restaurants, open for recreation** — a climbing gym, bowling
+  alley, and tube park work Good Friday and the Thanksgiving long weekend.
+- **Open but sold out** — Valentine's Day, Mother's Day, Christmas Eve, New
+  Year's Eve, and the long-weekend Mondays (Family Day, Victoria Day, Canada
+  Day, Civic Holiday, Labour Day) have hours but no free tables.
 
 Run ten realistic prompts end to end, using the real model when `OPENAI_API_KEY`
 is set and scripted extractions when it is not:
