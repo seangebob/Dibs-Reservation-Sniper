@@ -361,21 +361,11 @@ dibs/
 └── docker-compose.yml
 
 for this week:
-Milestone 1: Natural Language Parser (Probably most difficult)
-Prove LLM can translate into plain english
+# Milestone 3: Set Up Background Queue + State
+- Set up event-driven task queue instead
 
-```python
-from pydantic import BaseModel, Field
-from typing import Optional
+1. Start local Redis instance via Docker (`docker run -p 6739:6739 redis`)
+2. Implement Celery (Python) or BullMQ (Node.js or TypeScript) for background jobs
+3. Write simpler queue handler that accepts a watch request and executes polling check every few minutes with a randomized jitter (around 30 secs) to emulate human behaviour
 
-class ReservationIntent(BaseModel):
-    restaurant: str = Field(description="Name of the restaurant or café")
-    party_size: int = Field(description="Number of guests")
-    date: str = Field(description="Target date in YYYY-MM-DD format")
-    preferred_time: str = Field(description="Target time, e.g., 19:00")
-    missing_info: Optional[str] = Field(description="Clarifying question if key details are missing")
-```
-1. Set up Mini Python / Fast API (or node.js with vercel)
-2. define target schema (from above)
-3. Connect OpenAI/Claude via `instructor` or native Structure outputs.
-    - have test inputs and verify the output yields clean.
+HAVE THIS DONE 9/3/26

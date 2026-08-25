@@ -15,7 +15,7 @@ class ConfigurationError(RuntimeError):
 #: rather than as a provider error on the first user request.
 _MODEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:\-]{1,63}$")
 
-DEFAULT_MODEL = "gpt-5.6"
+DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_TIMEZONE = "America/Toronto"
 
 
