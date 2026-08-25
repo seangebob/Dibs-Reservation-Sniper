@@ -52,24 +52,9 @@ class BookingService:
         idempotency_key: str | None = None
         if intent.action is IntentAction.BOOK_RESERVATION:
             idempotency_key = self._idempotency_key(intent, query)
-<<<<<<< Updated upstream
-            existing = await self._adapter.get_booking(idempotency_key)
-            if existing is not None:
-                return PromptExecutionResult(
-                    status=ExecutionStatus.MOCK_BOOKED,
-                    intent=intent,
-                    slots=[existing.slot],
-                    booking=existing,
-                    message=(
-                        "Returning the existing reservation for this "
-                        "idempotent request (Mock search only returns slot for testing purposes)."
-                    ),
-                )
-=======
             replayed = await self._replayed_booking(intent, idempotency_key)
             if replayed is not None:
                 return replayed
->>>>>>> Stashed changes
 
         slots = await self._adapter.search_availability(query)
         if not slots:
@@ -157,13 +142,8 @@ class BookingService:
             slots=[existing.slot],
             booking=existing,
             message=(
-<<<<<<< Updated upstream
-                "Reservation confirmed. No real venue or booking provider "
-                "was contacted. (Mock booking is for testing purposes only.)"
-=======
-                "Returning the existing mock reservation for this "
-                "idempotent request."
->>>>>>> Stashed changes
+                "Returning the existing mock reservation for this idempotent "
+                "request. No real venue or booking provider was contacted."
             ),
         )
 

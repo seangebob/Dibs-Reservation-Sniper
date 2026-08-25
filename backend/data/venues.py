@@ -7,7 +7,7 @@ so ambiguous venue names can be detected before anything is booked.
 """
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from enum import Enum
 import unicodedata
 
@@ -17,24 +17,132 @@ from backend.orchestrator.schemas import VenueType
 SLOT_INTERVAL_MINUTES = 15
 MAX_GENERATED_SLOTS = 16
 
-#: Dates on which catalog venues close. Ontario statutory days on which
-#: hospitality venues in KW are most consistently shut.
-STATUTORY_CLOSURES: frozenset[str] = frozenset(
-    {
-        "2026-01-01",  # New Year's Day
-        "2026-12-25",  # Christmas Day
-        "2026-12-26",  # Boxing Day
-        "2027-01-01",
-        "2027-12-25",
-        "2027-12-26",
-    }
-)
-
-#: Dates the catalog treats as sold out even though the venue is open.
-COMMON_SELLOUT_DATES: frozenset[str] = frozenset({"2026-02-14", "2027-02-14"})
+#: Years the generated holiday calendar covers. The validator refuses dates
+#: more than a year out, so this range stays comfortably ahead of any request.
+SUPPORTED_YEARS: range = range(2024, 2032)
 
 _MONDAY = 0
 _SUNDAY = 6
+
+
+def _nth_weekday(year: int, month: int, weekday: int, nth: int) -> date:
+    """Return the nth (1-based) given weekday of a month, e.g. 2nd Monday."""
+
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + 7 * (nth - 1))
+
+
+def _easter_sunday(year: int) -> date:
+    """Western Easter for one year (anonymous Gregorian computus)."""
+
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month, day = divmod(h + l - 7 * m + 114, 31)
+    return date(year, month, day + 1)
+
+
+def _victoria_day(year: int) -> date:
+    """The Monday on or before May 24."""
+
+    may_24 = date(year, 5, 24)
+    return may_24 - timedelta(days=may_24.weekday())
+
+
+def _holidays_for(year: int) -> dict[str, str]:
+    """Ontario holidays for one year, keyed by ISO date."""
+
+    easter = _easter_sunday(year)
+    days: tuple[tuple[date, str], ...] = (
+        (date(year, 1, 1), "New Year's Day"),
+        (_nth_weekday(year, 2, _MONDAY, 3), "Family Day"),
+        (date(year, 2, 14), "Valentine's Day"),
+        (easter - timedelta(days=2), "Good Friday"),
+        (easter, "Easter Sunday"),
+        (easter + timedelta(days=1), "Easter Monday"),
+        (_nth_weekday(year, 5, _SUNDAY, 2), "Mother's Day"),
+        (_victoria_day(year), "Victoria Day"),
+        (date(year, 7, 1), "Canada Day"),
+        (_nth_weekday(year, 8, _MONDAY, 1), "Civic Holiday"),
+        (_nth_weekday(year, 9, _MONDAY, 1), "Labour Day"),
+        (_nth_weekday(year, 10, _MONDAY, 2), "Thanksgiving Monday"),
+        (date(year, 12, 24), "Christmas Eve"),
+        (date(year, 12, 25), "Christmas Day"),
+        (date(year, 12, 26), "Boxing Day"),
+        (date(year, 12, 31), "New Year's Eve"),
+    )
+    return {day.isoformat(): name for day, name in days}
+
+
+#: Every recognized holiday in :data:`SUPPORTED_YEARS`, keyed by ISO date.
+#: Membership here says nothing about opening; the sets below decide that.
+HOLIDAY_CALENDAR: dict[str, str] = {
+    iso: name for year in SUPPORTED_YEARS for iso, name in _holidays_for(year).items()
+}
+
+
+def _dates_named(*names: str) -> frozenset[str]:
+    wanted = frozenset(names)
+    return frozenset(iso for iso, name in HOLIDAY_CALENDAR.items() if name in wanted)
+
+
+#: Holidays on which hospitality venues in KW are most consistently shut.
+STATUTORY_CLOSURES: frozenset[str] = _dates_named(
+    "New Year's Day",
+    "Good Friday",
+    "Easter Sunday",
+    "Thanksgiving Monday",
+    "Christmas Day",
+    "Boxing Day",
+)
+
+#: Recreation venues work the long weekends they earn their money on, so they
+#: close on fewer days than restaurants do.
+RECREATION_CLOSURES: frozenset[str] = _dates_named(
+    "New Year's Day",
+    "Easter Sunday",
+    "Christmas Day",
+    "Boxing Day",
+)
+
+#: Open, but every table is already spoken for: the holidays people book out
+#: months ahead plus the long-weekend Mondays that fill a dining room.
+COMMON_SELLOUT_DATES: frozenset[str] = _dates_named(
+    "Valentine's Day",
+    "Mother's Day",
+    "Easter Monday",
+    "Family Day",
+    "Victoria Day",
+    "Canada Day",
+    "Civic Holiday",
+    "Labour Day",
+    "Christmas Eve",
+    "New Year's Eve",
+)
+
+#: Long weekends fill a tube park and a climbing gym the same way.
+RECREATION_SELLOUT_DATES: frozenset[str] = _dates_named(
+    "Family Day",
+    "Victoria Day",
+    "Canada Day",
+    "Civic Holiday",
+    "Labour Day",
+)
+
+
+def holiday_name(day: date) -> str | None:
+    """Return the holiday falling on this date, if the calendar knows one."""
+
+    return HOLIDAY_CALENDAR.get(day.isoformat())
+
+
 _WORDS_IGNORED_WHEN_MATCHING = frozenset({"the", "and", "of", "at", "a"})
 
 
@@ -143,7 +251,8 @@ def _recreation_profile(
         weekly_hours=weekly_hours,
         max_party_size=max_party_size,
         minimum_stay_minutes=60,
-        closed_dates=STATUTORY_CLOSURES,
+        closed_dates=RECREATION_CLOSURES,
+        sold_out_dates=RECREATION_SELLOUT_DATES,
     )
 
 

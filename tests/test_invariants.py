@@ -34,7 +34,7 @@ def intent_data(**updates: object) -> dict[str, object]:
         "action": IntentAction.BOOK_RESERVATION,
         "venue_name": "Cote",
         "venue_type": VenueType.RESTAURANT,
-        "market": "Kitchener-Waterloo, ON",
+        "market": "Kitchener-Waterloo-Cambridge, ON",
         "party_size": 4,
         "date": "2026-08-22",
         "preferred_time": "19:00",
@@ -197,7 +197,7 @@ def test_availability_query_needs_some_time_preference() -> None:
         AvailabilityQuery(
             venue_name="Cote",
             venue_type=VenueType.RESTAURANT,
-            market="Kitchener-Waterloo, ON",
+            market="Kitchener-Waterloo-Cambridge, ON",
             party_size=4,
             date="2026-08-22",
             preferred_time=None,

@@ -47,7 +47,7 @@ def ready_intent(
         action=action,
         venue_name="Cote",
         venue_type=VenueType.RESTAURANT,
-        market="Kitchener-Waterloo, ON",
+        market="Kitchener-Waterloo-Cambridge, ON",
         party_size=4,
         date="2026-08-22",
         preferred_time="19:00",
@@ -66,7 +66,7 @@ def incomplete_intent() -> ReservationIntent:
         action=IntentAction.BOOK_RESERVATION,
         venue_name="Cote",
         venue_type=VenueType.RESTAURANT,
-        market="Kitchener-Waterloo, ON",
+        market="Kitchener-Waterloo-Cambridge, ON",
         party_size=None,
         date="2026-08-22",
         preferred_time="19:00",
@@ -262,7 +262,7 @@ def test_parse_response_matches_the_reservation_intent_shape() -> None:
 
     body = response.json()
     assert set(body) == set(ReservationIntent.model_fields)
-    assert body["market"] == "Kitchener-Waterloo, ON"
+    assert body["market"] == "Kitchener-Waterloo-Cambridge, ON"
     assert body["status"] == "READY"
 
 

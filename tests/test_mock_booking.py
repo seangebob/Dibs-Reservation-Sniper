@@ -13,7 +13,7 @@ def query(**updates: object) -> AvailabilityQuery:
     data: dict[str, object] = {
         "venue_name": "Grand River Rocks",
         "venue_type": VenueType.RECREATION,
-        "market": "Kitchener-Waterloo, ON",
+        "market": "Kitchener-Waterloo-Cambridge, ON",
         "party_size": 2,
         "date": "2026-08-22",
         "preferred_time": None,
@@ -98,7 +98,7 @@ def restaurant_query(**updates: object) -> AvailabilityQuery:
     data: dict[str, object] = {
         "venue_name": "The Bauer Kitchen",
         "venue_type": VenueType.RESTAURANT,
-        "market": "Kitchener-Waterloo, ON",
+        "market": "Kitchener-Waterloo-Cambridge, ON",
         "party_size": 2,
         "date": "2026-08-22",
         "preferred_time": None,

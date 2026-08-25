@@ -144,7 +144,7 @@ class ReservationIntent(BaseModel):
     action: IntentAction | None
     venue_name: str | None = Field(min_length=1, max_length=200)
     venue_type: VenueType
-    market: Literal["Kitchener-Waterloo, ON"]
+    market: Literal["Kitchener-Waterloo-Cambridge, ON"]
     party_size: int | None = Field(ge=1, le=100)
     date: IsoDate | None
     preferred_time: HourMinute | None

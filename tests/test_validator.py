@@ -39,7 +39,7 @@ def test_ready_booking_routes_to_booking_service() -> None:
 
     assert result.status is IntentStatus.READY
     assert result.route is OrchestratorRoute.BOOKING_SERVICE
-    assert result.market == "Kitchener-Waterloo, ON"
+    assert result.market == "Kitchener-Waterloo-Cambridge, ON"
     assert result.is_ready is True
     assert result.missing_fields == []
 

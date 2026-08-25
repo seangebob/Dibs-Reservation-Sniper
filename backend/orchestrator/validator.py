@@ -22,7 +22,7 @@ from backend.orchestrator.schemas import (
 class IntentValidator:
     """Turns model extraction into a safe, deterministic routing decision."""
 
-    MARKET = "Kitchener-Waterloo, ON"
+    MARKET = "Kitchener-Waterloo-Cambridge, ON"
 
     #: Reservations further out than this are refused rather than guessed at.
     MAX_DAYS_AHEAD = 365
