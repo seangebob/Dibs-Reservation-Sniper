@@ -15,3 +15,7 @@ dist/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Coverage
+.coverage
+htmlcov/

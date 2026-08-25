@@ -113,3 +113,71 @@ def test_provider_reports_refusal_and_closes_client() -> None:
 
     asyncio.run(provider.close())
     assert client.closed is True
+
+
+def test_provider_requires_credentials_when_no_client_is_injected() -> None:
+    with pytest.raises(ValueError, match="api_key is required"):
+        OpenAIIntentProvider(model="test-model")
+
+
+def test_provider_rejects_an_unexpected_parsed_type() -> None:
+    response = SimpleNamespace(output_parsed={"venue_name": "Cote"}, output=[])
+    provider = OpenAIIntentProvider(
+        model="test-model",
+        client=FakeClient(FakeResponses(response=response)),
+    )
+
+    with pytest.raises(ProviderError, match="unexpected data type"):
+        asyncio.run(
+            provider.extract(
+                "Cote for four Saturday at 7",
+                datetime(2026, 8, 18, tzinfo=ZoneInfo("America/Toronto")),
+            )
+        )
+
+
+def test_provider_reports_malformed_structured_output() -> None:
+    responses = FakeResponses(error=ValueError("invalid json"))
+    provider = OpenAIIntentProvider(model="test-model", client=FakeClient(responses))
+
+    with pytest.raises(ProviderError, match="invalid structured data"):
+        asyncio.run(
+            provider.extract(
+                "Cote for four Saturday at 7",
+                datetime(2026, 8, 18, tzinfo=ZoneInfo("America/Toronto")),
+            )
+        )
+
+
+def test_provider_reports_missing_output_without_a_refusal() -> None:
+    response = SimpleNamespace(output_parsed=None, output=[])
+    provider = OpenAIIntentProvider(
+        model="test-model",
+        client=FakeClient(FakeResponses(response=response)),
+    )
+
+    with pytest.raises(ProviderError, match="did not return structured data"):
+        asyncio.run(
+            provider.extract(
+                "Cote for four Saturday at 7",
+                datetime(2026, 8, 18, tzinfo=ZoneInfo("America/Toronto")),
+            )
+        )
+
+
+def test_reference_timestamp_is_supplied_in_local_time() -> None:
+    responses = FakeResponses(
+        response=SimpleNamespace(output_parsed=complete_extraction(), output=[])
+    )
+    provider = OpenAIIntentProvider(model="test-model", client=FakeClient(responses))
+
+    asyncio.run(
+        provider.extract(
+            "Cote for four Saturday at 7",
+            datetime(2026, 8, 18, 12, 30, tzinfo=ZoneInfo("America/Toronto")),
+        )
+    )
+
+    instructions = str(responses.kwargs["instructions"])
+    assert "2026-08-18T12:30" in instructions
+    assert "EDT" in instructions

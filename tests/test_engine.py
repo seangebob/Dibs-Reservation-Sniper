@@ -58,3 +58,39 @@ def test_engine_passes_raw_prompt_and_routes_validated_extraction() -> None:
 
     asyncio.run(engine.close())
     assert provider.closed is True
+
+
+def test_engine_builds_one_orchestrator_per_process(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The lazily constructed engine is shared, not rebuilt per request."""
+
+    import asyncio as _asyncio
+
+    from fastapi.testclient import TestClient
+
+    from backend.main import create_app, get_orchestrator
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-5.6")
+    app = create_app()
+
+    with TestClient(app) as client:
+        assert client.get("/health").json()["config"] == "ok"
+
+        async def build_twice() -> tuple[object, object]:
+            request = SimpleRequest(app)
+            return (
+                await get_orchestrator(request),
+                await get_orchestrator(request),
+            )
+
+        first, second = _asyncio.run(build_twice())
+
+    assert first is second
+    assert app.state.orchestrator is first
+
+
+class SimpleRequest:
+    """Minimal stand-in exposing only the app the dependency reads."""
+
+    def __init__(self, app: object) -> None:
+        self.app = app

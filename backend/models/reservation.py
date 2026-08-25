@@ -68,7 +68,14 @@ class AvailabilitySlot(BaseModel):
     start_time: HourMinute
     end_time: HourMinute | None
     party_size: int = Field(ge=1, le=100)
+    max_party_size: int = Field(ge=1, le=100)
     available: Literal[True] = True
+
+    @model_validator(mode="after")
+    def validate_capacity(self) -> Self:
+        if self.party_size > self.max_party_size:
+            raise ValueError("slot cannot seat the requested party size")
+        return self
 
 
 class BookingStatus(str, Enum):

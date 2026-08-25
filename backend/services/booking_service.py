@@ -3,7 +3,11 @@
 import json
 from hashlib import sha256
 
-from backend.integrations.base import ReservationAdapter
+from backend.integrations.base import (
+    ReservationAdapter,
+    SlotNotFoundError,
+    SlotUnavailableError,
+)
 from backend.models.reservation import (
     AvailabilityQuery,
     ExecutionStatus,
@@ -48,6 +52,7 @@ class BookingService:
         idempotency_key: str | None = None
         if intent.action is IntentAction.BOOK_RESERVATION:
             idempotency_key = self._idempotency_key(intent, query)
+<<<<<<< Updated upstream
             existing = await self._adapter.get_booking(idempotency_key)
             if existing is not None:
                 return PromptExecutionResult(
@@ -60,9 +65,21 @@ class BookingService:
                         "idempotent request (Mock search only returns slot for testing purposes)."
                     ),
                 )
+=======
+            replayed = await self._replayed_booking(intent, idempotency_key)
+            if replayed is not None:
+                return replayed
+>>>>>>> Stashed changes
 
         slots = await self._adapter.search_availability(query)
         if not slots:
+            # An identical request may have booked the only matching slot while
+            # this one was searching. That is the same reservation, not a
+            # sold-out venue, so the existing confirmation is returned.
+            replayed = await self._replayed_booking(intent, idempotency_key)
+            if replayed is not None:
+                return replayed
+
             return PromptExecutionResult(
                 status=ExecutionStatus.NO_AVAILABILITY,
                 intent=intent,
@@ -83,18 +100,70 @@ class BookingService:
         if intent.action is not IntentAction.BOOK_RESERVATION or idempotency_key is None:
             raise ValueError(f"Unsupported booking-service action: {intent.action}")
 
-        confirmation = await self._adapter.book_slot(
-            slots[0].slot_id,
-            idempotency_key=idempotency_key,
+        # A slot can be taken between the search and the booking call, so a
+        # lost race falls through to the next slot instead of surfacing as an
+        # adapter error to the caller.
+        for slot in slots:
+            try:
+                confirmation = await self._adapter.book_slot(
+                    slot.slot_id,
+                    idempotency_key=idempotency_key,
+                )
+            except (SlotUnavailableError, SlotNotFoundError):
+                continue
+
+            return PromptExecutionResult(
+                status=ExecutionStatus.MOCK_BOOKED,
+                intent=intent,
+                slots=slots,
+                booking=confirmation,
+                message=(
+                    "Mock reservation confirmed. No real venue or booking provider "
+                    "was contacted."
+                ),
+            )
+
+        replayed = await self._replayed_booking(intent, idempotency_key)
+        if replayed is not None:
+            return replayed
+
+        return PromptExecutionResult(
+            status=ExecutionStatus.NO_AVAILABILITY,
+            intent=intent,
+            slots=[],
+            booking=None,
+            message=(
+                "Every matching mock slot was taken before the booking "
+                "completed."
+            ),
         )
+
+    async def _replayed_booking(
+        self,
+        intent: ReservationIntent,
+        idempotency_key: str | None,
+    ) -> PromptExecutionResult | None:
+        """Return the confirmation an equivalent request already created."""
+
+        if idempotency_key is None:
+            return None
+        existing = await self._adapter.get_booking(idempotency_key)
+        if existing is None:
+            return None
+
         return PromptExecutionResult(
             status=ExecutionStatus.MOCK_BOOKED,
             intent=intent,
-            slots=slots,
-            booking=confirmation,
+            slots=[existing.slot],
+            booking=existing,
             message=(
+<<<<<<< Updated upstream
                 "Reservation confirmed. No real venue or booking provider "
                 "was contacted. (Mock booking is for testing purposes only.)"
+=======
+                "Returning the existing mock reservation for this "
+                "idempotent request."
+>>>>>>> Stashed changes
             ),
         )
 

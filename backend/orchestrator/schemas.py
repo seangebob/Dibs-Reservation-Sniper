@@ -115,12 +115,23 @@ class ReservationExtraction(BaseModel):
         description="Explicit accessibility, seating, or activity requests",
     )
 
-    @field_validator("date")
-    @classmethod
-    def validate_calendar_date(cls, value: str | None) -> str | None:
-        if value is not None:
-            date.fromisoformat(value)
-        return value
+    @property
+    def has_valid_date(self) -> bool:
+        """Whether the extracted date is a real calendar day.
+
+        A well-formed but impossible date such as 2026-02-30 is deliberately
+        not a validation error here: the model output is untrusted input, so
+        the deterministic validator turns it into a clarification rather than
+        an upstream provider failure.
+        """
+
+        if self.date is None:
+            return False
+        try:
+            date.fromisoformat(self.date)
+        except ValueError:
+            return False
+        return True
 
 
 class ReservationIntent(BaseModel):

@@ -1,6 +1,8 @@
 """Dibs natural-language orchestration package."""
 
-from backend.orchestrator.engine import OrchestratorEngine
+# Only the dependency-free contract types are re-exported here. Importing the
+# engine at package level would make the reference data in backend.data, which
+# imports these enums, circular with the validator that reads it.
 from backend.orchestrator.schemas import (
     IntentAction,
     IntentStatus,
@@ -14,7 +16,6 @@ from backend.orchestrator.schemas import (
 __all__ = [
     "IntentAction",
     "IntentStatus",
-    "OrchestratorEngine",
     "OrchestratorRoute",
     "ParseRequest",
     "ReservationExtraction",

@@ -96,6 +96,8 @@ The MVP is implemented under `backend/orchestrator` and deliberately stops befor
 backend/
 ├── main.py                    # FastAPI router and provider lifecycle
 ├── config.py                  # Environment configuration
+├── data/
+│   └── venues.py              # Mock KW venue catalog and name resolution
 └── orchestrator/
     ├── engine.py              # Extraction → validation coordination
     ├── schemas.py             # Strict provider and public API contracts
@@ -103,7 +105,14 @@ backend/
     └── providers.py           # OpenAI structured-output adapter
 ```
 
-The LLM only extracts untrusted text into `ReservationExtraction`. Application code then independently validates required values, rejects past dates and invalid time windows, fixes the market to `Kitchener-Waterloo, ON`, and selects one route:
+The LLM only extracts untrusted text into `ReservationExtraction`. Application code then independently validates required values, fixes the market to `Kitchener-Waterloo, ON`, and selects one route. Deterministic checks the model cannot override:
+
+- past dates, impossible dates such as `2026-02-30`, and dates more than a year out are refused
+- a time that has already passed today is refused, and a window that started earlier today is clamped to the next fifteen-minute boundary
+- invalid time windows are dropped, and a preferred time outside its own window is queried
+- a venue name matching several catalog venues is asked about instead of guessed; a unique match is canonicalized and typed from the catalog
+
+Routes:
 
 - `BOOKING_SERVICE` for ready booking or availability requests
 - `WATCH_SERVICE` for ready monitoring requests
@@ -185,12 +194,28 @@ backend/
 }
 ```
 
-A `MOCK_BOOKED` response includes the validated `intent`, considered `slots`, and a `booking` whose provider is `mock` and whose status is explicitly `MOCK_CONFIRMED`. Repeating a semantically identical booking request returns the original confirmation even if the service object is recreated over the same adapter. This endpoint never contacts OpenTable, Resy, a venue, or any other booking provider.
+A `MOCK_BOOKED` response includes the validated `intent`, considered `slots`, and a `booking` whose provider is `mock` and whose status is explicitly `MOCK_CONFIRMED`. Repeating a semantically identical booking request returns the original confirmation even if the service object is recreated over the same adapter, and two identical requests running at once share one confirmation rather than racing. This endpoint never contacts OpenTable, Resy, a venue, or any other booking provider.
+
+Mock slots follow `backend/data/venues.py` so they stay plausible: fifteen-minute
+starts inside that venue's hours for that weekday, nothing that would run past
+closing, per-slot table sizes so a large party sees fewer options than a couple,
+and no availability on statutory closures or sold-out dates. The same request
+always produces the same slot identifiers. Venues outside the catalog fall back
+to a generic KW profile rather than being rejected.
+
+Run ten realistic prompts end to end, using the real model when `OPENAI_API_KEY`
+is set and scripted extractions when it is not:
+
+```powershell
+$env:PYTHONPATH = "."
+.\.venv\Scripts\python.exe scripts\spot_check.py
+```
 
 Run deterministic tests without model or booking-provider API calls:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe -m pytest --cov=backend --cov-report=term-missing
 ```
 
 The provider uses OpenAI's Responses API with native Pydantic structured output, following the [official Structured Outputs guide](https://platform.openai.com/docs/guides/structured-outputs). Content from that guide was rephrased for compliance with licensing restrictions.

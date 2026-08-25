@@ -2,9 +2,17 @@
 
 import asyncio
 from collections.abc import Callable, Iterable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from hashlib import sha256
 from uuid import NAMESPACE_URL, uuid5
 
+from backend.data.venues import (
+    MAX_GENERATED_SLOTS,
+    SLOT_INTERVAL_MINUTES,
+    OpeningHours,
+    VenueProfile,
+    profile_for,
+)
 from backend.integrations.base import (
     ReservationAdapter,
     SlotNotFoundError,
@@ -20,9 +28,21 @@ from backend.models.reservation import (
 
 Clock = Callable[[], datetime]
 
+#: Per-slot table sizes the mock cycles through, so some slots genuinely
+#: cannot seat a large party even when the venue itself could.
+SLOT_CAPACITIES: tuple[int, ...] = (2, 4, 6, 8, 10)
+
+_MINUTES_PER_DAY = 24 * 60
+
 
 class MockBookingAdapter(ReservationAdapter):
-    """Generates reproducible slots and stores mock bookings in memory."""
+    """Generates reproducible slots and stores mock bookings in memory.
+
+    Slots follow the mock venue catalog: they sit on a fifteen-minute grid
+    inside that venue's hours for that weekday, skip closed and sold-out
+    dates, and carry a per-slot table size. The same query always produces
+    the same slot identifiers.
+    """
 
     def __init__(
         self,
@@ -46,10 +66,19 @@ class MockBookingAdapter(ReservationAdapter):
         if query.venue_name.casefold() in self._unavailable_venues:
             return []
 
+        profile = profile_for(query.venue_name)
+        day = date.fromisoformat(query.date)
+        if profile.is_sold_out(day) or query.party_size > profile.max_party_size:
+            return []
+
+        hours = profile.hours_for(day)
+        if hours is None:
+            return []
+
         slots: list[AvailabilitySlot] = []
-        for start_time in self._candidate_times(query):
-            end_time = self._end_time(start_time, query.duration_minutes)
-            if query.duration_minutes is not None and end_time is None:
+        for start_time in self._candidate_times(query, profile, hours):
+            capacity = self._slot_capacity(query, start_time, profile)
+            if query.party_size > capacity:
                 continue
 
             identity = "|".join(
@@ -70,8 +99,9 @@ class MockBookingAdapter(ReservationAdapter):
                 venue_type=query.venue_type,
                 date=query.date,
                 start_time=start_time,
-                end_time=end_time,
+                end_time=self._end_time(start_time, query.duration_minutes),
                 party_size=query.party_size,
+                max_party_size=capacity,
                 available=True,
             )
             self._slots[slot_id] = slot
@@ -116,32 +146,75 @@ class MockBookingAdapter(ReservationAdapter):
             self._bookings_by_key[idempotency_key] = confirmation
             return confirmation
 
-    @staticmethod
-    def _candidate_times(query: AvailabilityQuery) -> list[str]:
-        if query.time_window is None:
-            return [query.preferred_time] if query.preferred_time is not None else []
+    @classmethod
+    def _candidate_times(
+        cls,
+        query: AvailabilityQuery,
+        profile: VenueProfile,
+        hours: OpeningHours,
+    ) -> list[str]:
+        """Return bookable start times inside the venue's hours."""
 
-        start = MockBookingAdapter._to_minutes(query.time_window.start)
-        end = MockBookingAdapter._to_minutes(query.time_window.end)
+        opens = cls._to_minutes(hours.open_time)
+        closes = cls._to_minutes(hours.close_time)
+        if closes <= opens:
+            closes += _MINUTES_PER_DAY
+
+        stay = query.duration_minutes or profile.minimum_stay_minutes
+        latest_start = closes - stay
+        if latest_start < opens:
+            return []
+
+        if query.time_window is None:
+            if query.preferred_time is None:
+                return []
+            exact = cls._snap_to_grid(cls._to_minutes(query.preferred_time))
+            if not opens <= exact <= latest_start:
+                return []
+            return [cls._from_minutes(exact)]
+
+        first = max(opens, cls._snap_to_grid(cls._to_minutes(query.time_window.start)))
+        last = min(latest_start, cls._to_minutes(query.time_window.end))
         candidates = [
-            MockBookingAdapter._from_minutes(minutes)
-            for minutes in range(start, end + 1, 30)
+            cls._from_minutes(minutes)
+            for minutes in range(first, last + 1, SLOT_INTERVAL_MINUTES)
         ]
 
-        if query.preferred_time is not None:
-            if query.preferred_time in candidates:
-                candidates.remove(query.preferred_time)
-                candidates.insert(0, query.preferred_time)
-        return candidates[:12]
+        if query.preferred_time is not None and query.preferred_time in candidates:
+            candidates.remove(query.preferred_time)
+            candidates.insert(0, query.preferred_time)
+        return candidates[:MAX_GENERATED_SLOTS]
 
     @staticmethod
-    def _end_time(start_time: str, duration_minutes: int | None) -> str | None:
+    def _slot_capacity(
+        query: AvailabilityQuery,
+        start_time: str,
+        profile: VenueProfile,
+    ) -> int:
+        """Derive a stable table size for one venue, date, and start time."""
+
+        identity = f"{query.venue_name.casefold()}|{query.date}|{start_time}"
+        digest = sha256(identity.encode("utf-8")).digest()
+        capacity = SLOT_CAPACITIES[digest[0] % len(SLOT_CAPACITIES)]
+        return min(capacity, profile.max_party_size)
+
+    @classmethod
+    def _end_time(cls, start_time: str, duration_minutes: int | None) -> str | None:
         if duration_minutes is None:
             return None
-        end_minutes = MockBookingAdapter._to_minutes(start_time) + duration_minutes
-        if end_minutes >= 24 * 60:
-            return None
-        return MockBookingAdapter._from_minutes(end_minutes)
+        end_minutes = cls._to_minutes(start_time) + duration_minutes
+        return cls._from_minutes(end_minutes % _MINUTES_PER_DAY)
+
+    @staticmethod
+    def _snap_to_grid(minutes: int) -> int:
+        """Round a time to the nearest slot boundary, preferring earlier."""
+
+        offset = minutes % SLOT_INTERVAL_MINUTES
+        if offset == 0:
+            return minutes
+        if offset * 2 <= SLOT_INTERVAL_MINUTES:
+            return minutes - offset
+        return minutes - offset + SLOT_INTERVAL_MINUTES
 
     @staticmethod
     def _to_minutes(value: str) -> int:

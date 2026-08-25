@@ -24,9 +24,22 @@ from backend.services.booking_service import BookingService
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Close the shared provider client when the application stops."""
+    """Validate configuration on boot and release the client on shutdown.
+
+    Configuration is read eagerly so an invalid model name or timezone is
+    reported at startup, but a missing key is remembered rather than raised so
+    the service can still answer with a clear 503 instead of refusing to boot.
+    """
+
+    try:
+        app.state.settings = Settings.from_environment()
+        app.state.settings_error = None
+    except ConfigurationError as exc:
+        app.state.settings = None
+        app.state.settings_error = exc
 
     yield
+
     engine: OrchestratorEngine | None = app.state.orchestrator
     if engine is not None:
         await engine.close()
@@ -42,7 +55,7 @@ async def get_orchestrator(request: Request) -> OrchestratorEngine:
     async with request.app.state.orchestrator_lock:
         engine = request.app.state.orchestrator
         if engine is None:
-            settings = Settings.from_environment()
+            settings = request.app.state.settings or Settings.from_environment()
             provider = OpenAIIntentProvider(
                 api_key=settings.openai_api_key,
                 model=settings.openai_model,
@@ -74,6 +87,8 @@ def create_app() -> FastAPI:
     )
     app.state.orchestrator = None
     app.state.orchestrator_lock = asyncio.Lock()
+    app.state.settings = None
+    app.state.settings_error = None
     app.state.booking_service = BookingService(MockBookingAdapter())
 
     @app.exception_handler(ConfigurationError)
@@ -127,8 +142,13 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/health", tags=["system"])
-    async def health() -> dict[str, str]:
-        return {"status": "ok", "service": "dibs-mvp"}
+    async def health(request: Request) -> dict[str, str]:
+        error: ConfigurationError | None = request.app.state.settings_error
+        return {
+            "status": "ok",
+            "service": "dibs-mvp",
+            "config": "error" if error is not None else "ok",
+        }
 
     async def parse_prompt(
         request: ParseRequest,

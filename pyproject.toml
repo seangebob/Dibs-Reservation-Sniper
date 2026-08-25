@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dibs-backend"
-version = "0.2.0"
+version = "0.3.0"
 description = "AI orchestration backend for KW venue reservations"
 requires-python = ">=3.12"
 dependencies = [
@@ -19,6 +19,7 @@ dependencies = [
 test = [
     "httpx==0.28.1",
     "pytest==9.1.1",
+    "pytest-cov==7.1.0",
 ]
 
 [tool.setuptools.packages.find]
