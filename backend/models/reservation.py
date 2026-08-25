@@ -24,7 +24,7 @@ class AvailabilityQuery(BaseModel):
 
     venue_name: str = Field(min_length=1, max_length=200)
     venue_type: VenueType
-    market: Literal["Kitchener-Waterloo, ON"]
+    market: Literal["Kitchener-Waterloo-Cambridge, ON"]
     party_size: int = Field(ge=1, le=100)
     date: IsoDate
     preferred_time: HourMinute | None

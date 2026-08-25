@@ -56,8 +56,8 @@ class BookingService:
                     slots=[existing.slot],
                     booking=existing,
                     message=(
-                        "Returning the existing mock reservation for this "
-                        "idempotent request."
+                        "Returning the existing reservation for this "
+                        "idempotent request (Mock search only returns slot for testing purposes)."
                     ),
                 )
 
@@ -68,7 +68,7 @@ class BookingService:
                 intent=intent,
                 slots=[],
                 booking=None,
-                message="No mock availability matched the request.",
+                message="No availability matched the request. (mock search only returns one slot for testing purposes.)",
             )
 
         if intent.action is IntentAction.SEARCH_AVAILABILITY:
@@ -93,8 +93,8 @@ class BookingService:
             slots=slots,
             booking=confirmation,
             message=(
-                "Mock reservation confirmed. No real venue or booking provider "
-                "was contacted."
+                "Reservation confirmed. No real venue or booking provider "
+                "was contacted. (Mock booking is for testing purposes only.)"
             ),
         )
 

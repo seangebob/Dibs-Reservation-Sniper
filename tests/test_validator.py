@@ -13,12 +13,7 @@ from backend.orchestrator.schemas import (
 from backend.orchestrator.validator import IntentValidator
 
 
-REFERENCE_TIME = datetime(
-    2026,
-    8,
-    18,
-    12,
-    30,
+REFERENCE_TIME = datetime(2026, 8, 18, 12, 30,
     tzinfo=ZoneInfo("America/Toronto"),
 )
 
