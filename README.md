@@ -186,7 +186,7 @@ backend/
 - `AVAILABILITY_FOUND` with mock slots and no booking
 - `NO_AVAILABILITY`
 - `MOCK_BOOKED` with an idempotent mock confirmation
-- `WATCH_REQUIRED`, explicitly deferred until Redis/persistence in Milestone 3
+- `WATCH_CREATED` with a `watch_id`, once Milestone 3 wired up the background queue
 
 ```json
 {
@@ -232,6 +232,124 @@ Run deterministic tests without model or booking-provider API calls:
 ```
 
 The provider uses OpenAI's Responses API with native Pydantic structured output, following the [official Structured Outputs guide](https://platform.openai.com/docs/guides/structured-outputs). Content from that guide was rephrased for compliance with licensing restrictions.
+
+## Milestone 3 MVP: Background queue + state
+
+Milestone 3 turns `CREATE_WATCH` from a deferred stub into a real background
+job. A watch is persisted, polled on a jittered interval, and finished the
+moment a slot appears.
+
+```text
+backend/
+├── api/
+│   ├── dependencies.py        # Shared FastAPI dependency wiring
+│   └── routes/
+│       └── watches.py         # POST/GET/DELETE /api/watches
+├── db/
+│   ├── database.py            # Redis connection factory
+│   └── repositories/
+│       └── watches.py         # WatchRepository + in-memory and Redis stores
+├── models/
+│   └── watch.py               # Watch, WatchStatus, poll results
+├── orchestrator/
+│   └── router.py              # Sends ready intents to booking or watch
+├── services/
+│   ├── watch_service.py       # Watch lifecycle + the poll handler
+│   └── notification_service.py
+└── workers/
+    ├── celery_app.py          # Celery bound to the Redis broker
+    ├── scheduler.py           # Jittered poll pacing
+    ├── queue.py               # TaskQueue dispatch boundary
+    └── tasks/
+        └── monitor_watch.py   # The Celery task
+```
+
+### Running it
+
+Start Redis (note: the port is **6379**, not 6739):
+
+```bash
+docker compose -f infra/docker-compose.yml up -d
+# or, for Redis alone:
+docker run -d -p 6379:6379 redis:7-alpine
+```
+
+Then the API, and — for real distributed jobs — a Celery worker:
+
+```bash
+pip install -e ".[test,worker]"
+uvicorn backend.main:app --reload
+celery -A backend.workers.celery_app worker --loglevel=info
+```
+
+`GET /health` reports which store is live: `"watch_store": "redis"` once Redis
+is reachable, `"memory"` otherwise. **Redis is an upgrade, not a requirement** —
+the app boots with an in-memory repository and an in-process asyncio queue, so
+`uvicorn backend.main:app` works with no infrastructure at all. That fallback is
+not durable: pending polls are lost on restart, which is what the Celery worker
+is for.
+
+See the loop without any infrastructure:
+
+```bash
+PYTHONPATH=. python3 scripts/watch_demo.py
+```
+
+### How the polling works
+
+`WatchService.poll_once(watch_id)` is the queue handler, and it is a plain
+coroutine — no Celery or Redis import of its own. The Celery task is a thin
+wrapper around it, which is what lets the whole contract be tested without a
+broker.
+
+Each poll ends in exactly one of these, so a watch can never fan out into
+several concurrent polling chains:
+
+| Outcome | Effect |
+| --- | --- |
+| `NO_AVAILABILITY` | Attempt recorded, one successor job queued after a jittered delay |
+| `FOUND` | Slots stored, watch finished, owner notified |
+| `BOOKED` | Slot booked idempotently (auto-book watches only), watch finished |
+| `EXPIRED` | Attempts or the reservation date ran out; nothing requeued |
+| `ALREADY_FINISHED` | The watch was cancelled or resolved; the chain stops |
+| `UNKNOWN_WATCH` | The watch is gone; the chain stops |
+
+Delays are `WATCH_POLL_INTERVAL_SECONDS ± WATCH_POLL_JITTER_SECONDS`, defaulting
+to 180s ± 30s. The jitter is the point: a perfectly regular cadence is trivially
+identifiable as a bot, and it makes watches created at the same moment stampede
+the provider together.
+
+Deterministic behaviours worth knowing:
+
+- The **first** check runs immediately with no jitter — the user just asked, so
+  that latency is the one they actually see. Jitter starts on retries.
+- A watch **expires at the end of its reservation date**; a table for tonight is
+  worthless tomorrow. `WATCH_MAX_POLL_ATTEMPTS` is a second, independent ceiling.
+- A **provider outage does not kill the watch**. The error is recorded in
+  `last_error` and polling continues, because the outage is temporary and the
+  reservation the user wanted is not.
+- Auto-book uses the **watch itself as the idempotency key**, so a job the
+  broker redelivers replays the same reservation instead of making a second one.
+- **Cancelling** is a status change, not a dequeue. The next scheduled poll sees
+  a terminal status and stops the chain.
+
+### Watch API
+
+```text
+POST   /api/watches?auto_book=false   # 201, dispatches the first check
+GET    /api/watches?active_only=false
+GET    /api/watches/{watch_id}
+DELETE /api/watches/{watch_id}        # cancels; the queued poll stops itself
+```
+
+`POST /api/parse-and-book` now routes a ready `CREATE_WATCH` intent here
+automatically and returns `WATCH_CREATED` with the `watch_id` to poll.
+
+State still lives in Redis rather than PostgreSQL; durable user-owned records
+arrive with Milestone 4, and `WatchRepository` is the seam that swap goes
+through.
+
+---
 
 FULL SYSTEM DESIGN FOR DIBS:
 dibs/

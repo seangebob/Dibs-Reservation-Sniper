@@ -15,8 +15,11 @@ from backend.config import (
 )
 
 
-#: No delay is ever shorter than this, whatever jitter comes back.
-MIN_DELAY_SECONDS = 5.0
+#: Absolute floor on a delay, so no schedule can ever hammer a provider. It
+#: sits well below the smallest interval `config` accepts (15s), because a
+#: floor that bites into a real schedule would clamp every jittered delay to
+#: the same number and quietly undo the jitter.
+MIN_DELAY_SECONDS = 1.0
 
 
 @dataclass(frozen=True, slots=True)

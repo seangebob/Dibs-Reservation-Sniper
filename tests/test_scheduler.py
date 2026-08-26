@@ -54,6 +54,18 @@ def test_short_interval_never_produces_a_hammering_delay() -> None:
     assert min(delays) >= MIN_DELAY_SECONDS
 
 
+def test_the_floor_does_not_flatten_jitter_on_a_fast_schedule() -> None:
+    """A floor that bit into a real schedule would silently kill the jitter."""
+
+    schedule = PollSchedule(interval_seconds=2.0, jitter_seconds=0.5)
+    rng = random.Random(11)
+
+    delays = [schedule.next_delay(rng) for _ in range(100)]
+
+    assert len(set(delays)) > 90
+    assert min(delays) > MIN_DELAY_SECONDS
+
+
 @pytest.mark.parametrize(
     ("interval", "jitter"),
     [(0, 0), (-1, 0), (180, -1), (30, 30), (30, 60)],

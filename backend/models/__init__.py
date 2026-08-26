@@ -8,6 +8,12 @@ from backend.models.reservation import (
     ExecutionStatus,
     PromptExecutionResult,
 )
+from backend.models.watch import (
+    Watch,
+    WatchPollOutcome,
+    WatchPollResult,
+    WatchStatus,
+)
 
 __all__ = [
     "AvailabilityQuery",
@@ -16,4 +22,8 @@ __all__ = [
     "BookingStatus",
     "ExecutionStatus",
     "PromptExecutionResult",
+    "Watch",
+    "WatchPollOutcome",
+    "WatchPollResult",
+    "WatchStatus",
 ]
