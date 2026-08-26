@@ -45,6 +45,7 @@ EXERCISED_LOGGER_NAMES = (
 @dataclass(frozen=True)
 class _LoggerState:
     logger: logging.Logger
+    handler_list: list[logging.Handler]
     handlers: tuple[logging.Handler, ...]
     level: int
     disabled: bool
@@ -60,6 +61,15 @@ class _HandlerState:
     formatter: logging.Formatter | None
     stream: object
     has_stored_stream: bool
+
+
+class _NoPytestCaptureHandlers(list[logging.Handler]):
+    """Keep pytest's late call-phase handlers out of the pristine hierarchy."""
+
+    def append(self, handler: logging.Handler) -> None:
+        if handler.__class__.__module__.startswith("_pytest."):
+            return
+        super().append(handler)
 
 
 class _RecordProbe(logging.Filter):
@@ -91,6 +101,7 @@ def pristine_backend_logging() -> None:
     logger_states = [
         _LoggerState(
             logger=logger,
+            handler_list=logger.handlers,
             handlers=tuple(logger.handlers),
             level=logger.level,
             disabled=logger.disabled,
@@ -126,6 +137,7 @@ def pristine_backend_logging() -> None:
             logger.disabled = False
             logger.propagate = True
             logger.filters[:] = []
+        root.handlers = _NoPytestCaptureHandlers()
         yield
     finally:
         for state in handler_states:
@@ -135,7 +147,8 @@ def pristine_backend_logging() -> None:
             if state.has_stored_stream:
                 state.handler.stream = state.stream  # type: ignore[attr-defined]
         for state in logger_states:
-            state.logger.handlers[:] = state.handlers
+            state.handler_list[:] = state.handlers
+            state.logger.handlers = state.handler_list
             state.logger.setLevel(state.level)
             state.logger.disabled = state.disabled
             state.logger.propagate = state.propagate
