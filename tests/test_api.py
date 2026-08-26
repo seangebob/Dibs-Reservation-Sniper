@@ -11,7 +11,14 @@ from backend.integrations.base import (
     SlotUnavailableError,
 )
 from backend.integrations.mock_booking import MockBookingAdapter
-from backend.main import app, create_app, get_booking_service, get_orchestrator
+from backend.db.repositories.watches import InMemoryWatchRepository
+from backend.main import (
+    app,
+    create_app,
+    get_booking_service,
+    get_orchestrator,
+    get_watch_service,
+)
 from backend.orchestrator.engine import OrchestratorEngine
 from backend.orchestrator.providers import ProviderError
 from backend.orchestrator.schemas import (
@@ -24,6 +31,8 @@ from backend.orchestrator.schemas import (
     VenueType,
 )
 from backend.services.booking_service import BookingService
+from backend.services.watch_service import WatchService
+from backend.workers.queue import RecordingTaskQueue
 
 
 class StubEngine:
@@ -180,17 +189,21 @@ def test_parse_and_book_preserves_clarification_safety_boundary() -> None:
     assert response.json()["booking"] is None
 
 
-def test_parse_and_book_defers_watch_to_milestone_three() -> None:
+def test_parse_and_book_opens_a_background_watch() -> None:
     engine = StubEngine(
         ready_intent(
             action=IntentAction.CREATE_WATCH,
             route=OrchestratorRoute.WATCH_SERVICE,
         )
     )
+    queue = RecordingTaskQueue()
+    repository = InMemoryWatchRepository()
+    watch_service = WatchService(repository, MockBookingAdapter(), queue)
     app.dependency_overrides[get_orchestrator] = lambda: engine
     app.dependency_overrides[get_booking_service] = lambda: BookingService(
         MockBookingAdapter()
     )
+    app.dependency_overrides[get_watch_service] = lambda: watch_service
 
     try:
         response = TestClient(app).post(
@@ -200,9 +213,13 @@ def test_parse_and_book_defers_watch_to_milestone_three() -> None:
     finally:
         app.dependency_overrides.clear()
 
+    body = response.json()
     assert response.status_code == 200
-    assert response.json()["status"] == "WATCH_REQUIRED"
-    assert "Milestone 3" in response.json()["message"]
+    assert body["status"] == "WATCH_CREATED"
+    assert body["watch_id"] is not None
+    assert body["booking"] is None
+    # Creating the watch must also have dispatched its first check.
+    assert queue.dispatches == [(body["watch_id"], 0.0)]
 
 
 def test_router_rejects_empty_prompt_before_engine_call() -> None:
@@ -229,6 +246,7 @@ def test_health_route_identifies_mvp() -> None:
         "status": "ok",
         "service": "dibs-mvp",
         "config": "ok",
+        "watch_store": "memory",
     }
 
 
@@ -278,7 +296,14 @@ def test_parse_and_book_response_matches_the_execution_result_shape() -> None:
         app.dependency_overrides.clear()
 
     body = response.json()
-    assert set(body) == {"status", "intent", "slots", "booking", "message"}
+    assert set(body) == {
+        "status",
+        "intent",
+        "slots",
+        "booking",
+        "watch_id",
+        "message",
+    }
     assert set(body["intent"]) == set(ReservationIntent.model_fields)
     assert set(body["booking"]) == {
         "booking_id",

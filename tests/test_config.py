@@ -1,11 +1,19 @@
 import pytest
 
-from backend.config import ConfigurationError, Settings
+from backend.config import DEFAULT_MODEL, ConfigurationError, Settings
 
 
 @pytest.fixture(autouse=True)
 def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("OPENAI_API_KEY", "OPENAI_MODEL", "RESERVATION_TIMEZONE"):
+    for name in (
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "RESERVATION_TIMEZONE",
+        "REDIS_URL",
+        "WATCH_POLL_INTERVAL_SECONDS",
+        "WATCH_POLL_JITTER_SECONDS",
+        "WATCH_MAX_POLL_ATTEMPTS",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -17,7 +25,7 @@ def test_defaults_apply_when_only_the_key_is_set(
     settings = Settings.from_environment()
 
     assert settings.openai_api_key == "sk-test"
-    assert settings.openai_model == "gpt-5.6"
+    assert settings.openai_model == DEFAULT_MODEL
     assert settings.timezone_name == "America/Toronto"
 
 

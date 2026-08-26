@@ -43,8 +43,8 @@ class BookingService:
                 slots=[],
                 booking=None,
                 message=(
-                    "The watch request is valid, but persistence and background "
-                    "monitoring are reserved for Milestone 3."
+                    "This request needs background monitoring. Route it through "
+                    "the watch service rather than the booking service."
                 ),
             )
 

@@ -100,6 +100,7 @@ class ExecutionStatus(str, Enum):
     NO_AVAILABILITY = "NO_AVAILABILITY"
     MOCK_BOOKED = "MOCK_BOOKED"
     WATCH_REQUIRED = "WATCH_REQUIRED"
+    WATCH_CREATED = "WATCH_CREATED"
 
 
 class PromptExecutionResult(BaseModel):
@@ -111,6 +112,10 @@ class PromptExecutionResult(BaseModel):
     intent: ReservationIntent
     slots: list[AvailabilitySlot]
     booking: BookingConfirmation | None
+    #: Set when the request opened a background watch. The full record lives
+    #: behind GET /api/watches/{watch_id}; carrying only the identifier keeps
+    #: this contract independent of the watch model.
+    watch_id: str | None = Field(default=None, min_length=1, max_length=200)
     message: str = Field(min_length=1, max_length=500)
 
     @model_validator(mode="after")
@@ -121,4 +126,8 @@ class PromptExecutionResult(BaseModel):
             raise ValueError("only MOCK_BOOKED may include a confirmation")
         if self.status is ExecutionStatus.CLARIFICATION_REQUIRED and self.intent.is_ready:
             raise ValueError("clarification result requires an incomplete intent")
+        if self.status is ExecutionStatus.WATCH_CREATED and self.watch_id is None:
+            raise ValueError("WATCH_CREATED result requires a watch identifier")
+        if self.status is not ExecutionStatus.WATCH_CREATED and self.watch_id is not None:
+            raise ValueError("only WATCH_CREATED may include a watch identifier")
         return self

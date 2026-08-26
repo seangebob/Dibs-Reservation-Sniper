@@ -1,6 +1,7 @@
 """FastAPI entry point for the Dibs MVP."""
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -8,7 +9,18 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from backend.api.dependencies import (
+    get_booking_service,
+    get_orchestrator,
+    get_prompt_router,
+    get_watch_service,
+)
+from backend.api.routes import watches_router
 from backend.config import ConfigurationError, Settings
+from backend.db.repositories.watches import (
+    InMemoryWatchRepository,
+    RedisWatchRepository,
+)
 from backend.integrations.base import (
     AdapterError,
     SlotNotFoundError,
@@ -18,13 +30,29 @@ from backend.integrations.mock_booking import MockBookingAdapter
 from backend.models.reservation import PromptExecutionResult
 from backend.orchestrator.engine import OrchestratorEngine
 from backend.orchestrator.providers import OpenAIIntentProvider, ProviderError
+from backend.orchestrator.router import PromptRouter
 from backend.orchestrator.schemas import ParseRequest, ReservationIntent
 from backend.services.booking_service import BookingService
+from backend.services.watch_service import WatchService
+from backend.workers.queue import AsyncioTaskQueue
+from backend.workers.scheduler import PollSchedule
+
+
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    "app",
+    "create_app",
+    "get_booking_service",
+    "get_orchestrator",
+    "get_prompt_router",
+    "get_watch_service",
+]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Validate configuration on boot and release the client on shutdown.
+    """Validate configuration on boot and release clients on shutdown.
 
     Configuration is read eagerly so an invalid model name or timezone is
     reported at startup, but a missing key is remembered rather than raised so
@@ -38,50 +66,102 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.settings = None
         app.state.settings_error = exc
 
+    await _attach_redis(app)
+
     yield
+
+    queue = app.state.watch_queue
+    if queue is not None:
+        await queue.close()
+
+    redis_client = app.state.redis
+    if redis_client is not None:
+        await redis_client.aclose()
 
     engine: OrchestratorEngine | None = app.state.orchestrator
     if engine is not None:
         await engine.close()
 
 
-async def get_orchestrator(request: Request) -> OrchestratorEngine:
-    """Return one concurrency-safe orchestrator per application process."""
+async def _attach_redis(app: FastAPI) -> None:
+    """Move watch state onto Redis when a server is actually reachable.
 
-    engine: OrchestratorEngine | None = request.app.state.orchestrator
-    if engine is not None:
-        return engine
+    The app boots with an in-memory repository so it is useful with no
+    infrastructure at all. Redis is an upgrade applied at startup rather than a
+    hard requirement, which keeps `uvicorn backend.main:app` working before
+    `docker compose up` has ever been run.
+    """
 
-    async with request.app.state.orchestrator_lock:
-        engine = request.app.state.orchestrator
-        if engine is None:
-            settings = request.app.state.settings or Settings.from_environment()
-            provider = OpenAIIntentProvider(
-                api_key=settings.openai_api_key,
-                model=settings.openai_model,
-            )
-            engine = OrchestratorEngine(
-                provider,
-                timezone_name=settings.timezone_name,
-            )
-            request.app.state.orchestrator = engine
+    settings: Settings | None = app.state.settings
+    if settings is None:
+        return
 
-    return engine
+    try:
+        from backend.db.database import create_redis_client, ping
+    except ModuleNotFoundError:
+        logger.warning("redis is not installed; watches stay in process memory")
+        return
+
+    client = create_redis_client(settings.redis_url)
+    if not await ping(client):
+        logger.warning(
+            "Redis at %s is unreachable; watches stay in process memory",
+            settings.redis_url,
+        )
+        await client.aclose()
+        return
+
+    app.state.redis = client
+    app.state.watch_repository = RedisWatchRepository(client)
+    app.state.watch_service = _build_watch_service(
+        app,
+        repository=app.state.watch_repository,
+        schedule=PollSchedule(
+            interval_seconds=float(settings.poll_interval_seconds),
+            jitter_seconds=float(settings.poll_jitter_seconds),
+        ),
+        max_attempts=settings.max_poll_attempts,
+    )
+    logger.info("Watch state is backed by Redis at %s", settings.redis_url)
 
 
-def get_booking_service(request: Request) -> BookingService:
-    """Return the process-local service backed by the mock adapter."""
+def _build_watch_service(
+    app: FastAPI,
+    *,
+    repository: object,
+    schedule: PollSchedule | None = None,
+    max_attempts: int | None = None,
+) -> WatchService:
+    """Build a watch service whose queue calls back into that same service.
 
-    return request.app.state.booking_service
+    The queue needs a poll function and the service needs a queue, so the
+    dispatcher resolves the current service off `app.state` at call time rather
+    than closing over a half-built object.
+    """
+
+    async def poll(watch_id: str) -> None:
+        await app.state.watch_service.poll_once(watch_id)
+
+    queue = AsyncioTaskQueue(poll)
+    app.state.watch_queue = queue
+    return WatchService(
+        repository,
+        app.state.booking_adapter,
+        queue,
+        schedule=schedule,
+        **({"max_attempts": max_attempts} if max_attempts is not None else {}),
+    )
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Dibs MVP",
-        version="0.3.0",
+        version="0.4.0",
         description=(
-            "Parses KW restaurant and recreation requests and runs deterministic "
-            "mock availability or booking flows. No real provider is contacted."
+            "Parses KW restaurant and recreation requests, runs deterministic "
+            "mock availability or booking flows, and monitors unavailable "
+            "slots on a jittered background queue. No real provider is "
+            "contacted."
         ),
         lifespan=lifespan,
     )
@@ -89,7 +169,17 @@ def create_app() -> FastAPI:
     app.state.orchestrator_lock = asyncio.Lock()
     app.state.settings = None
     app.state.settings_error = None
-    app.state.booking_service = BookingService(MockBookingAdapter())
+    app.state.redis = None
+    app.state.watch_queue = None
+
+    adapter = MockBookingAdapter()
+    app.state.booking_adapter = adapter
+    app.state.booking_service = BookingService(adapter)
+    app.state.watch_repository = InMemoryWatchRepository()
+    app.state.watch_service = _build_watch_service(
+        app,
+        repository=app.state.watch_repository,
+    )
 
     @app.exception_handler(ConfigurationError)
     async def configuration_error_handler(
@@ -148,6 +238,9 @@ def create_app() -> FastAPI:
             "status": "ok",
             "service": "dibs-mvp",
             "config": "error" if error is not None else "ok",
+            "watch_store": (
+                "redis" if request.app.state.redis is not None else "memory"
+            ),
         }
 
     async def parse_prompt(
@@ -159,10 +252,10 @@ def create_app() -> FastAPI:
     async def parse_and_book(
         request: ParseRequest,
         engine: Annotated[OrchestratorEngine, Depends(get_orchestrator)],
-        booking_service: Annotated[BookingService, Depends(get_booking_service)],
+        router: Annotated[PromptRouter, Depends(get_prompt_router)],
     ) -> PromptExecutionResult:
         intent = await engine.parse(request.prompt)
-        return await booking_service.execute(intent)
+        return await router.execute(intent)
 
     app.add_api_route(
         "/api/orchestrator/parse",
@@ -177,7 +270,7 @@ def create_app() -> FastAPI:
         methods=["POST"],
         response_model=PromptExecutionResult,
         tags=["booking"],
-        summary="Parse a prompt and run the mock booking flow",
+        summary="Parse a prompt, then book, search, or open a watch",
     )
     app.add_api_route(
         "/v1/intents/parse",
@@ -187,6 +280,7 @@ def create_app() -> FastAPI:
         include_in_schema=False,
         deprecated=True,
     )
+    app.include_router(watches_router)
 
     return app
 

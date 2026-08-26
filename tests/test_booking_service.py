@@ -78,7 +78,7 @@ def test_no_availability_does_not_create_confirmation() -> None:
     assert result.slots == []
 
 
-def test_watch_action_stops_before_unimplemented_queue_layer() -> None:
+def test_watch_action_is_refused_by_the_booking_service() -> None:
     service = BookingService(MockBookingAdapter())
 
     result = asyncio.run(
@@ -92,7 +92,7 @@ def test_watch_action_stops_before_unimplemented_queue_layer() -> None:
 
     assert result.status is ExecutionStatus.WATCH_REQUIRED
     assert result.booking is None
-    assert "Milestone 3" in result.message
+    assert "watch service" in result.message
 
 
 def test_incomplete_intent_never_calls_booking_adapter() -> None:
