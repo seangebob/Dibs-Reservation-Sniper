@@ -1,0 +1,24 @@
+# Full backend requirements for Dibs, generated from pyproject.toml.
+# Installs everything needed to run the API, the background worker, and the
+# test suite -- convenient for a live demo where `pip install -e ".[worker,test]"`
+# isn't as obvious to reach for.
+#
+#   pip install -r requirements.txt
+#
+# Source of truth for versions is pyproject.toml; keep the two in sync.
+
+# --- API ---
+fastapi==0.141.1
+openai==3.2.0
+pydantic==2.13.4
+redis==7.4.1
+tzdata==2026.3
+uvicorn==0.52.3
+
+# --- Background worker (Milestone 3) ---
+celery==5.6.3
+
+# --- Tests / demo scripts ---
+httpx==0.28.1
+pytest==9.1.1
+pytest-cov==7.1.0
