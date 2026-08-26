@@ -14,7 +14,7 @@
   - Record the concrete failing case IDs and observed counts/messages; do not weaken assertions or change production code as part of this task.
   - _Requirements: 1.1, 1.2, 2.1, 2.2_
 
-- [ ] 2. Write preservation property tests before implementing the fix
+- [-] 2. Write preservation property tests before implementing the fix
   - **Property 2: Preservation** - Host Logging, Startup, API, and Configuration Semantics
   - **IMPORTANT**: Follow observation-first methodology: run the unfixed application for all non-bug-condition and application-state cases, record the actual topology/state/output, encode those observations, and confirm the tests pass before changing production code.
   - In `tests/test_logging_config.py`, parameterize host-owned layouts: a root handler, a `backend` handler, a sentinel formatter/filter/stream, an explicit `backend` level, and `backend.propagate = False`. Snapshot object identities and values, enter lifespan, emit one unique record, and assert handler lists, handler/logger levels, propagation, filters, streams, and formatter identities remain unchanged and delivery count matches the unfixed baseline.

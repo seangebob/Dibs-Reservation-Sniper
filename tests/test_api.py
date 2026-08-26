@@ -545,3 +545,418 @@ def test_default_booking_service_is_wired_without_overrides() -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "AVAILABILITY_FOUND"
     assert response.json()["slots"][0]["provider"] == "mock"
+
+
+# Preservation baselines for watch startup and infrastructure selection.
+import logging
+import sys
+import types
+from typing import Any
+
+from starlette.requests import Request
+
+from backend.config import ConfigurationError, WatchSettings
+from backend.db import database
+from backend.db.repositories.watches import RedisWatchRepository
+from backend.workers.queue import AsyncioTaskQueue, CeleryTaskQueue
+
+
+_PRESERVATION_ENVIRONMENT_NAMES = (
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL",
+    "RESERVATION_TIMEZONE",
+    "REDIS_URL",
+    "WATCH_POLL_INTERVAL_SECONDS",
+    "WATCH_POLL_JITTER_SECONDS",
+    "WATCH_MAX_POLL_ATTEMPTS",
+)
+_PRESERVATION_WATCH_QUERY = {
+    "venue_name": "Cote",
+    "venue_type": "RESTAURANT",
+    "market": "Kitchener-Waterloo-Cambridge, ON",
+    "party_size": 4,
+    "date": "2026-09-05",
+    "preferred_time": "19:00",
+    "time_window": None,
+    "duration_minutes": None,
+    "special_requests": [],
+}
+_INVALID_WATCH_SETTINGS_CASES = [
+    pytest.param(
+        {"RESERVATION_TIMEZONE": "Mars/Olympus_Mons"},
+        "Unknown RESERVATION_TIMEZONE: Mars/Olympus_Mons",
+        id="unknown-reservation-timezone",
+    ),
+    pytest.param(
+        {"REDIS_URL": "http://localhost:6379/0"},
+        "Invalid REDIS_URL: 'http://localhost:6379/0'. Expected a redis://, "
+        "rediss://, or unix:// URL.",
+        id="unsupported-redis-url-scheme",
+    ),
+    pytest.param(
+        {"WATCH_POLL_INTERVAL_SECONDS": "fast"},
+        "WATCH_POLL_INTERVAL_SECONDS must be an integer",
+        id="interval-non-integer",
+    ),
+    pytest.param(
+        {"WATCH_POLL_INTERVAL_SECONDS": "0"},
+        "WATCH_POLL_INTERVAL_SECONDS must be a positive integer",
+        id="interval-non-positive",
+    ),
+    pytest.param(
+        {"WATCH_POLL_INTERVAL_SECONDS": "14"},
+        "WATCH_POLL_INTERVAL_SECONDS must be between 15 and 3600",
+        id="interval-below-minimum",
+    ),
+    pytest.param(
+        {"WATCH_POLL_INTERVAL_SECONDS": "3601"},
+        "WATCH_POLL_INTERVAL_SECONDS must be between 15 and 3600",
+        id="interval-above-maximum",
+    ),
+    pytest.param(
+        {"WATCH_POLL_JITTER_SECONDS": "noisy"},
+        "WATCH_POLL_JITTER_SECONDS must be an integer",
+        id="jitter-non-integer",
+    ),
+    pytest.param(
+        {"WATCH_POLL_JITTER_SECONDS": "-1"},
+        "WATCH_POLL_JITTER_SECONDS must be a positive integer",
+        id="jitter-negative",
+    ),
+    pytest.param(
+        {
+            "WATCH_POLL_INTERVAL_SECONDS": "30",
+            "WATCH_POLL_JITTER_SECONDS": "30",
+        },
+        "WATCH_POLL_JITTER_SECONDS must be smaller than "
+        "WATCH_POLL_INTERVAL_SECONDS",
+        id="jitter-greater-than-or-equal-to-interval",
+    ),
+    pytest.param(
+        {"WATCH_MAX_POLL_ATTEMPTS": "many"},
+        "WATCH_MAX_POLL_ATTEMPTS must be an integer",
+        id="max-attempts-non-integer",
+    ),
+    pytest.param(
+        {"WATCH_MAX_POLL_ATTEMPTS": "0"},
+        "WATCH_MAX_POLL_ATTEMPTS must be a positive integer",
+        id="max-attempts-non-positive",
+    ),
+]
+_VALID_WATCH_SETTINGS_CASES = [
+    pytest.param(
+        {
+            "RESERVATION_TIMEZONE": "UTC",
+            "REDIS_URL": "unix:///tmp/dibs-preservation.sock",
+            "WATCH_POLL_INTERVAL_SECONDS": "15",
+            "WATCH_POLL_JITTER_SECONDS": "0",
+            "WATCH_MAX_POLL_ATTEMPTS": "1",
+        },
+        WatchSettings(
+            timezone_name="UTC",
+            redis_url="unix:///tmp/dibs-preservation.sock",
+            poll_interval_seconds=15,
+            poll_jitter_seconds=0,
+            max_poll_attempts=1,
+        ),
+        id="minimum-interval-zero-jitter",
+    ),
+    pytest.param(
+        {
+            "RESERVATION_TIMEZONE": "America/Vancouver",
+            "REDIS_URL": "rediss://cache.example.test:6380/2",
+            "WATCH_POLL_INTERVAL_SECONDS": "30",
+            "WATCH_POLL_JITTER_SECONDS": "5",
+            "WATCH_MAX_POLL_ATTEMPTS": "7",
+        },
+        WatchSettings(
+            timezone_name="America/Vancouver",
+            redis_url="rediss://cache.example.test:6380/2",
+            poll_interval_seconds=30,
+            poll_jitter_seconds=5,
+            max_poll_attempts=7,
+        ),
+        id="representative-interval-jitter",
+    ),
+    pytest.param(
+        {
+            "RESERVATION_TIMEZONE": "America/Toronto",
+            "REDIS_URL": "redis://cache.example.test:6379/0",
+            "WATCH_POLL_INTERVAL_SECONDS": "3600",
+            "WATCH_POLL_JITTER_SECONDS": "3599",
+            "WATCH_MAX_POLL_ATTEMPTS": "999",
+        },
+        WatchSettings(
+            timezone_name="America/Toronto",
+            redis_url="redis://cache.example.test:6379/0",
+            poll_interval_seconds=3600,
+            poll_jitter_seconds=3599,
+            max_poll_attempts=999,
+        ),
+        id="maximum-interval-valid-jitter",
+    ),
+]
+
+
+class _PreservationRedisClient:
+    def __init__(self, *, reachable: bool) -> None:
+        self.reachable = reachable
+        self.ping_calls = 0
+        self.close_calls = 0
+
+    async def ping(self) -> bool:
+        self.ping_calls += 1
+        return self.reachable
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+
+
+def _prepare_preservation_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, str | None] | None = None,
+) -> None:
+    for name in _PRESERVATION_ENVIRONMENT_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-preservation")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    for name, value in (overrides or {}).items():
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+
+def _assert_watch_service_settings(
+    fresh_app: Any,
+    settings: WatchSettings,
+) -> None:
+    service = fresh_app.state.watch_service
+    assert service._repository is fresh_app.state.watch_repository
+    assert service._queue is fresh_app.state.watch_queue
+    assert service._schedule.interval_seconds == float(
+        settings.poll_interval_seconds
+    )
+    assert service._schedule.jitter_seconds == float(settings.poll_jitter_seconds)
+    assert service._max_attempts == settings.max_poll_attempts
+    assert str(service._reservation_timezone) == settings.timezone_name
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected_error"),
+    _INVALID_WATCH_SETTINGS_CASES,
+)
+def test_invalid_watch_settings_preserve_startup_dependency_and_api_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+    environment: dict[str, str],
+    expected_error: str,
+) -> None:
+    """**Validates: Requirements 3.3**"""
+
+    _prepare_preservation_environment(monkeypatch, environment)
+    fresh = create_app()
+
+    with TestClient(fresh) as client:
+        retained_error = fresh.state.watch_settings_error
+        assert fresh.state.watch_settings is None
+        assert isinstance(retained_error, ConfigurationError)
+        assert str(retained_error) == expected_error
+
+        with pytest.raises(ConfigurationError) as direct_error:
+            get_watch_service(Request({"type": "http", "app": fresh}))
+        assert direct_error.value is retained_error
+
+        response = client.post(
+            "/api/watches",
+            json=_PRESERVATION_WATCH_QUERY,
+        )
+        assert response.status_code == 503
+        assert response.json() == {"detail": str(retained_error)}
+        assert client.get("/health").json() == {
+            "status": "ok",
+            "service": "dibs-mvp",
+            "config": "error",
+            "watch_store": "memory",
+        }
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected_settings"),
+    _VALID_WATCH_SETTINGS_CASES,
+)
+def test_valid_watch_settings_preserve_service_state_without_validation_error(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    environment: dict[str, str],
+    expected_settings: WatchSettings,
+) -> None:
+    """**Validates: Requirements 3.4**"""
+
+    _prepare_preservation_environment(monkeypatch, environment)
+    redis_client = _PreservationRedisClient(reachable=False)
+    monkeypatch.setattr(
+        database,
+        "create_redis_client",
+        lambda _url: redis_client,
+    )
+    fresh = create_app()
+    initial_queue = fresh.state.watch_queue
+
+    with caplog.at_level(logging.ERROR, logger="backend.main"):
+        with TestClient(fresh) as client:
+            assert fresh.state.watch_settings == expected_settings
+            assert fresh.state.watch_settings_error is None
+            assert isinstance(fresh.state.watch_repository, InMemoryWatchRepository)
+            assert isinstance(fresh.state.watch_queue, AsyncioTaskQueue)
+            assert fresh.state.watch_queue_mode == "asyncio"
+            assert fresh.state.redis is None
+            assert initial_queue._closed is True
+            _assert_watch_service_settings(fresh, expected_settings)
+            assert client.get("/health").json() == {
+                "status": "ok",
+                "service": "dibs-mvp",
+                "config": "ok",
+                "watch_store": "memory",
+            }
+            final_queue = fresh.state.watch_queue
+
+    assert redis_client.ping_calls == 1
+    assert redis_client.close_calls == 1
+    assert final_queue._closed is True
+    assert not [
+        record
+        for record in caplog.records
+        if record.name == "backend.main" and record.levelno >= logging.ERROR
+    ]
+
+
+@pytest.mark.parametrize(
+    ("worker_available", "expected_queue_type", "expected_mode"),
+    [
+        pytest.param(False, AsyncioTaskQueue, "asyncio", id="optional-worker-unavailable"),
+        pytest.param(True, CeleryTaskQueue, "celery", id="optional-worker-available"),
+    ],
+)
+def test_redis_available_preserves_repository_queue_and_client_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+    worker_available: bool,
+    expected_queue_type: type[Any],
+    expected_mode: str,
+) -> None:
+    """**Validates: Requirements 3.4**"""
+
+    environment = {
+        "RESERVATION_TIMEZONE": "UTC",
+        "REDIS_URL": "redis://preservation.example.test:6379/4",
+        "WATCH_POLL_INTERVAL_SECONDS": "45",
+        "WATCH_POLL_JITTER_SECONDS": "5",
+        "WATCH_MAX_POLL_ATTEMPTS": "9",
+    }
+    expected_settings = WatchSettings(
+        timezone_name="UTC",
+        redis_url="redis://preservation.example.test:6379/4",
+        poll_interval_seconds=45,
+        poll_jitter_seconds=5,
+        max_poll_attempts=9,
+    )
+    _prepare_preservation_environment(monkeypatch, environment)
+    redis_client = _PreservationRedisClient(reachable=True)
+    monkeypatch.setattr(
+        database,
+        "create_redis_client",
+        lambda _url: redis_client,
+    )
+
+    module_name = "backend.workers.tasks.monitor_watch"
+    fake_task = object()
+    if worker_available:
+        fake_worker_module = types.ModuleType(module_name)
+        fake_worker_module.monitor_watch = fake_task
+        monkeypatch.setitem(sys.modules, module_name, fake_worker_module)
+    else:
+        monkeypatch.setitem(sys.modules, module_name, None)
+
+    fresh = create_app()
+    initial_queue = fresh.state.watch_queue
+    with TestClient(fresh) as client:
+        assert fresh.state.watch_settings == expected_settings
+        assert fresh.state.watch_settings_error is None
+        assert redis_client.ping_calls == 1
+        assert redis_client.close_calls == 0
+        assert initial_queue._closed is True
+        assert fresh.state.redis is redis_client
+        assert isinstance(fresh.state.watch_repository, RedisWatchRepository)
+        assert fresh.state.watch_repository._client is redis_client
+        assert isinstance(fresh.state.watch_queue, expected_queue_type)
+        assert fresh.state.watch_queue_mode == expected_mode
+        if worker_available:
+            assert fresh.state.watch_queue._task is fake_task
+        _assert_watch_service_settings(fresh, expected_settings)
+        assert client.get("/health").json() == {
+            "status": "ok",
+            "service": "dibs-mvp",
+            "config": "ok",
+            "watch_store": "redis",
+        }
+
+    assert redis_client.close_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected_error"),
+    [
+        pytest.param(
+            {"OPENAI_API_KEY": None},
+            "OPENAI_API_KEY is not configured. Set it in the environment "
+            "before starting the service.",
+            id="missing-openai-api-key",
+        ),
+        pytest.param(
+            {"OPENAI_MODEL": "not a model"},
+            "Invalid OPENAI_MODEL name: 'not a model'. Expected an identifier "
+            "such as 'gpt-4o-mini'.",
+            id="invalid-openai-model",
+        ),
+    ],
+)
+def test_non_watch_settings_errors_do_not_become_watch_validation_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    environment: dict[str, str | None],
+    expected_error: str,
+) -> None:
+    """**Validates: Requirements 3.3, 3.4**"""
+
+    _prepare_preservation_environment(monkeypatch, environment)
+    redis_client = _PreservationRedisClient(reachable=False)
+    monkeypatch.setattr(
+        database,
+        "create_redis_client",
+        lambda _url: redis_client,
+    )
+    fresh = create_app()
+
+    with caplog.at_level(logging.ERROR, logger="backend.main"):
+        with TestClient(fresh) as client:
+            assert fresh.state.watch_settings == WatchSettings()
+            assert fresh.state.watch_settings_error is None
+            assert fresh.state.settings is None
+            assert isinstance(fresh.state.settings_error, ConfigurationError)
+            assert str(fresh.state.settings_error) == expected_error
+            assert isinstance(fresh.state.watch_repository, InMemoryWatchRepository)
+            assert fresh.state.watch_queue_mode == "asyncio"
+            _assert_watch_service_settings(fresh, WatchSettings())
+            assert client.get("/health").json() == {
+                "status": "ok",
+                "service": "dibs-mvp",
+                "config": "error",
+                "watch_store": "memory",
+            }
+
+    assert redis_client.ping_calls == 1
+    assert redis_client.close_calls == 1
+    assert not [
+        record
+        for record in caplog.records
+        if record.name == "backend.main" and record.levelno >= logging.ERROR
+    ]

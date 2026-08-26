@@ -456,3 +456,234 @@ def test_invalid_watch_settings_emit_one_actionable_startup_error(
     assert error_line.split(":", 1)[0] == "ERROR"
     assert all(fragment in error_line for fragment in affected_fragments)
     assert reason_fragment in error_line
+
+
+# Task 2 preservation baselines were observed against the unfixed lifespan:
+# it does not mutate logging topology, a reachable host handler receives one
+# record, and explicit level/propagation choices without a handler receive none.
+class _SentinelFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return True
+
+
+def _assert_logger_state_unchanged(state: _LoggerState) -> None:
+    assert state.logger.handlers is state.handler_list
+    assert tuple(state.logger.handlers) == state.handlers
+    assert state.logger.level == state.level
+    assert state.logger.disabled is state.disabled
+    assert state.logger.propagate is state.propagate
+    assert tuple(state.logger.filters) == state.filters
+
+
+def _assert_handler_state_unchanged(state: _HandlerState) -> None:
+    assert state.handler.level == state.level
+    assert tuple(state.handler.filters) == state.filters
+    assert state.handler.formatter is state.formatter
+    if state.has_stored_stream:
+        assert state.handler.stream is state.stream  # type: ignore[attr-defined]
+
+
+@pytest.mark.usefixtures("pristine_backend_logging")
+@pytest.mark.parametrize(
+    (
+        "layout",
+        "handler_owner",
+        "handler_level",
+        "backend_level",
+        "backend_propagate",
+        "record_level",
+        "observed_delivery_count",
+    ),
+    [
+        pytest.param(
+            "root-handler",
+            "root",
+            logging.NOTSET,
+            logging.NOTSET,
+            True,
+            logging.INFO,
+            1,
+            id="root-handler",
+        ),
+        pytest.param(
+            "backend-handler",
+            "backend",
+            logging.NOTSET,
+            logging.NOTSET,
+            True,
+            logging.INFO,
+            1,
+            id="backend-handler",
+        ),
+        pytest.param(
+            "sentinel-metadata",
+            "root",
+            logging.WARNING,
+            logging.NOTSET,
+            True,
+            logging.WARNING,
+            1,
+            id="sentinel-formatter-filter-stream",
+        ),
+        pytest.param(
+            "explicit-backend-level",
+            None,
+            logging.NOTSET,
+            logging.INFO,
+            True,
+            logging.INFO,
+            0,
+            id="explicit-backend-level",
+        ),
+        pytest.param(
+            "propagation-disabled",
+            None,
+            logging.NOTSET,
+            logging.NOTSET,
+            False,
+            logging.INFO,
+            0,
+            id="backend-propagate-false",
+        ),
+    ],
+)
+def test_host_logging_topology_and_delivery_match_unfixed_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+    layout: str,
+    handler_owner: str | None,
+    handler_level: int,
+    backend_level: int,
+    backend_propagate: bool,
+    record_level: int,
+    observed_delivery_count: int,
+) -> None:
+    """**Validates: Requirements 3.1**"""
+
+    _prepare_environment(monkeypatch)
+    monkeypatch.setattr(main_module, "_attach_redis", _skip_redis)
+
+    root = logging.getLogger()
+    backend_logger = logging.getLogger("backend")
+    descendant = logging.getLogger("backend.exploration.worker")
+    backend_logger.setLevel(backend_level)
+    backend_logger.propagate = backend_propagate
+
+    root_filter = _SentinelFilter()
+    backend_filter = _SentinelFilter()
+    root.addFilter(root_filter)
+    backend_logger.addFilter(backend_filter)
+
+    stream = StringIO()
+    handler: logging.StreamHandler | None = None
+    handler_state: _HandlerState | None = None
+    if handler_owner is not None:
+        handler = logging.StreamHandler(stream)
+        handler.setLevel(handler_level)
+        handler_filter = _SentinelFilter()
+        formatter = logging.Formatter(
+            "sentinel:%(name)s:%(levelname)s:%(message)s"
+        )
+        handler.addFilter(handler_filter)
+        handler.setFormatter(formatter)
+        logging.getLogger(handler_owner if handler_owner == "backend" else "").addHandler(
+            handler
+        )
+        handler_state = _HandlerState(
+            handler=handler,
+            level=handler.level,
+            filters=tuple(handler.filters),
+            formatter=handler.formatter,
+            stream=handler.stream,
+            has_stored_stream=True,
+        )
+
+    probe = _RecordProbe()
+    descendant.addFilter(probe)
+    logger_states = [
+        _LoggerState(
+            logger=logger,
+            handler_list=logger.handlers,
+            handlers=tuple(logger.handlers),
+            level=logger.level,
+            disabled=logger.disabled,
+            propagate=logger.propagate,
+            filters=tuple(logger.filters),
+        )
+        for logger in (root, backend_logger, descendant)
+    ]
+    message = f"preservation-{layout}-record"
+
+    with redirect_stderr(StringIO()), TestClient(create_app()):
+        descendant.log(record_level, message)
+
+    assert [record.getMessage() for record in probe.records] == [message]
+    assert stream.getvalue().count(message) == observed_delivery_count
+    for logger_state in logger_states:
+        _assert_logger_state_unchanged(logger_state)
+    if handler_state is not None:
+        _assert_handler_state_unchanged(handler_state)
+
+
+@pytest.mark.usefixtures("pristine_backend_logging")
+@pytest.mark.parametrize("lifespan_entries", [1, 2, 5])
+def test_repeated_lifespans_do_not_accumulate_logging_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    lifespan_entries: int,
+) -> None:
+    """**Validates: Requirements 3.1, 3.2**"""
+
+    _prepare_environment(monkeypatch)
+    monkeypatch.setattr(main_module, "_attach_redis", _skip_redis)
+
+    root = logging.getLogger()
+    backend_logger = logging.getLogger("backend")
+    descendant = logging.getLogger("backend.exploration.worker")
+    stream = StringIO()
+    sentinel_filter = _SentinelFilter()
+    sentinel_formatter = logging.Formatter("repeat:%(message)s")
+    handler = logging.StreamHandler(stream)
+    handler.addFilter(sentinel_filter)
+    handler.setFormatter(sentinel_formatter)
+    root.addHandler(handler)
+
+    root_state = _LoggerState(
+        logger=root,
+        handler_list=root.handlers,
+        handlers=tuple(root.handlers),
+        level=root.level,
+        disabled=root.disabled,
+        propagate=root.propagate,
+        filters=tuple(root.filters),
+    )
+    backend_state = _LoggerState(
+        logger=backend_logger,
+        handler_list=backend_logger.handlers,
+        handlers=tuple(backend_logger.handlers),
+        level=backend_logger.level,
+        disabled=backend_logger.disabled,
+        propagate=backend_logger.propagate,
+        filters=tuple(backend_logger.filters),
+    )
+    handler_state = _HandlerState(
+        handler=handler,
+        level=handler.level,
+        filters=tuple(handler.filters),
+        formatter=handler.formatter,
+        stream=handler.stream,
+        has_stored_stream=True,
+    )
+    fresh = create_app()
+    messages: list[str] = []
+
+    for entry in range(lifespan_entries):
+        message = f"preservation-lifespan-{lifespan_entries}-{entry}"
+        messages.append(message)
+        with TestClient(fresh):
+            descendant.info(message)
+
+        _assert_logger_state_unchanged(root_state)
+        _assert_logger_state_unchanged(backend_state)
+        _assert_handler_state_unchanged(handler_state)
+        assert stream.getvalue().count(message) == 1
+
+    assert all(stream.getvalue().count(message) == 1 for message in messages)
