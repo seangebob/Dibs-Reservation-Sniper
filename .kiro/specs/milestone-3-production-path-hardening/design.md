@@ -64,6 +64,7 @@ FUNCTION isBugCondition(input)
                   AND input.responseClaimsUnqualifiedMonitoringUntilDate
 
   concurrencyBug := input.sameWindowDeliveryCount > 1
+                    AND input.noPriorOwnerCrashOrLeaseExpiry
                     AND (input.providerCallCount > 1
                          OR input.logicalSuccessorCount > 1
                          OR input.committedAttemptCount > 1
@@ -189,7 +190,8 @@ FUNCTION expectedBehavior(input, result)
   IF isBugCondition(input) THEN
     RETURN result.policyUsesCheckedLifetimeDerivation
            AND result.messageMatchesEffectivePolicy
-           AND result.providerCallsPerWindow <= 1
+           AND result.concurrentProviderCallsPerWindow <= 1
+           AND result.providerCallsWithoutPriorCrashOrLeaseExpiryPerWindow <= 1
            AND result.attemptCommitsPerWindow <= 1
            AND result.logicalSuccessorsPerWindow <= 1
            AND result.terminalEventsPerTransition <= 1
@@ -220,7 +222,7 @@ _For any_ input where the bug condition does not hold, the fixed system SHALL pr
 
 Property 3: Bug Condition - Single-Flight, Fenced, Recoverable Cadence Windows
 
-_For any_ number or interleaving of Celery/asyncio deliveries, cancellation/terminal transitions, crashes, and lease takeovers for one `window_id`, the repository SHALL grant at most one unexpired owner, commit at most one availability result/attempt and one logical successor or terminal event, reject every stale token/revision, preserve terminal monotonicity and booking idempotency, and permit takeover only after the finite lease expires.
+_For any_ number or interleaving of Celery/asyncio deliveries, cancellation/terminal transitions, crashes, and lease takeovers for one `window_id`, the repository SHALL grant at most one unexpired owner, allow only that owner to call the provider during a lease epoch, commit at most one availability result/attempt and one logical successor or terminal event, reject every stale token/revision, preserve terminal monotonicity and booking idempotency, and permit takeover only after the finite lease expires. A post-crash owner MAY repeat provider work whose completion is unknowable, but it SHALL reuse the same window and still commit no more than once.
 
 **Validates: Requirements 2.4, 2.5, 2.6**
 
