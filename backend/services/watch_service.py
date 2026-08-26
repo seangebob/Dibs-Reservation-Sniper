@@ -6,6 +6,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from backend.config import DEFAULT_MAX_POLL_ATTEMPTS
 from backend.integrations.base import (
@@ -55,6 +56,7 @@ class WatchService:
         notifier: NotificationService | None = None,
         max_attempts: int = DEFAULT_MAX_POLL_ATTEMPTS,
         clock: Clock | None = None,
+        timezone_name: str | None = None,
     ) -> None:
         self._repository = repository
         self._adapter = adapter
@@ -63,6 +65,9 @@ class WatchService:
         self._notifier = notifier or LoggingNotificationService()
         self._max_attempts = max_attempts
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._reservation_timezone = (
+            ZoneInfo(timezone_name) if timezone_name is not None else None
+        )
 
     async def create_from_intent(
         self,
@@ -85,6 +90,8 @@ class WatchService:
         """Persist a new watch and dispatch its first check immediately."""
 
         now = self._clock()
+        timezone = self._reservation_timezone or now.tzinfo or UTC
+
         watch = Watch(
             watch_id=f"watch_{uuid4().hex}",
             status=WatchStatus.ACTIVE,
@@ -92,7 +99,7 @@ class WatchService:
             auto_book=auto_book,
             created_at=now,
             updated_at=now,
-            expires_at=default_expiry(query, now),
+            expires_at=default_expiry(query, now, timezone),
             attempts=0,
             max_attempts=self._max_attempts,
             next_check_at=now,
@@ -133,8 +140,7 @@ class WatchService:
         """Run one availability check and decide what happens next.
 
         This is the queue handler. Every exit path either finishes the watch or
-        schedules exactly one successor job, so a watch can never fan out into
-        multiple concurrent polling chains.
+        schedules exactly one successor job.
         """
 
         watch = await self._repository.get(watch_id)
@@ -174,12 +180,7 @@ class WatchService:
         return await self._reschedule(attempted, now)
 
     async def _search(self, watch: Watch) -> tuple[list[Any], str | None]:
-        """Check availability, turning adapter failures into a retryable miss.
-
-        A provider outage is temporary; killing the watch over it would lose
-        the reservation the user actually wanted. The error is recorded on the
-        watch so it stays visible.
-        """
+        """Check availability, turning adapter failures into a retryable miss."""
 
         try:
             slots = await self._adapter.search_availability(watch.query)
@@ -197,21 +198,35 @@ class WatchService:
 
         recorded = slots[:MAX_RECORDED_SLOTS]
         if watch.auto_book:
-            confirmation = await self._book(watch, slots)
-            if confirmation is not None:
-                booked = await self._repository.save(
-                    watch.model_copy(
-                        update={
-                            "status": WatchStatus.BOOKED,
-                            "found_slots": [confirmation.slot],
-                            "booking": confirmation,
-                            "next_check_at": None,
-                            "updated_at": now,
-                        }
-                    )
+            try:
+                confirmation = await self._book(watch, slots)
+            except AdapterError as exc:
+                return await self._retry_auto_book(
+                    watch,
+                    now,
+                    str(exc)[:500] or "The reservation provider failed",
                 )
-                await self._notifier.notify(booked, WatchEvent.BOOKED)
-                return WatchPollResult(outcome=WatchPollOutcome.BOOKED, watch=booked)
+
+            if confirmation is None:
+                return await self._retry_auto_book(
+                    watch,
+                    now,
+                    "Available slots disappeared before they could be booked",
+                )
+
+            booked = await self._repository.save(
+                watch.model_copy(
+                    update={
+                        "status": WatchStatus.BOOKED,
+                        "found_slots": [confirmation.slot],
+                        "booking": confirmation,
+                        "next_check_at": None,
+                        "updated_at": now,
+                    }
+                )
+            )
+            await self._notifier.notify(booked, WatchEvent.BOOKED)
+            return WatchPollResult(outcome=WatchPollOutcome.BOOKED, watch=booked)
 
         found = await self._repository.save(
             watch.model_copy(
@@ -226,17 +241,23 @@ class WatchService:
         await self._notifier.notify(found, WatchEvent.AVAILABILITY_FOUND)
         return WatchPollResult(outcome=WatchPollOutcome.FOUND, watch=found)
 
+    async def _retry_auto_book(
+        self,
+        watch: Watch,
+        now: datetime,
+        error: str,
+    ) -> WatchPollResult:
+        retrying = watch.model_copy(update={"last_error": error})
+        if retrying.is_exhausted(now):
+            return await self._expire(retrying, now)
+        return await self._reschedule(retrying, now)
+
     async def _replayed_booking(
         self,
         watch: Watch,
         now: datetime,
     ) -> WatchPollResult | None:
-        """Recover a reservation an earlier delivery of this job already made.
-
-        A broker that redelivers after the booking succeeded but before the
-        watch was saved would otherwise re-search, find the slot it just took
-        marked unavailable, and keep polling for a table it already holds.
-        """
+        """Recover a reservation an earlier delivery of this job already made."""
 
         if not watch.auto_book:
             return None
@@ -255,15 +276,11 @@ class WatchService:
                 }
             )
         )
+        await self._notifier.notify(booked, WatchEvent.BOOKED)
         return WatchPollResult(outcome=WatchPollOutcome.BOOKED, watch=booked)
 
     async def _book(self, watch: Watch, slots: list[Any]) -> Any | None:
-        """Take the first slot that is still there when we reach for it.
-
-        The idempotency key is the watch itself, so a job retried by the broker
-        after a partial failure replays the same reservation instead of making
-        a second one.
-        """
+        """Book the first slot that remains available."""
 
         for slot in slots:
             try:
@@ -273,14 +290,16 @@ class WatchService:
                 )
             except (SlotUnavailableError, SlotNotFoundError):
                 continue
-            except AdapterError:
-                return None
         return None
 
     async def _reschedule(self, watch: Watch, now: datetime) -> WatchPollResult:
-        """Queue the next check at a jittered offset from now."""
+        """Queue the next check without scheduling beyond the watch deadline."""
 
-        delay = self._schedule.next_delay()
+        remaining_seconds = (watch.expires_at - now).total_seconds()
+        if remaining_seconds <= 0:
+            return await self._expire(watch, now)
+
+        delay = min(self._schedule.next_delay(), remaining_seconds)
         pending = await self._repository.save(
             watch.model_copy(
                 update={
