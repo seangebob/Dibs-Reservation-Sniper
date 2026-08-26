@@ -27,6 +27,7 @@ from backend.integrations.base import (
     SlotUnavailableError,
 )
 from backend.integrations.mock_booking import MockBookingAdapter
+from backend.logging_config import configure_application_logging
 from backend.models.reservation import PromptExecutionResult
 from backend.orchestrator.engine import OrchestratorEngine
 from backend.orchestrator.providers import OpenAIIntentProvider, ProviderError
@@ -54,12 +55,19 @@ __all__ = [
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Validate configuration on boot and release clients on shutdown."""
 
+    configure_application_logging()
+
     try:
         app.state.watch_settings = WatchSettings.from_environment()
         app.state.watch_settings_error = None
     except ConfigurationError as exc:
         app.state.watch_settings = None
         app.state.watch_settings_error = exc
+        logger.error(
+            "Watch settings validation failed during startup; "
+            "watch-dependent requests will return 503: %s",
+            exc,
+        )
 
     try:
         app.state.settings = Settings.from_environment()

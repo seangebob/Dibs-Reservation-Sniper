@@ -4,6 +4,11 @@
       "status": "passed",
       "failingExample": "Final pytest result: `17 failed, 4 passed in 1.35s`. Backend INFO counterexamples: `[exploration-info] exploration-backend-info-01`, `[nested-worker-info] exploration-worker-info-03`, and `[real-descendant-info] exploration-scheduler-info-05` each produced `E AssertionError: assert 0 == 1` because captured terminal output was `''`, while each producer probe contained exactly one matching LogRecord. Notification counterexamples `[availability-found]`, `[booked]`, and `[expired]` likewise produced one real LoggingNotificationService LogRecord but terminal occurrence count 0. All malformed-setting IDs `[unknown-reservation-timezone]`, `[unsupported-redis-url-scheme]`, `[interval-non-integer]`, `[interval-non-positive]`, `[interval-below-minimum]`, `[interval-above-maximum]`, `[jitter-non-integer]`, `[jitter-negative]`, `[jitter-greater-than-or-equal-to-interval]`, `[max-attempts-non-integer]`, and `[max-attempts-non-positive]` retained the expected ConfigurationError but produced `E assert 0 == 1` with `actionable_errors == []`. The 4 passing cases were the three backend WARNING records and Redis fallback WARNING, which remained terminal-visible through Python's lastResort handler.",
       "lastRunTimestamp": 1787760715555
+    },
+    "2. Write preservation property tests before implementing the fix": {
+      "status": "failed",
+      "failingExample": "Focused run result: 5 failed, 21 passed, 49 deselected. Failing parameter cases: test_valid_watch_settings_preserve_service_state_without_validation_error[minimum-interval-zero-jitter], [representative-interval-jitter], [maximum-interval-valid-jitter], and test_non_watch_settings_errors_do_not_become_watch_validation_errors[missing-openai-api-key], [invalid-openai-model]. Each failed at `assert isinstance(fresh.state.watch_repository, InMemoryWatchRepository)` because the observed value was `<backend.db.repositories.watches.RedisWatchRepository ...>`. Root cause triage: `_PreservationRedisClient(reachable=False).ping()` returned False without raising, while `backend.db.database.ping` defines success as completion without exception and therefore returned True; the fake did not reproduce Redis unavailability.",
+      "lastRunTimestamp": 1787766694842
     }
   },
   "executionHistory": {
@@ -24,6 +29,13 @@
         "executionId": "862d7f30-9fe1-4cff-a35e-11fc288e7f74",
         "chatSessionId": "sess_bfffa97c-2e5e-4a90-8918-d4f0c0f146f4",
         "timestamp": 1787765293894
+      }
+    ],
+    "3. Fix application logging and startup error visibility": [
+      {
+        "executionId": "29078e32-e9f4-4097-925a-f7848e73fc4f",
+        "chatSessionId": "sess_ae323f0b-60b4-46ff-b063-3855277b08ac",
+        "timestamp": 1787768120215
       }
     ]
   }
