@@ -294,8 +294,9 @@ Existing names remain accepted. `WATCH_MAX_POLL_ATTEMPTS` is documented as the a
 | `WATCH_POLL_INTERVAL_SECONDS` | 180 | existing 15–3,600 |
 | `WATCH_POLL_JITTER_SECONDS` | 30 | 0 ≤ jitter < interval |
 | `WATCH_MAX_POLL_ATTEMPTS` | 25,000 | 1–1,000,000 |
-| `WATCH_POLL_LEASE_SECONDS` | 120 | 91–3,600; strictly greater than the shared 90-second Celery hard limit |
-| `WATCH_PROVIDER_CALL_TIMEOUT_SECONDS` | 55 | 1–59; below the existing 60-second soft limit |
+| `WATCH_POLL_LEASE_SECONDS` | 120 | 91–3,600 and strictly greater than shared 90-second hard limit; default margin 30 seconds |
+| `WATCH_PROVIDER_CALL_TIMEOUT_SECONDS` | 45 | 1–45; bounds the full provider sequence |
+| `WATCH_REPOSITORY_COMMIT_TIMEOUT_SECONDS` | 5 | 1–10; used in timing validation |
 | `WATCH_PROVIDER_BACKOFF_MAX_SECONDS` | 3,600 | at least the normal interval and at most 86,400 |
 | `WATCH_TERMINAL_RETENTION_SECONDS` | 604,800 | 3,600–31,536,000 |
 | `WATCH_RECOVERY_LEADER_LEASE_SECONDS` | 30 | 5–300 |
@@ -305,7 +306,7 @@ Existing names remain accepted. `WATCH_MAX_POLL_ATTEMPTS` is documented as the a
 | `MOCK_SLOT_IDLE_TTL_SECONDS` | 3,600 | 60–604,800 |
 | `MOCK_BOOKING_RETENTION_SECONDS` | 604,800 | 604,800–31,536,000 |
 
-Parsing rejects overlong integer text before conversion, signs where not allowed, values outside bounds, and inconsistent combinations. It never loops or allocates based on a configured integer. Shared constants define Celery hard/soft limits so lease validation cannot silently diverge from `celery_app.conf`.
+Parsing rejects overlong integer text before conversion, signs where not allowed, values outside bounds, and inconsistent combinations. It never loops or allocates based on a configured integer. Shared constants define Celery limits and a five-second task-overhead reserve. Configuration must satisfy `provider_sequence_timeout + repository_commit_timeout + overhead_reserve < 60-second soft limit < 90-second hard limit < claim_lease`; invalid combinations fail before service creation, so lease validation and worker limits cannot silently diverge.
 
 Policy derivation uses integer microseconds, not floating-point division:
 
@@ -443,8 +444,9 @@ FUNCTION pollWindow(watchId, windowId, ownerId)
       RETURN repository.commitWindow(claim, EXPIRE, no successor)
     END IF
 
-    // One 55-second deadline covers search, optional booking permit, booking,
-    // replay lookup, and preparation of the commit observation.
+    localOutageCount := claim.runtime.consecutiveOutages
+    // One configured deadline (default 45 seconds) covers search, optional
+    // booking permit, booking, replay lookup, and commit preparation.
     WITH timeout(fullProviderSequenceTimeout)
       searchResult := adapter.searchAvailability(claim.watch.query)
       IF searchResult completed normally THEN localOutageCount := 0
@@ -454,6 +456,10 @@ FUNCTION pollWindow(watchId, windowId, ownerId)
         IF permit IS CancelledOrFenced THEN RETURN DUPLICATE_NOOP
         bookingResult := adapter.bookWithStableIdempotencyKey(searchResult)
       END IF
+    ON INTERNAL_PROVIDER_DEADLINE
+      // Translate only this owned timeout into AdapterError; do not catch
+      // outer CancelledError or Celery soft/hard termination.
+      providerError := ProviderSequenceTimeout("provider sequence timed out")
     END WITH
 
     IF provider sequence ended with AdapterError THEN
@@ -481,9 +487,11 @@ FUNCTION pollWindow(watchId, windowId, ownerId)
 END FUNCTION
 ```
 
-Auto-booking has an additional atomic `begin_booking(claim)` linearization point immediately before the irreversible provider call. It validates the claim/revision, changes the internal runtime phase from `POLLING` to `BOOKING`, and issues a one-use booking permit. Cancellation that wins before this point commits `CANCELLED`, revokes the claim, and prevents booking. Cancellation that arrives after the permit atomically records `cancel_requested` and waits up to the bounded full-provider/lease deadline instead of falsely returning `CANCELLED` while a booking may complete. The owner/recovery then resolves idempotently: an existing confirmation commits `BOOKED`; if the provider definitely produced no confirmation, it commits `CANCELLED` with no successor. If the owner crashes, recovery first calls `get_booking(watch:{watch_id})`; it commits `BOOKED` when found, otherwise it honors the pending cancellation before issuing any new booking permit. Thus a successful cancellation is never followed by a booking, while a cancellation that loses the documented race returns the concurrently completed `BOOKED` watch rather than lying.
+Auto-booking has an additional atomic `begin_booking(claim)` linearization point immediately before the irreversible provider call. It validates the claim/revision, changes the internal runtime phase from `POLLING` to `BOOKING`, and issues a one-use booking permit. Cancellation that wins before this point commits `CANCELLED`, revokes the claim, and prevents booking. Cancellation that arrives after the permit atomically records `cancel_requested` and waits up to the bounded provider/lease deadline instead of falsely returning `CANCELLED` while a booking may complete.
 
-The single 55-second timeout covers the full search-plus-optional-book sequence, not each call separately, and remains below Celery's 60-second soft limit. Commit commands use finite Redis socket timeouts and a 120-second lease leaves margin for commit/cleanup in both Celery and asyncio modes. `CancelledError` is never flattened. Atomic commit is run in a task protected with `asyncio.shield`; if outer cancellation arrives, the code awaits that one atomic command to a known result before re-raising. A process kill can still interrupt the command, but Redis then applies either all or none of the script.
+Booking reconciliation is explicitly tri-state: `CONFIRMED(confirmation)`, `DEFINITIVELY_ABSENT`, or `UNKNOWN`. `ReservationAdapter` gains an authoritative reconciliation method for a stable idempotency key; the supported shared mock repository can answer confirmed/definitively-absent atomically. The existing `get_booking(...)=None` is not treated as definitive after a booking permit. The owner/recovery commits `BOOKED` on confirmation and commits `CANCELLED` only on authoritative absence. `UNKNOWN` retains the internal `BOOKING`/`cancel_requested` phase and retries bounded reconciliation with the same key; it never reports successful cancellation or issues a second booking under a new identity. If a future real provider cannot provide authoritative reconciliation, it cannot support cancellation-safe auto-book mode. Thus a successful cancellation is never followed by a booking, while a cancellation that loses the documented race returns the concurrently completed `BOOKED` watch rather than lying.
+
+The configured full-sequence timeout defaults to 45 seconds and is validated together with the finite repository commit timeout and five-second overhead reserve to stay strictly below Celery's 60-second soft limit. Expiry of only this owned asyncio deadline is translated to `ProviderSequenceTimeout`, an `AdapterError` that follows the fenced no-attempt outage path; outer `CancelledError` and Celery soft/hard termination are not caught as provider outages. The 120-second claim lease remains beyond the 90-second hard limit. Atomic commit is run in a task protected with `asyncio.shield`; if outer cancellation arrives, the code awaits that one bounded atomic command to a known result before re-raising. A process kill can still interrupt the command, but Redis then applies either all or none of the script.
 
 The 120-second claim lease exceeds the 90-second hard task timeout, so another owner cannot take over while the original Celery task can still run. Asyncio mode is bounded by the same full-sequence timeout; neither mode renews a healthy claim beyond the lease. A former owner whose lease expired always fails commit, even if no new owner has yet committed.
 
@@ -493,7 +501,7 @@ A crash after external booking but before watch commit is recovered through the 
 
 Creation and every committed active successor atomically write exactly one logical schedule marker. Queue publication is deliberately outside the repository transaction, because Redis state and a Celery broker cannot share one atomic commit. “At most once scheduled” is defined and tested as one current logical marker/window and one valid dispatch generation across startup contenders; a crash with unknowable broker acceptance may require another physical publication of that same generation, but single-flight prevents another provider cadence or successor.
 
-Far-future work remains only in `dibs:watches:schedule`. Celery publication occurs when `scheduled_for <= now + WATCH_DISPATCH_HORIZON_SECONDS` (default five minutes), avoiding +7/+30-day ETA reservations and Redis broker visibility-timeout redeliveries. Startup still schedules future watches for their exact persisted due time by retaining the marker; the leader's bounded sweep publishes only as the horizon approaches. Asyncio may hold a local absolute-time wakeup, but the marker remains authoritative.
+Far-future work remains only in `dibs:watches:schedule`. Celery publication occurs when `scheduled_for <= now + WATCH_DISPATCH_HORIZON_SECONDS` (default five minutes), avoiding +7/+30-day ETA reservations and Redis broker visibility-timeout redeliveries. Startup still schedules future watches for their exact persisted due time by retaining the marker; the leader's bounded sweep publishes only as the horizon approaches. After every scan, the coordinator computes the earliest `scheduled_for - dispatch_horizon` and arms an `asyncio.Event`/timeout wake for the minimum of that instant, the normal sweep interval, and the next leader-renewal deadline. New/changed markers signal the event. Therefore even a 30-second horizon with a 3,600-second sweep cannot dispatch late. Asyncio may hold a local absolute-time wakeup, but the marker remains authoritative.
 
 Dispatch protocol:
 
@@ -533,6 +541,7 @@ The implementation saturates before exponentiation/multiplication, so a corrupt/
 ```
 publish_and_filter(slots, operation_id, now) -> available slots
 get_booking(idempotency_key, now) -> confirmation | None
+reconcile_booking(idempotency_key, booking_permit_id, now) -> CONFIRMED | DEFINITIVELY_ABSENT | UNKNOWN
 book_slot(slot_id, idempotency_key, confirmation_factory, now) -> confirmation
 release_operation(operation_id) -> None
 cleanup(now, batch_size) -> counts
@@ -608,7 +617,7 @@ A Redis ping may establish store reachability but is not by itself reported as w
 
 - **Redis unavailable during claim/commit/dispatch**: propagate only the recognized redis-py connectivity/timeout exceptions to the existing `monitor_watch` retry classifier. Never retry programming/validation/corrupt-state failures as infrastructure.
 - **Broker dispatch failure after commit**: schedule marker remains; worker retry and recovery redispatch it. No state rollback is attempted.
-- **Provider `AdapterError`**: commit outage/backoff, no availability attempt. It does not escape to Celery retry.
+- **Provider `AdapterError` or owned provider-sequence timeout**: translate the owned timeout to `ProviderSequenceTimeout`, commit outage/backoff, and consume no availability attempt. Neither escapes to Celery retry; outer cancellation and Celery time limits remain distinct.
 - **Task cancellation/soft timeout**: no snapshot save; release ownership if possible. If a booking permit was issued, persist/retain `cancel_requested` and recover through the provider idempotency key before declaring cancellation. A hard kill relies on lease expiry.
 - **Lost lease/fenced commit**: return a terminal/stale no-op observation, do not notify/book/reschedule again.
 - **Notification failure**: watch terminal state remains authoritative; event metadata records outcome and idempotency state. No watch reopening.
@@ -620,7 +629,7 @@ A Redis ping may establish store reachability but is not by itself reported as w
 
 - All timing/count inputs are bounded and all persisted datetimes are timezone-aware UTC.
 - Redis scripts receive validated scalar arguments, use namespaced/hashed keys, and avoid unbounded scans. Script source is application-owned; external Redis values are treated as untrusted and validated before model use.
-- The atomic multi-key layout supports standalone Redis and Sentinel-managed primary Redis, matching the current single Redis URL topology; Redis Cluster is not claimed. Startup checks `cluster_enabled`. If cluster mode is detected, the application refuses the Redis/Celery watch upgrade, records a degraded unsupported-topology reason, and uses the documented memory/asyncio fallback rather than executing cross-slot scripts or claiming distributed safety.
+- The atomic multi-key layout supports standalone Redis or a directly addressed primary endpoint, matching the current single Redis URL/client and Celery broker topology; Redis Cluster and Sentinel discovery/failover are not claimed. Startup checks `cluster_enabled`. If cluster mode is detected, the application refuses the Redis/Celery watch upgrade, records a degraded unsupported-topology reason, and uses the documented memory/asyncio fallback rather than executing cross-slot scripts or claiming distributed safety. Sentinel support would require separate endpoint/master-name, redis-py Sentinel, Celery transport, failover readiness, and tests outside this change.
 - `rediss://` remains supported. Redis credentials, OpenAI keys, booking details, and raw connection URLs are not logged. Structured errors use exception class and redacted endpoint identity.
 - Owner IDs and fencing tokens are random/generated, never accepted from API clients.
 - Metrics/logs should include claim result, stale/fenced count, outage count/backoff, schedule-marker age, recovery pass result, stale-index prune count, mock capacity/evictions, cleanup lag, and queue mode/readiness.
@@ -709,11 +718,11 @@ END FOR
 
 ### Unit Tests
 
-- Policy ceil-division, default offsets, short ceilings, huge/malformed bounds, and truthful formatter/header values.
-- `PollSchedule` normal/outage jitter, saturation, floor, cap, reset, and deadline clipping.
+- Policy ceil-division, default offsets, short ceilings, huge/malformed bounds, truthful formatter/header values, and the strict provider/commit/overhead/soft/hard/lease timing inequality.
+- `PollSchedule` normal/outage jitter, owned provider-timeout translation, outer cancellation/soft-limit propagation, saturation, floor, cap, reset, and deadline clipping.
 - WatchRuntime v1 migration and public Watch projection.
-- Every repository decision code, revision/token check, terminal monotonicity, booking-permit/cancel-request race, no-op outcome mapping, final-attempt expiry, index prune, TTL cleanup, and schedule marker transition for memory and exact Lua-backed fake Redis.
-- Queue window deduplication, bounded dispatch horizon, deterministic task arguments/ID, cancellation, close, and dispatch failure release.
+- Every repository decision code, revision/token check, terminal monotonicity, booking-permit/cancel-request race, tri-state booking reconciliation, no-op outcome mapping, final-attempt expiry, index prune, TTL cleanup, and schedule marker transition for memory and exact Lua-backed fake Redis.
+- Queue window deduplication, bounded dispatch horizon, exact horizon-entry wakeup under maximum sweep, deterministic task arguments/ID, cancellation, close, and dispatch failure release.
 - Recovery candidate classification, live-claim deferral, leader renewal/loss, partial failure, structured status, terminal/mock cleanup cadence, and asyncio future scheduling.
 - Mock publish/filter/book/replay/pin/admission/evict/cleanup operations, including capacity one, an all-pinned repository, a query larger than capacity, concurrent publication, and seven-day boundaries.
 - Health readiness state derivation from performed/not-performed probes.
@@ -721,7 +730,7 @@ END FOR
 
 ### Property-Based Tests
 
-Use deterministic exhaustive tables plus fixed-seed model generators (no new dependency required):
+Use deterministic exhaustive tables plus fixed-seed model generators (without a separate PBT dependency; the exact Lua harness test dependency is described above):
 
 - Generate remaining lifetimes, timezone/DST dates, interval/jitter pairs, ceilings, and jitter sequences; assert Property 1.
 - Generate duplicate counts and operation interleavings over claim, search, pre-booking permit, cancel request, booking, expire, provider result, lease expiry, takeover, commit, dispatch, and notification; compare both repositories to the oracle and assert Property 3.
@@ -738,7 +747,7 @@ Each generated run has a bounded operation count and prints the seed/operation t
 
 - FastAPI lifespan with fake Redis reachable/unreachable and worker import present/absent: assert final shared adapter repository, queue/store selection, immediate dispatch, recovery, health, and shutdown.
 - Direct decorated `monitor_watch.run` with service/runner/queue doubles: success, recognized retry, retry exhaustion, cancellation, old one-argument jobs, duplicate windows, and unchanged result shape.
-- Two service instances over one repository plus two queue instances: duplicate claim, cancellation before booking permit, cancellation after permit, lease expiry/takeover, recovery during a live claim, lost dispatch, final-attempt expiry, and terminal event cardinality.
+- Two service instances over one repository plus two queue instances: duplicate claim, cancellation before booking permit, cancellation after permit, confirmed/definitively-absent/unknown reconciliation, lease expiry/takeover, recovery during a live claim, lost dispatch, final-attempt expiry, and terminal event cardinality.
 - API and worker adapter instances over one exact-script fake Redis mock repository: atomic distinct-key race, cross-instance replay, later search exclusion, protected-capacity admission, and cleanup.
 - Recovery with due/future/far-future/expired/exhausted/missing/corrupt/terminal records, two leaders, live claims, dispatch failure, cleanup backlog, and owner death.
 - Full existing pytest suite plus the sibling `watch-route-worker-retry-hardening` tests using one-shot `python -m pytest` commands.
