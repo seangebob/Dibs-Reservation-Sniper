@@ -151,6 +151,10 @@ class WatchService:
         if watch.is_exhausted(now):
             return await self._expire(watch, now)
 
+        replayed = await self._replayed_booking(watch, now)
+        if replayed is not None:
+            return replayed
+
         slots, error = await self._search(watch)
         attempted = watch.model_copy(
             update={
@@ -220,6 +224,37 @@ class WatchService:
         await self._notifier.notify(found, WatchEvent.AVAILABILITY_FOUND)
         return WatchPollResult(outcome=WatchPollOutcome.FOUND, watch=found)
 
+    async def _replayed_booking(
+        self,
+        watch: Watch,
+        now: datetime,
+    ) -> WatchPollResult | None:
+        """Recover a reservation an earlier delivery of this job already made.
+
+        A broker that redelivers after the booking succeeded but before the
+        watch was saved would otherwise re-search, find the slot it just took
+        marked unavailable, and keep polling for a table it already holds.
+        """
+
+        if not watch.auto_book:
+            return None
+        existing = await self._adapter.get_booking(self._idempotency_key(watch))
+        if existing is None:
+            return None
+
+        booked = await self._repository.save(
+            watch.model_copy(
+                update={
+                    "status": WatchStatus.BOOKED,
+                    "found_slots": [existing.slot],
+                    "booking": existing,
+                    "next_check_at": None,
+                    "updated_at": now,
+                }
+            )
+        )
+        return WatchPollResult(outcome=WatchPollOutcome.BOOKED, watch=booked)
+
     async def _book(self, watch: Watch, slots: list[Any]) -> Any | None:
         """Take the first slot that is still there when we reach for it.
 
@@ -232,7 +267,7 @@ class WatchService:
             try:
                 return await self._adapter.book_slot(
                     slot.slot_id,
-                    idempotency_key=f"watch:{watch.watch_id}",
+                    idempotency_key=self._idempotency_key(watch),
                 )
             except (SlotUnavailableError, SlotNotFoundError):
                 continue
@@ -271,6 +306,12 @@ class WatchService:
         )
         await self._notifier.notify(expired, WatchEvent.EXPIRED)
         return WatchPollResult(outcome=WatchPollOutcome.EXPIRED, watch=expired)
+
+    @staticmethod
+    def _idempotency_key(watch: Watch) -> str:
+        """One watch is one reservation attempt, however often it is polled."""
+
+        return f"watch:{watch.watch_id}"
 
     @staticmethod
     def _query_from(intent: ReservationIntent) -> AvailabilityQuery:

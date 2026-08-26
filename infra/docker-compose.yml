@@ -1,0 +1,43 @@
+# Local infrastructure for Milestone 3.
+#
+#   docker compose -f infra/docker-compose.yml up -d
+#
+# Redis is both the Celery broker and the watch store. PostgreSQL is here now
+# so Milestone 4 has somewhere to persist user-owned reservations; nothing in
+# the backend connects to it yet.
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: dibs-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: dibs-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: dibs
+      POSTGRES_PASSWORD: dibs
+      POSTGRES_DB: dibs
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dibs"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis-data:
+  postgres-data:
