@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. Write bug condition exploration property tests
+- [-] 1. Write bug condition exploration property tests
   - **Property 1: Bug Condition** - Backend Activity and Watch Validation Visibility
   - **CRITICAL**: Write and run these tests against the unfixed code before creating `backend/logging_config.py` or changing `backend/main.py`; the failures must come from missing output, not from importing a module that does not exist yet.
   - Add `tests/test_logging_config.py` with an isolated logging-state fixture that snapshots and restores root, `backend`, and exercised descendant logger handlers, levels, disabled flags, propagation, filters, streams, and formatter objects without closing host-owned handlers.
