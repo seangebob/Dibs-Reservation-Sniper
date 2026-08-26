@@ -1,11 +1,22 @@
 {
-  "pbtResults": {},
+  "pbtResults": {
+    "1. Write bug condition exploration property tests": {
+      "status": "passed",
+      "failingExample": "Final pytest result: `17 failed, 4 passed in 1.35s`. Backend INFO counterexamples: `[exploration-info] exploration-backend-info-01`, `[nested-worker-info] exploration-worker-info-03`, and `[real-descendant-info] exploration-scheduler-info-05` each produced `E AssertionError: assert 0 == 1` because captured terminal output was `''`, while each producer probe contained exactly one matching LogRecord. Notification counterexamples `[availability-found]`, `[booked]`, and `[expired]` likewise produced one real LoggingNotificationService LogRecord but terminal occurrence count 0. All malformed-setting IDs `[unknown-reservation-timezone]`, `[unsupported-redis-url-scheme]`, `[interval-non-integer]`, `[interval-non-positive]`, `[interval-below-minimum]`, `[interval-above-maximum]`, `[jitter-non-integer]`, `[jitter-negative]`, `[jitter-greater-than-or-equal-to-interval]`, `[max-attempts-non-integer]`, and `[max-attempts-non-positive]` retained the expected ConfigurationError but produced `E assert 0 == 1` with `actionable_errors == []`. The 4 passing cases were the three backend WARNING records and Redis fallback WARNING, which remained terminal-visible through Python's lastResort handler.",
+      "lastRunTimestamp": 1787760715555
+    }
+  },
   "executionHistory": {
     "1. Write bug condition exploration property tests": [
       {
         "executionId": "2cfe26f7-fdb9-457c-adde-ed9b6a5c978b",
         "chatSessionId": "sess_4db0a03a-c97f-47bc-9024-f2b71a2f699b",
         "timestamp": 1787758821291
+      },
+      {
+        "executionId": "2cfe26f7-fdb9-457c-adde-ed9b6a5c978b",
+        "chatSessionId": "sess_4db0a03a-c97f-47bc-9024-f2b71a2f699b",
+        "timestamp": 1787760779464
       }
     ]
   }
