@@ -1,6 +1,6 @@
 """Persistent watch state for background availability monitoring."""
 
-from datetime import datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -109,13 +109,18 @@ class WatchPollResult(BaseModel):
         return self
 
 
-def default_expiry(query: AvailabilityQuery, created_at: datetime) -> datetime:
-    """Stop watching once the requested sitting can no longer be booked.
+def default_expiry(
+    query: AvailabilityQuery,
+    created_at: datetime,
+    reservation_timezone: tzinfo | None = None,
+) -> datetime:
+    """Return midnight after the reservation date in the venue's timezone."""
 
-    A watch for tonight is worthless tomorrow, so the reservation date itself
-    is the natural deadline rather than a fixed TTL.
-    """
-
-    target = datetime.fromisoformat(query.date).replace(tzinfo=created_at.tzinfo)
-    end_of_day = target + timedelta(days=1)
+    timezone = reservation_timezone or created_at.tzinfo or UTC
+    target_date = date.fromisoformat(query.date)
+    end_of_day = datetime.combine(
+        target_date + timedelta(days=1),
+        time.min,
+        tzinfo=timezone,
+    ).astimezone(UTC)
     return max(end_of_day, created_at + timedelta(minutes=1))

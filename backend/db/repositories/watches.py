@@ -146,9 +146,14 @@ class RedisWatchRepository:
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8")
         try:
-            return Watch.model_validate_json(raw)
+            watch = Watch.model_validate_json(raw)
         except ValidationError:
             return None
+        # The key/index identity is authoritative. Returning a valid document
+        # for another watch would make reads and listings silently lie.
+        if watch.watch_id != watch_id:
+            return None
+        return watch
 
     @staticmethod
     def _key(watch_id: str) -> str:

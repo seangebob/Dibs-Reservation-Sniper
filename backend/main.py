@@ -16,7 +16,7 @@ from backend.api.dependencies import (
     get_watch_service,
 )
 from backend.api.routes import watches_router
-from backend.config import ConfigurationError, Settings
+from backend.config import ConfigurationError, Settings, WatchSettings
 from backend.db.repositories.watches import (
     InMemoryWatchRepository,
     RedisWatchRepository,
@@ -34,7 +34,7 @@ from backend.orchestrator.router import PromptRouter
 from backend.orchestrator.schemas import ParseRequest, ReservationIntent
 from backend.services.booking_service import BookingService
 from backend.services.watch_service import WatchService
-from backend.workers.queue import AsyncioTaskQueue
+from backend.workers.queue import AsyncioTaskQueue, CeleryTaskQueue, TaskQueue
 from backend.workers.scheduler import PollSchedule
 
 
@@ -52,12 +52,14 @@ __all__ = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Validate configuration on boot and release clients on shutdown.
+    """Validate configuration on boot and release clients on shutdown."""
 
-    Configuration is read eagerly so an invalid model name or timezone is
-    reported at startup, but a missing key is remembered rather than raised so
-    the service can still answer with a clear 503 instead of refusing to boot.
-    """
+    try:
+        app.state.watch_settings = WatchSettings.from_environment()
+        app.state.watch_settings_error = None
+    except ConfigurationError as exc:
+        app.state.watch_settings = None
+        app.state.watch_settings_error = exc
 
     try:
         app.state.settings = Settings.from_environment()
@@ -84,17 +86,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 async def _attach_redis(app: FastAPI) -> None:
-    """Move watch state onto Redis when a server is actually reachable.
+    """Configure watch pacing, then upgrade storage and dispatch when possible."""
 
-    The app boots with an in-memory repository so it is useful with no
-    infrastructure at all. Redis is an upgrade applied at startup rather than a
-    hard requirement, which keeps `uvicorn backend.main:app` working before
-    `docker compose up` has ever been run.
-    """
-
-    settings: Settings | None = app.state.settings
+    settings: WatchSettings | None = app.state.watch_settings
     if settings is None:
         return
+
+    schedule = PollSchedule(
+        interval_seconds=float(settings.poll_interval_seconds),
+        jitter_seconds=float(settings.poll_jitter_seconds),
+    )
+
+    # Apply watch settings even when local development has no infrastructure.
+    await app.state.watch_queue.close()
+    app.state.watch_service = _build_watch_service(
+        app,
+        repository=app.state.watch_repository,
+        schedule=schedule,
+        max_attempts=settings.max_poll_attempts,
+        timezone_name=settings.timezone_name,
+    )
 
     try:
         from backend.db.database import create_redis_client, ping
@@ -111,18 +122,36 @@ async def _attach_redis(app: FastAPI) -> None:
         await client.aclose()
         return
 
+    queue: TaskQueue | None = None
+    try:
+        from backend.workers.tasks.monitor_watch import monitor_watch
+
+        queue = CeleryTaskQueue(monitor_watch)
+        app.state.watch_queue_mode = "celery"
+    except ModuleNotFoundError:
+        # Celery is an optional extra. Redis can still improve state durability
+        # while local polling remains in-process when the worker is not installed.
+        logger.warning(
+            "Celery is not installed; Redis state uses the in-process queue"
+        )
+        app.state.watch_queue_mode = "asyncio"
+
+    await app.state.watch_queue.close()
     app.state.redis = client
     app.state.watch_repository = RedisWatchRepository(client)
     app.state.watch_service = _build_watch_service(
         app,
         repository=app.state.watch_repository,
-        schedule=PollSchedule(
-            interval_seconds=float(settings.poll_interval_seconds),
-            jitter_seconds=float(settings.poll_jitter_seconds),
-        ),
+        schedule=schedule,
         max_attempts=settings.max_poll_attempts,
+        timezone_name=settings.timezone_name,
+        queue=queue,
     )
-    logger.info("Watch state is backed by Redis at %s", settings.redis_url)
+    logger.info(
+        "Watch state is backed by Redis at %s using the %s queue",
+        settings.redis_url,
+        app.state.watch_queue_mode,
+    )
 
 
 def _build_watch_service(
@@ -131,24 +160,25 @@ def _build_watch_service(
     repository: object,
     schedule: PollSchedule | None = None,
     max_attempts: int | None = None,
+    timezone_name: str | None = None,
+    queue: TaskQueue | None = None,
 ) -> WatchService:
-    """Build a watch service whose queue calls back into that same service.
+    """Build a watch service and its selected dispatch boundary."""
 
-    The queue needs a poll function and the service needs a queue, so the
-    dispatcher resolves the current service off `app.state` at call time rather
-    than closing over a half-built object.
-    """
+    if queue is None:
+        async def poll(watch_id: str) -> None:
+            await app.state.watch_service.poll_once(watch_id)
 
-    async def poll(watch_id: str) -> None:
-        await app.state.watch_service.poll_once(watch_id)
+        queue = AsyncioTaskQueue(poll)
+        app.state.watch_queue_mode = "asyncio"
 
-    queue = AsyncioTaskQueue(poll)
     app.state.watch_queue = queue
     return WatchService(
         repository,
         app.state.booking_adapter,
         queue,
         schedule=schedule,
+        timezone_name=timezone_name,
         **({"max_attempts": max_attempts} if max_attempts is not None else {}),
     )
 
@@ -169,8 +199,11 @@ def create_app() -> FastAPI:
     app.state.orchestrator_lock = asyncio.Lock()
     app.state.settings = None
     app.state.settings_error = None
+    app.state.watch_settings = None
+    app.state.watch_settings_error = None
     app.state.redis = None
     app.state.watch_queue = None
+    app.state.watch_queue_mode = "asyncio"
 
     adapter = MockBookingAdapter()
     app.state.booking_adapter = adapter

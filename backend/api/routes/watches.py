@@ -1,8 +1,10 @@
 """Watch endpoints: create, inspect, and cancel background monitoring."""
 
+from datetime import date, datetime
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from backend.api.dependencies import get_watch_service
 from backend.models.reservation import AvailabilityQuery
@@ -22,6 +24,7 @@ WatchServiceDep = Annotated[WatchService, Depends(get_watch_service)]
     summary="Open a watch and dispatch its first background check",
 )
 async def create_watch(
+    request: Request,
     query: AvailabilityQuery,
     service: WatchServiceDep,
     auto_book: Annotated[
@@ -29,6 +32,17 @@ async def create_watch(
         Query(description="Book the first matching slot instead of only notifying"),
     ] = False,
 ) -> Watch:
+    watch_settings = getattr(request.app.state, "watch_settings", None)
+    timezone_name = (
+        watch_settings.timezone_name if watch_settings is not None else "UTC"
+    )
+    if date.fromisoformat(query.date) < datetime.now(
+        ZoneInfo(timezone_name)
+    ).date():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Cannot watch a reservation date in the past: {query.date}",
+        )
     return await service.create(query, auto_book=auto_book)
 
 

@@ -31,6 +31,85 @@ _MIN_POLL_INTERVAL_SECONDS = 15
 _MAX_POLL_INTERVAL_SECONDS = 3_600
 
 
+def _bounded_int(name: str, default: int, *, allow_zero: bool = False) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigurationError(f"{name} must be an integer") from exc
+    if value < 0 or (value == 0 and not allow_zero):
+        raise ConfigurationError(f"{name} must be a positive integer")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class WatchSettings:
+    """Configuration needed by watch storage and workers only.
+
+    Keeping this separate from language-model settings lets direct watch APIs
+    and Celery workers use Redis without requiring an unrelated OpenAI key.
+    """
+
+    timezone_name: str = DEFAULT_TIMEZONE
+    redis_url: str = DEFAULT_REDIS_URL
+    poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
+    poll_jitter_seconds: int = DEFAULT_POLL_JITTER_SECONDS
+    max_poll_attempts: int = DEFAULT_MAX_POLL_ATTEMPTS
+
+    @classmethod
+    def from_environment(cls) -> "WatchSettings":
+        timezone_name = os.getenv("RESERVATION_TIMEZONE", DEFAULT_TIMEZONE).strip()
+        try:
+            ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ConfigurationError(
+                f"Unknown RESERVATION_TIMEZONE: {timezone_name}"
+            ) from exc
+
+        redis_url = os.getenv("REDIS_URL", DEFAULT_REDIS_URL).strip()
+        if urlparse(redis_url).scheme not in {"redis", "rediss", "unix"}:
+            raise ConfigurationError(
+                f"Invalid REDIS_URL: {redis_url!r}. Expected a redis://, "
+                "rediss://, or unix:// URL."
+            )
+
+        interval = _bounded_int(
+            "WATCH_POLL_INTERVAL_SECONDS",
+            DEFAULT_POLL_INTERVAL_SECONDS,
+        )
+        if not _MIN_POLL_INTERVAL_SECONDS <= interval <= _MAX_POLL_INTERVAL_SECONDS:
+            raise ConfigurationError(
+                "WATCH_POLL_INTERVAL_SECONDS must be between "
+                f"{_MIN_POLL_INTERVAL_SECONDS} and {_MAX_POLL_INTERVAL_SECONDS}"
+            )
+
+        jitter = _bounded_int(
+            "WATCH_POLL_JITTER_SECONDS",
+            DEFAULT_POLL_JITTER_SECONDS,
+            allow_zero=True,
+        )
+        if jitter >= interval:
+            raise ConfigurationError(
+                "WATCH_POLL_JITTER_SECONDS must be smaller than "
+                "WATCH_POLL_INTERVAL_SECONDS"
+            )
+
+        attempts = _bounded_int(
+            "WATCH_MAX_POLL_ATTEMPTS",
+            DEFAULT_MAX_POLL_ATTEMPTS,
+        )
+
+        return cls(
+            timezone_name=timezone_name,
+            redis_url=redis_url,
+            poll_interval_seconds=interval,
+            poll_jitter_seconds=jitter,
+            max_poll_attempts=attempts,
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     openai_api_key: str
@@ -59,68 +138,13 @@ class Settings:
                 "such as 'gpt-4o-mini'."
             )
 
-        timezone_name = os.getenv("RESERVATION_TIMEZONE", DEFAULT_TIMEZONE).strip()
-        try:
-            ZoneInfo(timezone_name)
-        except (ZoneInfoNotFoundError, ValueError) as exc:
-            raise ConfigurationError(
-                f"Unknown RESERVATION_TIMEZONE: {timezone_name}"
-            ) from exc
-
-        redis_url = os.getenv("REDIS_URL", DEFAULT_REDIS_URL).strip()
-        if urlparse(redis_url).scheme not in {"redis", "rediss", "unix"}:
-            raise ConfigurationError(
-                f"Invalid REDIS_URL: {redis_url!r}. Expected a redis://, "
-                "rediss://, or unix:// URL."
-            )
-
-        interval = cls._bounded_int(
-            "WATCH_POLL_INTERVAL_SECONDS",
-            DEFAULT_POLL_INTERVAL_SECONDS,
-        )
-        if not _MIN_POLL_INTERVAL_SECONDS <= interval <= _MAX_POLL_INTERVAL_SECONDS:
-            raise ConfigurationError(
-                "WATCH_POLL_INTERVAL_SECONDS must be between "
-                f"{_MIN_POLL_INTERVAL_SECONDS} and {_MAX_POLL_INTERVAL_SECONDS}"
-            )
-
-        jitter = cls._bounded_int(
-            "WATCH_POLL_JITTER_SECONDS",
-            DEFAULT_POLL_JITTER_SECONDS,
-            allow_zero=True,
-        )
-        # Jitter is applied symmetrically around the interval, so a jitter as
-        # wide as the interval could otherwise schedule a poll in the past.
-        if jitter >= interval:
-            raise ConfigurationError(
-                "WATCH_POLL_JITTER_SECONDS must be smaller than "
-                "WATCH_POLL_INTERVAL_SECONDS"
-            )
-
-        attempts = cls._bounded_int(
-            "WATCH_MAX_POLL_ATTEMPTS",
-            DEFAULT_MAX_POLL_ATTEMPTS,
-        )
-
+        watch = WatchSettings.from_environment()
         return cls(
             openai_api_key=api_key,
             openai_model=model,
-            timezone_name=timezone_name,
-            redis_url=redis_url,
-            poll_interval_seconds=interval,
-            poll_jitter_seconds=jitter,
-            max_poll_attempts=attempts,
+            timezone_name=watch.timezone_name,
+            redis_url=watch.redis_url,
+            poll_interval_seconds=watch.poll_interval_seconds,
+            poll_jitter_seconds=watch.poll_jitter_seconds,
+            max_poll_attempts=watch.max_poll_attempts,
         )
-
-    @staticmethod
-    def _bounded_int(name: str, default: int, *, allow_zero: bool = False) -> int:
-        raw = os.getenv(name, "").strip()
-        if not raw:
-            return default
-        try:
-            value = int(raw)
-        except ValueError as exc:
-            raise ConfigurationError(f"{name} must be an integer") from exc
-        if value < 0 or (value == 0 and not allow_zero):
-            raise ConfigurationError(f"{name} must be a positive integer")
-        return value

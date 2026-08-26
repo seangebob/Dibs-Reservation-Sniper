@@ -9,7 +9,7 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 
-from backend.config import Settings
+from backend.config import ConfigurationError, Settings
 from backend.orchestrator.engine import OrchestratorEngine
 from backend.orchestrator.providers import OpenAIIntentProvider
 from backend.orchestrator.router import PromptRouter
@@ -48,8 +48,15 @@ def get_booking_service(request: Request) -> BookingService:
 
 
 def get_watch_service(request: Request) -> WatchService:
-    """Return the process-local watch service and its background queue."""
+    """Return the configured watch service and its background queue."""
 
+    error: ConfigurationError | None = getattr(
+        request.app.state,
+        "watch_settings_error",
+        None,
+    )
+    if error is not None:
+        raise error
     return request.app.state.watch_service
 
 
