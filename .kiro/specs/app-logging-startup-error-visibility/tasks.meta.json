@@ -9,6 +9,15 @@
       "status": "failed",
       "failingExample": "Focused run result: 5 failed, 21 passed, 49 deselected. Failing parameter cases: test_valid_watch_settings_preserve_service_state_without_validation_error[minimum-interval-zero-jitter], [representative-interval-jitter], [maximum-interval-valid-jitter], and test_non_watch_settings_errors_do_not_become_watch_validation_errors[missing-openai-api-key], [invalid-openai-model]. Each failed at `assert isinstance(fresh.state.watch_repository, InMemoryWatchRepository)` because the observed value was `<backend.db.repositories.watches.RedisWatchRepository ...>`. Root cause triage: `_PreservationRedisClient(reachable=False).ping()` returned False without raising, while `backend.db.database.ping` defines success as completion without exception and therefore returned True; the fake did not reproduce Redis unavailability.",
       "lastRunTimestamp": 1787766694842
+    },
+    "3.4 Verify the bug condition exploration tests now pass": {
+      "status": "passed",
+      "lastRunTimestamp": 1787772181229
+    },
+    "3.5 Verify all preservation tests still pass": {
+      "status": "failed",
+      "failingExample": "FAILED tests/test_api.py::test_valid_watch_settings_preserve_service_state_without_validation_error[minimum-interval-zero-jitter] - assert False\nFAILED tests/test_api.py::test_valid_watch_settings_preserve_service_state_without_validation_error[representative-interval-jitter] - assert False\nFAILED tests/test_api.py::test_valid_watch_settings_preserve_service_state_without_validation_error[maximum-interval-valid-jitter] - assert False\nFAILED tests/test_api.py::test_non_watch_settings_errors_do_not_become_watch_validation_errors[missing-openai-api-key] - assert False\nFAILED tests/test_api.py::test_non_watch_settings_errors_do_not_become_watch_validation_errors[invalid-openai-model] - assert False\nObserved in each: isinstance(fresh.state.watch_repository, InMemoryWatchRepository) was False because fresh.state.watch_repository was RedisWatchRepository.",
+      "lastRunTimestamp": 1787771923698
     }
   },
   "executionHistory": {
@@ -36,6 +45,83 @@
         "executionId": "29078e32-e9f4-4097-925a-f7848e73fc4f",
         "chatSessionId": "sess_ae323f0b-60b4-46ff-b063-3855277b08ac",
         "timestamp": 1787768120215
+      },
+      {
+        "executionId": "3a6f38dd-a479-4b8b-bd24-57efb9d44a45",
+        "chatSessionId": "sess_0dccd96f-e5a5-4317-92fb-948fecdef80e",
+        "timestamp": 1787771776010
+      }
+    ],
+    "3.1 Add the guarded application logging initializer": [
+      {
+        "executionId": "8c567f20-4f19-4ce3-b7b3-15c9c20116b2",
+        "chatSessionId": "sess_a1f020a5-7410-4c38-abbd-e28b0541dd8f",
+        "timestamp": 1787770521273
+      },
+      {
+        "executionId": "8c567f20-4f19-4ce3-b7b3-15c9c20116b2",
+        "chatSessionId": "sess_a1f020a5-7410-4c38-abbd-e28b0541dd8f",
+        "timestamp": 1787770718173
+      }
+    ],
+    "3.2 Invoke logging initialization first in FastAPI lifespan": [
+      {
+        "executionId": "1efe2cb9-4088-479e-9350-dc7467add14b",
+        "chatSessionId": "sess_0cb5aa6d-e2a7-438c-9543-239069f96e23",
+        "timestamp": 1787770747858
+      },
+      {
+        "executionId": "1efe2cb9-4088-479e-9350-dc7467add14b",
+        "chatSessionId": "sess_0cb5aa6d-e2a7-438c-9543-239069f96e23",
+        "timestamp": 1787770959415
+      }
+    ],
+    "3.3 Emit one actionable ERROR for the retained WatchSettings failure": [
+      {
+        "executionId": "ac3ba6b5-5d53-4a32-819c-8b15e9121a75",
+        "chatSessionId": "sess_8bc7eb10-a090-4534-bcd5-913db3a8bfc2",
+        "timestamp": 1787770983573
+      },
+      {
+        "executionId": "ac3ba6b5-5d53-4a32-819c-8b15e9121a75",
+        "chatSessionId": "sess_8bc7eb10-a090-4534-bcd5-913db3a8bfc2",
+        "timestamp": 1787771187014
+      },
+      {
+        "executionId": "aab0a1ac-b99e-46d8-b377-fe15065e66aa",
+        "chatSessionId": "sess_a0e912c5-bd31-45cd-89ba-4f85657bbb73",
+        "timestamp": 1787772034601
+      }
+    ],
+    "3.4 Verify the bug condition exploration tests now pass": [
+      {
+        "executionId": "834c67fa-d97b-48b2-8c32-952d5d92db01",
+        "chatSessionId": "sess_720dacd3-7945-48e8-8bd4-80525997908d",
+        "timestamp": 1787771206510
+      },
+      {
+        "executionId": "834c67fa-d97b-48b2-8c32-952d5d92db01",
+        "chatSessionId": "sess_720dacd3-7945-48e8-8bd4-80525997908d",
+        "timestamp": 1787771351222
+      }
+    ],
+    "3.5 Verify all preservation tests still pass": [
+      {
+        "executionId": "35ea7c5e-920d-4202-bb9a-26f4d4611a6a",
+        "chatSessionId": "sess_6a5645ff-a0ee-445a-9934-974a2596ccb8",
+        "timestamp": 1787771408211
+      },
+      {
+        "executionId": "35ea7c5e-920d-4202-bb9a-26f4d4611a6a",
+        "chatSessionId": "sess_6a5645ff-a0ee-445a-9934-974a2596ccb8",
+        "timestamp": 1787771435489
+      }
+    ],
+    "4. Checkpoint - Run focused checks, full suite, diagnostics, and diff review": [
+      {
+        "executionId": "35ea7c5e-920d-4202-bb9a-26f4d4611a6a",
+        "chatSessionId": "sess_6a5645ff-a0ee-445a-9934-974a2596ccb8",
+        "timestamp": 1787771408294
       }
     ]
   }

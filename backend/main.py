@@ -66,7 +66,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.error(
             "Watch settings validation failed during startup; "
             "watch-dependent requests will return 503: %s",
-            exc,
+            str(exc),
         )
 
     try:

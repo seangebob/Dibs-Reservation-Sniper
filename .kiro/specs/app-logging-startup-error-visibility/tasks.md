@@ -26,9 +26,9 @@
   - Run these preservation tests against the unfixed code. **EXPECTED OUTCOME**: all tests PASS and establish the baseline to preserve.
   - _Requirements: 3.1, 3.2, 3.3, 3.4_
 
-- [~] 3. Fix application logging and startup error visibility
+- [x] 3. Fix application logging and startup error visibility
 
-  - [ ] 3.1 Add the guarded application logging initializer
+  - [x] 3.1 Add the guarded application logging initializer
     - Create `backend/logging_config.py` with a small `configure_application_logging()` utility scoped to the `backend` namespace.
     - Read the `backend` logger and reachable ancestors without emitting a probe record. Return without mutation when a reachable handler exists, `backend` has an explicit level, or propagation is disabled.
     - Only for the pristine default hierarchy (`NOTSET`, propagation enabled, no reachable handler), call `logging.basicConfig(level=logging.INFO)` with no `force`, custom handler, or custom formatter arguments; never attach a second handler directly to `backend` and never modify `uvicorn.error` or `uvicorn.access`.
@@ -38,7 +38,7 @@
     - _Preservation: Preserve all host handler, level, propagation, filter, stream, formatter, and Uvicorn logger topology; repeated calls must not add paths or duplicates_
     - _Requirements: 2.1, 3.1, 3.2_
 
-  - [ ] 3.2 Invoke logging initialization first in FastAPI lifespan
+  - [x] 3.2 Invoke logging initialization first in FastAPI lifespan
     - Import `configure_application_logging` in `backend/main.py` and call it as the first executable action in `lifespan`, before `WatchSettings.from_environment()`, `Settings.from_environment()`, `_attach_redis()`, or any startup log producer.
     - Do not initialize logging at module import or app construction time, and do not reorder any existing settings, resource attachment, yield, or shutdown behavior after the new first call.
     - _Bug_Condition: startup reaches backend validation, notification, or infrastructure logging with the default unhandled `backend` hierarchy_
@@ -46,7 +46,7 @@
     - _Preservation: Keep app creation side-effect free and preserve lifespan startup, resource selection, and shutdown control flow_
     - _Requirements: 2.1, 2.2, 3.1, 3.2, 3.3, 3.4_
 
-  - [ ] 3.3 Emit one actionable ERROR for the retained WatchSettings failure
+  - [-] 3.3 Emit one actionable ERROR for the retained WatchSettings failure
     - In only the existing `except ConfigurationError as exc` branch around `WatchSettings.from_environment()`, retain the current state assignments and add one `logger.error` call with a stable startup-validation prefix, a note that watch-dependent requests will return 503, and `str(exc)` so the existing setting name/relationship and validation reason remain intact.
     - Do not log the same failure from the later `Settings.from_environment()` branch; do not use `logger.exception`, `exc_info`, re-raise, wrap, copy, or reconstruct the exception.
     - Keep `app.state.watch_settings_error = exc` so dependency resolution raises the identical object and the current 503 detail is unchanged.
@@ -55,7 +55,7 @@
     - _Preservation: Startup continues; retained error identity/text/traceback, dependency behavior, 503 response, health output, and non-watch settings handling remain unchanged_
     - _Requirements: 2.2, 3.3_
 
-  - [ ] 3.4 Verify the bug condition exploration tests now pass
+  - [x] 3.4 Verify the bug condition exploration tests now pass
     - **Property 1: Expected Behavior** - Backend Activity and Watch Validation Visibility
     - **IMPORTANT**: Re-run the same task 1 tests; do not replace them with new tests or relax occurrence-count, level, setting-name, or reason assertions.
     - Confirm generated backend INFO/WARNING records, all three notification events, and the Redis fallback WARNING each appear exactly once.
@@ -63,14 +63,14 @@
     - **EXPECTED OUTCOME**: all task 1 tests PASS, converting each documented counterexample into a fix check.
     - _Requirements: 2.1, 2.2_
 
-  - [ ] 3.5 Verify all preservation tests still pass
+  - [x] 3.5 Verify all preservation tests still pass
     - **Property 2: Preservation** - Host Logging, Startup, API, and Configuration Semantics
     - **IMPORTANT**: Re-run the same task 2 tests; do not add exclusions beyond the explicitly required fallback output and single watch-validation ERROR.
     - Confirm host object identities/topology, repeated initialization counts, startup continuation, retained exception identity, 503 detail, health JSON, valid settings, repository/queue selection, and Redis fallback state match the unfixed baseline.
     - **EXPECTED OUTCOME**: all task 2 tests PASS with no duplicate records or application regressions.
     - _Requirements: 3.1, 3.2, 3.3, 3.4_
 
-- [ ] 4. Checkpoint - Run focused checks, full suite, diagnostics, and diff review
+- [~] 4. Checkpoint - Run focused checks, full suite, diagnostics, and diff review
   - Run the focused logging/startup tests first: `python -m pytest tests/test_logging_config.py tests/test_api.py`.
   - Run the configuration, watch API, notification/watch service, repository, and queue regression set: `python -m pytest tests/test_config.py tests/test_watch_api.py tests/test_watch_service.py tests/test_watch_repository.py tests/test_task_queue.py`.
   - Run the full suite once, without watch mode or external services: `python -m pytest`.
