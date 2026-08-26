@@ -706,7 +706,9 @@ class _PreservationRedisClient:
 
     async def ping(self) -> bool:
         self.ping_calls += 1
-        return self.reachable
+        if not self.reachable:
+            raise OSError("preservation Redis is unavailable")
+        return True
 
     async def aclose(self) -> None:
         self.close_calls += 1

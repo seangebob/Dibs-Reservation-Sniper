@@ -1,5 +1,54 @@
 # Implementation Plan
 
+## Overview
+
+This plan follows the bugfix workflow in order: establish the bug-condition counterexamples, capture preservation baselines, implement the focused logging changes, verify both properties, and complete the final validation checkpoint. Existing completed and in-progress statuses reflect the current implementation state.
+
+## Task Dependency Graph
+
+```json
+{
+  "waves": [
+    {
+      "wave": 1,
+      "tasks": ["1"]
+    },
+    {
+      "wave": 2,
+      "tasks": ["2"]
+    },
+    {
+      "wave": 3,
+      "tasks": ["3.1"]
+    },
+    {
+      "wave": 4,
+      "tasks": ["3.2"]
+    },
+    {
+      "wave": 5,
+      "tasks": ["3.3"]
+    },
+    {
+      "wave": 6,
+      "tasks": ["3.4"]
+    },
+    {
+      "wave": 7,
+      "tasks": ["3.5"]
+    },
+    {
+      "wave": 8,
+      "tasks": ["4"]
+    }
+  ]
+}
+```
+
+Tasks 1 and 2 establish the pre-fix exploration and preservation baselines required before implementation. Tasks 3.1 through 3.3 implement the fix in their listed order, tasks 3.4 and 3.5 verify the same bug-condition and preservation properties, and task 4 depends on all preceding work.
+
+## Tasks
+
 - [x] 1. Write bug condition exploration property tests
   - **Property 1: Bug Condition** - Backend Activity and Watch Validation Visibility
   - **CRITICAL**: Write and run these tests against the unfixed code before creating `backend/logging_config.py` or changing `backend/main.py`; the failures must come from missing output, not from importing a module that does not exist yet.
@@ -46,7 +95,7 @@
     - _Preservation: Keep app creation side-effect free and preserve lifespan startup, resource selection, and shutdown control flow_
     - _Requirements: 2.1, 2.2, 3.1, 3.2, 3.3, 3.4_
 
-  - [-] 3.3 Emit one actionable ERROR for the retained WatchSettings failure
+  - [x] 3.3 Emit one actionable ERROR for the retained WatchSettings failure
     - In only the existing `except ConfigurationError as exc` branch around `WatchSettings.from_environment()`, retain the current state assignments and add one `logger.error` call with a stable startup-validation prefix, a note that watch-dependent requests will return 503, and `str(exc)` so the existing setting name/relationship and validation reason remain intact.
     - Do not log the same failure from the later `Settings.from_environment()` branch; do not use `logger.exception`, `exc_info`, re-raise, wrap, copy, or reconstruct the exception.
     - Keep `app.state.watch_settings_error = exc` so dependency resolution raises the identical object and the current 503 detail is unchanged.
@@ -68,12 +117,21 @@
     - **IMPORTANT**: Re-run the same task 2 tests; do not add exclusions beyond the explicitly required fallback output and single watch-validation ERROR.
     - Confirm host object identities/topology, repeated initialization counts, startup continuation, retained exception identity, 503 detail, health JSON, valid settings, repository/queue selection, and Redis fallback state match the unfixed baseline.
     - **EXPECTED OUTCOME**: all task 2 tests PASS with no duplicate records or application regressions.
+    - **RE-VERIFIED OUTCOME**: The six Task 2 preservation test functions were rerun in non-watch mode with the project virtual environment; all 26 parameterized cases passed (`26 passed in 1.34s`) after correcting the unreachable Redis test double to raise like a failed client ping. No production correction was required.
     - _Requirements: 3.1, 3.2, 3.3, 3.4_
 
-- [~] 4. Checkpoint - Run focused checks, full suite, diagnostics, and diff review
-  - Run the focused logging/startup tests first: `python -m pytest tests/test_logging_config.py tests/test_api.py`.
-  - Run the configuration, watch API, notification/watch service, repository, and queue regression set: `python -m pytest tests/test_config.py tests/test_watch_api.py tests/test_watch_service.py tests/test_watch_repository.py tests/test_task_queue.py`.
-  - Run the full suite once, without watch mode or external services: `python -m pytest`.
-  - Run syntax/import diagnostics with `python -m compileall backend tests` and resolve all diagnostics in `backend/logging_config.py`, `backend/main.py`, `tests/test_logging_config.py`, and `tests/test_api.py`.
-  - Run `git diff --check`, inspect `git status --short`, and review the focused diff for the new initializer, lifespan changes, tests, and this spec. Confirm there are no changes to settings parsing, exception construction, dependency/health response logic, repository/queue decisions, Uvicorn logger configuration, or unrelated files.
-  - Ensure every exploration counterexample is now passing, every preservation baseline remains passing, and no test leaves global logging state or environment variables behind; ask the user if any unresolved question arises.
+- [~] 4. Checkpoint - Resolve outstanding validation and ensure all tests pass
+  - Run the focused fix and preservation checks first: `python -m pytest tests/test_logging_config.py tests/test_api.py`.
+  - If a focused check fails, correct the affected implementation in `backend/logging_config.py` or the `lifespan` branch in `backend/main.py`; correct test isolation in `tests/test_logging_config.py` or `tests/test_api.py` only when the failure is caused by leaked logging/environment state. Do not relax exactly-once visibility, actionable-error, exception-identity, 503-detail, health, or host-topology assertions.
+  - Re-run the focused command after each correction until it passes, then run the configuration and watch regressions: `python -m pytest tests/test_config.py tests/test_watch_api.py tests/test_watch_service.py tests/test_watch_repository.py tests/test_task_queue.py`.
+  - Run the full suite once without watch mode or external services: `python -m pytest`. Fix any regression caused by this bugfix in the same production or focused test files, then re-run the smallest failing set before repeating the full suite.
+  - Run `python -m compileall backend tests` and resolve syntax/import diagnostics in `backend/logging_config.py`, `backend/main.py`, `tests/test_logging_config.py`, and `tests/test_api.py`.
+  - Run `git diff --check` and review `git status --short` plus the focused diff. Keep changes limited to the logging initializer, lifespan logging call/error branch, focused tests, and this task plan; do not alter settings parsing, exception construction, dependency/health response logic, repository/queue decisions, Uvicorn logger configuration, `bugfix.md`, `design.md`, or `.config.kiro`.
+  - Mark this checkpoint complete only when every bug-condition counterexample passes, every preservation baseline passes, global logging/environment state is restored after each test, and all validation commands succeed.
+  - _Requirements: 2.1, 2.2, 3.1, 3.2, 3.3, 3.4_
+
+## Notes
+
+- Keep the exploration and preservation tests as the pre-implementation evidence for the bug condition and unchanged behavior.
+- Preserve the current checklist statuses while task 4 remains the outstanding validation checkpoint.
+- Keep implementation and validation scoped to the files and behaviors identified in the existing tasks.
