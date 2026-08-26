@@ -4,6 +4,10 @@ import asyncio
 import atexit
 from functools import lru_cache
 import logging
+from threading import Lock
+from typing import Any
+
+from celery.signals import worker_process_shutdown
 
 from backend.config import WatchSettings
 from backend.db.database import create_redis_client
@@ -16,6 +20,8 @@ from backend.workers.scheduler import PollSchedule
 
 
 logger = logging.getLogger(__name__)
+_runner_lock = Lock()
+_resources_closed = False
 
 
 @lru_cache(maxsize=1)
@@ -31,7 +37,7 @@ def _runner() -> asyncio.Runner:
 
 
 @lru_cache(maxsize=1)
-def _redis_client():  # noqa: ANN202 - redis-py exposes a generic client here
+def _redis_client() -> Any:
     return create_redis_client(_settings().redis_url)
 
 
@@ -54,14 +60,27 @@ def build_watch_service() -> WatchService:
 
 
 def _close_worker_resources() -> None:
-    """Close the cached Redis pool and persistent event loop at process exit."""
+    """Idempotently close resources on Celery and interpreter shutdown."""
 
-    if _runner.cache_info().currsize == 0:
-        return
-    runner = _runner()
-    if _redis_client.cache_info().currsize:
-        runner.run(_redis_client().aclose())
-    runner.close()
+    global _resources_closed
+    with _runner_lock:
+        if _resources_closed:
+            return
+        _resources_closed = True
+        if _runner.cache_info().currsize == 0:
+            return
+
+        runner = _runner()
+        try:
+            if _redis_client.cache_info().currsize:
+                runner.run(_redis_client().aclose())
+        finally:
+            runner.close()
+
+
+@worker_process_shutdown.connect(weak=False)
+def _close_on_worker_process_shutdown(**_kwargs: object) -> None:
+    _close_worker_resources()
 
 
 atexit.register(_close_worker_resources)
@@ -74,12 +93,16 @@ def monitor_watch(self, watch_id: str) -> dict[str, object]:
     The task reschedules itself through the service, so a successful run either
     finishes the watch or leaves exactly one successor job on the queue. A
     broker- or Redis-level failure is retried when the service never reached a
-    durable state transition.
+    durable state transition. Runner access is serialized for threaded Celery
+    pools because asyncio.Runner cannot execute concurrent coroutines.
     """
 
     service = build_watch_service()
     try:
-        result = _runner().run(service.poll_once(watch_id))
+        with _runner_lock:
+            if _resources_closed:
+                raise RuntimeError("watch worker resources are already closed")
+            result = _runner().run(service.poll_once(watch_id))
     except Exception as exc:  # noqa: BLE001 - retry infrastructure failures
         logger.exception("monitor_watch failed for %s", watch_id)
         raise self.retry(exc=exc, countdown=60) from exc
