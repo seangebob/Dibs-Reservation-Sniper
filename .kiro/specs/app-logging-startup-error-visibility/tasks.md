@@ -120,7 +120,7 @@ Tasks 1 and 2 establish the pre-fix exploration and preservation baselines requi
     - **RE-VERIFIED OUTCOME**: The six Task 2 preservation test functions were rerun in non-watch mode with the project virtual environment; all 26 parameterized cases passed (`26 passed in 1.34s`) after correcting the unreachable Redis test double to raise like a failed client ping. No production correction was required.
     - _Requirements: 3.1, 3.2, 3.3, 3.4_
 
-- [~] 4. Checkpoint - Resolve outstanding validation and ensure all tests pass
+- [x] 4. Checkpoint - Resolve outstanding validation and ensure all tests pass
   - Run the focused fix and preservation checks first: `python -m pytest tests/test_logging_config.py tests/test_api.py`.
   - If a focused check fails, correct the affected implementation in `backend/logging_config.py` or the `lifespan` branch in `backend/main.py`; correct test isolation in `tests/test_logging_config.py` or `tests/test_api.py` only when the failure is caused by leaked logging/environment state. Do not relax exactly-once visibility, actionable-error, exception-identity, 503-detail, health, or host-topology assertions.
   - Re-run the focused command after each correction until it passes, then run the configuration and watch regressions: `python -m pytest tests/test_config.py tests/test_watch_api.py tests/test_watch_service.py tests/test_watch_repository.py tests/test_task_queue.py`.
