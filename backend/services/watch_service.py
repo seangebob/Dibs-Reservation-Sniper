@@ -1,5 +1,7 @@
 """Watch lifecycle and the polling routine the background queue runs."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
