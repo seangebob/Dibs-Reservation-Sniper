@@ -300,6 +300,7 @@ Existing names remain accepted. `WATCH_MAX_POLL_ATTEMPTS` is documented as the a
 | `WATCH_TERMINAL_RETENTION_SECONDS` | 604,800 | 3,600–31,536,000 |
 | `WATCH_RECOVERY_LEADER_LEASE_SECONDS` | 30 | 5–300 |
 | `WATCH_RECOVERY_SWEEP_SECONDS` | 30 | 5–3,600 |
+| `WATCH_DISPATCH_HORIZON_SECONDS` | 300 | 30–3,600; Celery receives no farther-future ETA |
 | `MOCK_SLOT_CAPACITY` | 10,000 | 1–100,000 |
 | `MOCK_SLOT_IDLE_TTL_SECONDS` | 3,600 | 60–604,800 |
 | `MOCK_BOOKING_RETENTION_SECONDS` | 604,800 | 604,800–31,536,000 |
@@ -337,6 +338,7 @@ Every schedule calculation works from UTC instants. `default_expiry` continues t
   - `X-Watch-Monitoring-Policy: deadline` or `attempt-limited`
   - `X-Watch-Max-Availability-Checks: <effective max_attempts>`
   - `Warning` with a short human-readable limitation only for `attempt-limited`.
+- Creation is successful once the watch and immediate durable schedule marker commit. If the first broker publication then fails, the route still returns the preserved 201/body (avoiding an ambiguous client retry that could create another watch), records queue/recovery degradation, and leaves the due marker for bounded reconciliation. “Immediate dispatch” therefore means an immediate durable dispatch request plus a best-effort inline publication, not loss of the watch when the broker is unavailable.
 - PromptRouter uses the same `AvailabilityPolicy` formatter. Deadline-capable watches keep the current “until a slot opens or the date passes” promise. Limited watches say “up to N availability checks; monitoring may stop before DATE.”
 - `/health` adds `watch_queue`, `queue_readiness`, and `recovery_readiness`. Optional detail may state that process-local memory is not restart-durable and that broker reachability does not prove a worker is consuming.
 - Internal Celery jobs add optional `window_id`; `monitor_watch(watch_id, window_id=None)` accepts old queued messages. Successful task return keys and meanings do not change.
@@ -355,6 +357,8 @@ WatchRuntime:
   cadence_sequence: bounded non-negative integer
   window_id: string | null
   scheduled_for: UTC datetime | null
+  phase: POLLING | BOOKING | null
+  cancel_requested: boolean
   terminal_delete_at: UTC datetime | null
 ```
 
@@ -390,6 +394,7 @@ The protocol exposes state-machine operations rather than generic `save` for con
 create_with_schedule(watch, runtime) -> Created | AlreadyExists
 claim_window(watch_id, window_id, owner_id, lease) ->
     Owned(watch, runtime, token) | Busy | Early | Stale | Terminal | Unknown
+begin_booking(claim) -> BookingPermit | Cancelled | Fenced
 commit_window(claim, observation, next_schedule) ->
     Committed(result, event_id?) | Fenced | Terminal | Unknown
 cancel_if_active(watch_id, now) -> Watch | Unknown
@@ -411,21 +416,26 @@ Redis implements each multi-key conditional operation with a registered Lua scri
 4. Apply document/runtime/index/schedule/event changes in one script invocation.
 5. Return a small decision code plus required JSON; no script performs network I/O or work proportional to unchecked configuration.
 
-Claim is one script: if the watch/window is current and due and no lease exists, `INCR` the fence, `SET claim owner|token PX lease NX`, and return the snapshot/revision. Commit is another script: it requires the exact unexpired claim value and unchanged revision/window, increments revision once, and either writes one next window plus one schedule ZSET member or one terminal state plus optional unique event. It removes the consumed schedule marker and claim. Cancellation/expiry scripts increment revision, clear schedule/claim state, update indexes, and prevent a later claimed snapshot from committing.
+Claim is one script: if the watch/window is current and due and no lease exists, `INCR` the fence, `SET claim owner|token PX lease NX`, and atomically move that window's schedule action time to the claim's lease expiry before returning the snapshot/revision. The marker is not deleted at claim time: while ownership is healthy, recovery sees it deferred until lease expiry; after a crash it becomes actionable again. Commit is another script: it requires the exact unexpired claim value and unchanged revision/window, increments revision once, removes the consumed marker, and either writes one next window plus one schedule ZSET member or one terminal state plus optional unique event. Cancellation/expiry scripts increment revision, clear current schedule/claim state, update indexes, and prevent a later claimed snapshot from committing. Recovery never synthesizes or redispatches a missing/current marker while an unexpired poll claim exists.
 
 The in-memory repository stores `(Watch, WatchRuntime)`, leases, schedule markers, event IDs, and indexes under one `asyncio.Lock`. It uses the injected UTC clock for lease decisions and returns exactly the same decision types. It is equivalent within its process, not falsely advertised as cross-process durable.
 
 ### Poll State Machine and Cancellation Safety
 
+Repository claim decisions are mapped without adding a public enum:
+
+- `Unknown` → `UNKNOWN_WATCH`.
+- A terminal document → `ALREADY_FINISHED`.
+- `Busy`, `Early`, `Stale`, or `Fenced` → an internal duplicate/no-op disposition that `monitor_watch` serializes with existing outcome `ALREADY_FINISHED`, `retry_in_seconds=None`, and no provider, booking, notification, or enqueue. For task transport, this existing value means “this delivery has no remaining work”; the persisted Watch remains the authority for whether the overall watch is terminal.
+- A committed normal miss → `NO_AVAILABILITY`; if its single increment reaches `max_attempts`, the same commit produces `EXPIRED` and no successor.
+- Committed fulfillment/expiry retains `FOUND`, `BOOKED`, or `EXPIRED` exactly.
+
 ```
 FUNCTION pollWindow(watchId, windowId, ownerId)
   claim := repository.claimWindow(watchId, windowId, ownerId, lease)
   IF claim IS Unknown THEN RETURN UNKNOWN_WATCH
-  IF claim IS Terminal OR claim IS Stale THEN
-    dispatcher.ensureCurrentMarkerDispatched(watchId)
-    RETURN ALREADY_FINISHED_OR_NOOP
-  END IF
-  IF claim IS Busy OR claim IS Early THEN RETURN NOOP_WITHOUT_SIDE_EFFECTS
+  IF claim IS Terminal THEN RETURN ALREADY_FINISHED
+  IF claim IS Busy OR claim IS Early OR claim IS Stale THEN RETURN DUPLICATE_NOOP
 
   TRY
     now := clock.utcNow()
@@ -433,25 +443,36 @@ FUNCTION pollWindow(watchId, windowId, ownerId)
       RETURN repository.commitWindow(claim, EXPIRE, no successor)
     END IF
 
-    observation := callProviderWithTimeoutAndStableBookingKey(claim.watch)
+    // One 55-second deadline covers search, optional booking permit, booking,
+    // replay lookup, and preparation of the commit observation.
+    WITH timeout(fullProviderSequenceTimeout)
+      searchResult := adapter.searchAvailability(claim.watch.query)
+      IF searchResult completed normally THEN localOutageCount := 0
 
-    IF observation IS AdapterOutage THEN
-      // availability attempt is unchanged
-      delay := outageDelay(claim.runtime.consecutiveOutages + 1, remainingLifetime)
+      IF claim.watch.autoBook AND searchResult has slots THEN
+        permit := repository.beginBooking(claim)
+        IF permit IS CancelledOrFenced THEN RETURN DUPLICATE_NOOP
+        bookingResult := adapter.bookWithStableIdempotencyKey(searchResult)
+      END IF
+    END WITH
+
+    IF provider sequence ended with AdapterError THEN
+      // Any earlier successful interaction reset the local count first, so an
+      // immediately following booking error becomes outage 1.
+      nextOutageCount := checkedIncrement(localOutageCount)
+      delay := outageDelay(nextOutageCount, remainingLifetime)
       IF delay cannot satisfy antiHotPollFloor THEN
         RETURN repository.commitWindow(claim, EXPIRE, no successor)
       END IF
-      RETURN repository.commitWindow(claim, OUTAGE, one successor using same policy)
+      RETURN repository.commitWindow(claim, OUTAGE_WITHOUT_ATTEMPT, one successor)
     END IF
 
-    // A completed non-outage availability window consumes exactly one attempt.
     RETURN repository.commitWindow(
       claim,
-      NORMAL_RESULT_WITH_ATTEMPT_INCREMENT_AND_OUTAGE_RESET,
-      zero or one successor
+      NORMAL_RESULT_WITH_EXACTLY_ONE_ATTEMPT_AND_OUTAGE_RESET,
+      zero or one successor; expire atomically if new attempt = maxAttempts
     )
   CATCH CancelledError
-    // Do not save a snapshot or increment an attempt.
     repository.releaseClaimIfOwned(claim) best effort
     RAISE
   FINALLY
@@ -460,23 +481,29 @@ FUNCTION pollWindow(watchId, windowId, ownerId)
 END FUNCTION
 ```
 
-Provider calls are wrapped in an asyncio timeout below Celery's 60-second soft limit and translated at the adapter boundary to an `AdapterError` outage; recognized slot-not-found/unavailable booking races remain normal outcomes. `CancelledError` is never flattened. Atomic commit is run in a task protected with `asyncio.shield`; if outer cancellation arrives, the code awaits that one atomic command to a known result before re-raising. A process kill can still interrupt the command, but Redis then applies either all or none of the script.
+Auto-booking has an additional atomic `begin_booking(claim)` linearization point immediately before the irreversible provider call. It validates the claim/revision, changes the internal runtime phase from `POLLING` to `BOOKING`, and issues a one-use booking permit. Cancellation that wins before this point commits `CANCELLED`, revokes the claim, and prevents booking. Cancellation that arrives after the permit atomically records `cancel_requested` and waits up to the bounded full-provider/lease deadline instead of falsely returning `CANCELLED` while a booking may complete. The owner/recovery then resolves idempotently: an existing confirmation commits `BOOKED`; if the provider definitely produced no confirmation, it commits `CANCELLED` with no successor. If the owner crashes, recovery first calls `get_booking(watch:{watch_id})`; it commits `BOOKED` when found, otherwise it honors the pending cancellation before issuing any new booking permit. Thus a successful cancellation is never followed by a booking, while a cancellation that loses the documented race returns the concurrently completed `BOOKED` watch rather than lying.
 
-The 120-second claim lease exceeds the 90-second hard task timeout, so another owner cannot take over while the original Celery task can still run. Asyncio mode enforces the shorter provider timeout and releases on normal cancellation. A former owner whose lease expired always fails commit, even if no new owner has yet committed.
+The single 55-second timeout covers the full search-plus-optional-book sequence, not each call separately, and remains below Celery's 60-second soft limit. Commit commands use finite Redis socket timeouts and a 120-second lease leaves margin for commit/cleanup in both Celery and asyncio modes. `CancelledError` is never flattened. Atomic commit is run in a task protected with `asyncio.shield`; if outer cancellation arrives, the code awaits that one atomic command to a known result before re-raising. A process kill can still interrupt the command, but Redis then applies either all or none of the script.
+
+The 120-second claim lease exceeds the 90-second hard task timeout, so another owner cannot take over while the original Celery task can still run. Asyncio mode is bounded by the same full-sequence timeout; neither mode renews a healthy claim beyond the lease. A former owner whose lease expired always fails commit, even if no new owner has yet committed.
 
 A crash after external booking but before watch commit is recovered through the unchanged `watch:{watch_id}` idempotency key and shared booking repository. A crash after search can repeat a read-only provider call, but the same window can still commit an attempt only once.
 
 ### Schedule Marker, Dispatch, and Crash Windows
 
-Creation and every committed active successor atomically write exactly one logical schedule marker. Queue publication is deliberately outside the repository transaction, because Redis state and a Celery broker cannot share one atomic commit.
+Creation and every committed active successor atomically write exactly one logical schedule marker. Queue publication is deliberately outside the repository transaction, because Redis state and a Celery broker cannot share one atomic commit. “At most once scheduled” is defined and tested as one current logical marker/window and one valid dispatch generation across startup contenders; a crash with unknowable broker acceptance may require another physical publication of that same generation, but single-flight prevents another provider cadence or successor.
+
+Far-future work remains only in `dibs:watches:schedule`. Celery publication occurs when `scheduled_for <= now + WATCH_DISPATCH_HORIZON_SECONDS` (default five minutes), avoiding +7/+30-day ETA reservations and Redis broker visibility-timeout redeliveries. Startup still schedules future watches for their exact persisted due time by retaining the marker; the leader's bounded sweep publishes only as the horizon approaches. Asyncio may hold a local absolute-time wakeup, but the marker remains authoritative.
 
 Dispatch protocol:
 
-1. Claim the marker with a finite dispatch lease.
-2. Call `TaskQueue.enqueue_watch_poll(watch_id, window_id, delay_seconds)` using a deterministic Celery `task_id` derived from the window.
-3. On broker acceptance, retain the marker but set `redispatch_after = max(scheduled_for, now) + recovery_grace`. The poll claim removes the marker when execution begins.
+1. For a marker within the horizon, claim a finite dispatch generation/lease. Contending replicas cannot claim the same generation.
+2. Call `TaskQueue.enqueue_watch_poll(watch_id, window_id, delay_seconds)` using a deterministic Celery `task_id` derived from the window/generation.
+3. On broker acceptance, retain the marker and set its next action to `max(scheduled_for, now) + recovery_grace`. When the task claims the poll, the claim script moves that action time to the poll lease expiry; commit consumes/advances the marker.
 4. On dispatch failure, release the dispatch lease (or let it expire), leave the marker due, log structured fields, mark queue/recovery degraded, and let worker retry/recovery try again.
-5. If the process crashes after enqueue but before acknowledgement, reconciliation may publish a duplicate physical message. Both carry the same `window_id`; single-flight guarantees one provider call/commit/logical successor. The design does not claim Celery `task_id` itself deduplicates broker messages.
+5. If the process crashes after enqueue but before recording acceptance, reconciliation may publish a duplicate physical message because the two systems cannot prove acceptance atomically. Both carry the same `window_id`/generation; only one unexpired poll owner can call the provider and only one result/successor can commit. The design explicitly does not treat deterministic Celery `task_id` as broker deduplication.
+
+Recovery skips/defer a marker while either its dispatch lease or poll claim is unexpired. It redispatches only after the corresponding action/lease time, and after owner death it reuses the same window rather than synthesizing a new cadence.
 
 `AsyncioTaskQueue` keeps a dictionary keyed by `window_id`, so duplicate scheduling in one process reuses the existing task. Its tracked tasks use the current event loop, sleep until the absolute due time with recomputation after wake, and are cancelled/awaited on close. It never invokes `asyncio.run` inside the application loop.
 
@@ -511,7 +538,7 @@ release_operation(operation_id) -> None
 cleanup(now, batch_size) -> counts
 ```
 
-Redis Lua publication atomically skips active booked tombstones, writes/touches deterministic unbooked slots, pins returned slots for the finite operation window, and evicts only oldest unbooked/unpinned entries until capacity. In-memory performs the same work under its lock. A crashed pin expires automatically.
+Redis Lua publication atomically skips active booked tombstones, touches already-admitted deterministic slots, and computes admission before writing new unbooked slots. It first evicts eligible oldest idle unbooked/unpinned entries, then admits new candidates in deterministic candidate order only up to the remaining capacity. If every existing entry is pinned/protected, new candidates are omitted from this search result rather than exceeding capacity or evicting protected state; a single query larger than capacity is deterministically truncated. Admitted/returned slots receive a finite operation pin. In-memory performs the same work under its lock, and a crashed pin expires automatically. Capacity counts generated unbooked records; protected booking/tombstone/idempotency records are governed separately by bounded retention.
 
 Redis booking is one Lua script:
 
@@ -533,11 +560,11 @@ For every active-index member:
 - Missing/corrupt document or sidecar that cannot be migrated: remove stale active/all membership as appropriate, emit structured reason, continue.
 - Terminal document in active index: remove active membership; ensure terminal cleanup index/TTL exists.
 - `now >= expires_at` or `attempts >= max_attempts`: conditionally transition to `EXPIRED`, clear scheduling, create at most one expiry event.
-- Future active window: preserve its absolute `scheduled_for` and ensure one logical queue dispatch for that time.
-- Due/overdue active window: dispatch immediately with its persisted window ID.
-- Active record with no marker: synthesize one current marker conditionally from `next_check_at` (or now for a legacy immediate watch), never later than `expires_at`.
+- Future active window: preserve its absolute `scheduled_for` in the durable ZSET; publish to Celery only when it enters the bounded dispatch horizon, never immediately merely because startup ran.
+- Due/overdue active window: dispatch immediately with its persisted window ID unless an unexpired dispatch lease or poll claim defers it.
+- Active record with no marker and no live claim: synthesize one current marker conditionally from `next_check_at` (or now for a legacy immediate watch), never later than `expires_at`. A live claim is allowed to finish or expire before repair.
 
-A failed dispatch leaves the marker and records `watch_id`, `window_id`, owner, exception class, phase, and retry time without secrets. The coordinator releases its per-window dispatch lease and performs bounded follow-up sweeps while the application runs; another startup/replica can also resume after lease expiry. Individual failures do not abort remaining candidates. Readiness is `ready` only after a complete pass, `degraded` after any failed candidate/dispatch, and `unknown` before a pass or when no meaningful probe was performed.
+Each leader pass also runs bounded watch-terminal and mock-state cleanup batches. Healthy cleanup lag is bounded by the configured recovery sweep interval plus batch backlog; backlog keeps readiness degraded until drained. A failed dispatch or cleanup leaves its marker/index and records `watch_id`, `window_id`, owner, exception class, phase, and retry time without secrets. The coordinator releases its per-window dispatch lease and performs bounded follow-up sweeps while the application runs; another startup/replica can also resume after lease expiry. Individual failures do not abort remaining candidates. Readiness is `ready` only after a complete reconciliation/cleanup pass with no due backlog, `degraded` after any failed candidate/dispatch/cleanup or due backlog, and `unknown` before a pass or when no meaningful probe was performed.
 
 ### Terminal Notifications and Idempotency
 
@@ -570,19 +597,19 @@ A Redis ping may establish store reachability but is not by itself reported as w
 ### Migration and Backward Compatibility
 
 - Public Watch JSON remains schema-compatible. New concurrency fields live in a sidecar.
-- On get/recovery, a missing sidecar invokes an atomic v1 migration. Active watches with the known legacy default `max_attempts == 200` are treated as old defaults and receive a lifetime-derived limit under the new configured safety ceiling. A non-200 legacy value is treated as an intentional ceiling and retained; policy messaging becomes limited when appropriate. Attempts and all terminal states are preserved; terminal watches are never reopened.
+- On get/recovery, a missing sidecar invokes an atomic v1 migration. Migration never infers whether the persisted value 200 was a default or an operator's intentional ceiling: it preserves every legacy `max_attempts` exactly. For policy truth, it computes `remaining_required_total = existing attempts + 1 + ceil(remaining lifetime / earliest normal delay)` with checked arithmetic and sets only sidecar `supports_deadline = (persisted max_attempts >= remaining_required_total)`. Thus old active watches may remain intentionally/legacy limited, but no explicit ceiling is silently expanded. A separately documented offline/operator opt-in may raise selected active limits before rollout; it is never automatic. New watches receive the corrected default derivation. Attempts and all terminal states are preserved; terminal watches are never reopened.
 - Legacy active records derive a deterministic initial `window_id` from watch ID, revision zero, and persisted `next_check_at`. Missing `next_check_at` uses now only for an active legacy record.
 - `monitor_watch(watch_id)` remains accepted for already queued old jobs. It resolves the current window and still passes due/claim checks; new jobs always include `window_id`.
 - Existing Redis key/index names remain readable. New code lazily prunes/migrates stale entries.
 - Mixed old/new workers are not concurrency-safe because old code can still perform unfenced snapshot saves. Deployment therefore drains/stops old workers, deploys API/worker code from the same image version, runs startup migration/recovery, then starts consumers. Rollback likewise stops workers first. This operational gate is explicit rather than claiming unsafe rolling compatibility.
-- No new runtime/PBT dependency is required. Property tests use deterministic exhaustive/model-based generators under pytest; pinned manifests remain synchronized. If a future implementation chooses Hypothesis, it must add one exact compatible pin to both dependency sources.
+- No new runtime or PBT dependency is required. Property tests use deterministic exhaustive/model-based generators under pytest. The Redis script harness adds only an exact, implementation-verified `fakeredis[lua]` test pin to both dependency sources; no open range is permitted. If a future implementation chooses Hypothesis, it must likewise add one exact compatible test pin.
 
 ### Failure Handling
 
 - **Redis unavailable during claim/commit/dispatch**: propagate only the recognized redis-py connectivity/timeout exceptions to the existing `monitor_watch` retry classifier. Never retry programming/validation/corrupt-state failures as infrastructure.
 - **Broker dispatch failure after commit**: schedule marker remains; worker retry and recovery redispatch it. No state rollback is attempted.
 - **Provider `AdapterError`**: commit outage/backoff, no availability attempt. It does not escape to Celery retry.
-- **Task cancellation/soft timeout**: no snapshot save; release ownership if possible. A hard kill relies on lease expiry.
+- **Task cancellation/soft timeout**: no snapshot save; release ownership if possible. If a booking permit was issued, persist/retain `cancel_requested` and recover through the provider idempotency key before declaring cancellation. A hard kill relies on lease expiry.
 - **Lost lease/fenced commit**: return a terminal/stale no-op observation, do not notify/book/reschedule again.
 - **Notification failure**: watch terminal state remains authoritative; event metadata records outcome and idempotency state. No watch reopening.
 - **Corrupt persisted state**: fail closed for that record, prune it from active listings, log structured reason, and continue recovery. Do not reinterpret arbitrary JSON.
@@ -593,6 +620,7 @@ A Redis ping may establish store reachability but is not by itself reported as w
 
 - All timing/count inputs are bounded and all persisted datetimes are timezone-aware UTC.
 - Redis scripts receive validated scalar arguments, use namespaced/hashed keys, and avoid unbounded scans. Script source is application-owned; external Redis values are treated as untrusted and validated before model use.
+- The atomic multi-key layout supports standalone Redis and Sentinel-managed primary Redis, matching the current single Redis URL topology; Redis Cluster is not claimed. Startup checks `cluster_enabled`. If cluster mode is detected, the application refuses the Redis/Celery watch upgrade, records a degraded unsupported-topology reason, and uses the documented memory/asyncio fallback rather than executing cross-slot scripts or claiming distributed safety.
 - `rediss://` remains supported. Redis credentials, OpenAI keys, booking details, and raw connection URLs are not logged. Structured errors use exception class and redacted endpoint identity.
 - Owner IDs and fencing tokens are random/generated, never accepted from API clients.
 - Metrics/logs should include claim result, stale/fenced count, outage count/backoff, schedule-marker age, recovery pass result, stale-index prune count, mock capacity/evictions, cleanup lag, and queue mode/readiness.
@@ -606,7 +634,7 @@ A Redis ping may establish store reachability but is not by itself reported as w
 
 ### Validation Approach
 
-Testing follows the bugfix two-phase discipline: first surface counterexamples and freeze existing behavior on unfixed code, then implement and run fix/preservation properties against both repository/queue modes. Tests inject clocks, deterministic jitter sources, queues, repositories, leader/lease stores, adapters, runners, and readiness probes. Redis Lua behavior is tested through a semantic fake/script harness and contract tests; no test assumes a fake pipeline proves Redis atomicity.
+Testing follows the bugfix two-phase discipline: first surface counterexamples and freeze existing behavior on unfixed code, then implement and run fix/preservation properties against both repository/queue modes. Tests inject clocks, deterministic jitter sources, queues, repositories, leader/lease stores, adapters, runners, and readiness probes. Redis atomicity tests execute the exact production Lua source and the real repository argument/result codecs in an in-process Redis/Lua test implementation (an implementation-selected compatible `fakeredis[lua]` release must be pinned exactly in both dependency manifests). They cover script errors, TTL units, malformed JSON, return decoding, and `NOSCRIPT` reload without a live Redis service; a hand-written fake pipeline alone is not accepted as atomicity evidence.
 
 ### Exploratory Bug Condition Checking
 
@@ -651,7 +679,7 @@ FOR ALL input WHERE isBugCondition(input) DO
 END FOR
 ```
 
-Run the exact exploration tests again after each corresponding phase. Repository model tests compare the real in-memory implementation and Redis semantic fake to a small sequential state-machine oracle. Concurrency tests use barriers/events rather than sleep-based timing.
+Run the exact exploration tests again after each corresponding phase. Repository model tests compare the real in-memory implementation and the exact-script Redis test implementation to a small sequential state-machine oracle. Concurrency tests use barriers/events rather than sleep-based timing.
 
 ### Preservation Checking
 
@@ -684,10 +712,10 @@ END FOR
 - Policy ceil-division, default offsets, short ceilings, huge/malformed bounds, and truthful formatter/header values.
 - `PollSchedule` normal/outage jitter, saturation, floor, cap, reset, and deadline clipping.
 - WatchRuntime v1 migration and public Watch projection.
-- Every repository decision code, revision/token check, terminal monotonicity, index prune, TTL cleanup, and schedule marker transition for memory and fake Redis.
-- Queue window deduplication, deterministic task arguments/ID, cancellation, close, and dispatch failure release.
-- Recovery candidate classification, leader renewal/loss, partial failure, structured status, and asyncio future scheduling.
-- Mock publish/filter/book/replay/pin/evict/cleanup operations and seven-day boundaries.
+- Every repository decision code, revision/token check, terminal monotonicity, booking-permit/cancel-request race, no-op outcome mapping, final-attempt expiry, index prune, TTL cleanup, and schedule marker transition for memory and exact Lua-backed fake Redis.
+- Queue window deduplication, bounded dispatch horizon, deterministic task arguments/ID, cancellation, close, and dispatch failure release.
+- Recovery candidate classification, live-claim deferral, leader renewal/loss, partial failure, structured status, terminal/mock cleanup cadence, and asyncio future scheduling.
+- Mock publish/filter/book/replay/pin/admission/evict/cleanup operations, including capacity one, an all-pinned repository, a query larger than capacity, concurrent publication, and seven-day boundaries.
 - Health readiness state derivation from performed/not-performed probes.
 - Dockerfile/.dockerignore/compose static assertions.
 
@@ -696,8 +724,8 @@ END FOR
 Use deterministic exhaustive tables plus fixed-seed model generators (no new dependency required):
 
 - Generate remaining lifetimes, timezone/DST dates, interval/jitter pairs, ceilings, and jitter sequences; assert Property 1.
-- Generate duplicate counts and operation interleavings over claim, cancel, expire, provider result, lease expiry, takeover, commit, dispatch, and notification; compare both repositories to the oracle and assert Property 3.
-- Generate multi-adapter slot/search/booking/idempotency/cleanup interleavings at capacity and retention edges; assert Property 4.
+- Generate duplicate counts and operation interleavings over claim, search, pre-booking permit, cancel request, booking, expire, provider result, lease expiry, takeover, commit, dispatch, and notification; compare both repositories to the oracle and assert Property 3.
+- Generate multi-adapter slot/search/booking/idempotency/cleanup interleavings at capacity, all-protected admission, and retention edges; assert Property 4.
 - Generate recovery indexes containing every valid/invalid state and multiple coordinators/failures; assert Property 5.
 - Generate terminal transitions and cleanup times around exact TTL boundaries; assert Property 8.
 - Generate health selections/probe histories; assert Property 9.
@@ -710,8 +738,8 @@ Each generated run has a bounded operation count and prints the seed/operation t
 
 - FastAPI lifespan with fake Redis reachable/unreachable and worker import present/absent: assert final shared adapter repository, queue/store selection, immediate dispatch, recovery, health, and shutdown.
 - Direct decorated `monitor_watch.run` with service/runner/queue doubles: success, recognized retry, retry exhaustion, cancellation, old one-argument jobs, duplicate windows, and unchanged result shape.
-- Two service instances over one repository plus two queue instances: duplicate claim, cancellation race, lease expiry/takeover, lost dispatch, and terminal event cardinality.
-- API and worker adapter instances over one fake Redis mock repository: atomic distinct-key race, cross-instance replay, later search exclusion, and cleanup.
-- Recovery with due/future/expired/exhausted/missing/corrupt/terminal records, two leaders, dispatch failure, and owner death.
+- Two service instances over one repository plus two queue instances: duplicate claim, cancellation before booking permit, cancellation after permit, lease expiry/takeover, recovery during a live claim, lost dispatch, final-attempt expiry, and terminal event cardinality.
+- API and worker adapter instances over one exact-script fake Redis mock repository: atomic distinct-key race, cross-instance replay, later search exclusion, protected-capacity admission, and cleanup.
+- Recovery with due/future/far-future/expired/exhausted/missing/corrupt/terminal records, two leaders, live claims, dispatch failure, cleanup backlog, and owner death.
 - Full existing pytest suite plus the sibling `watch-route-worker-retry-hardening` tests using one-shot `python -m pytest` commands.
 - `python -m compileall backend tests`, `git diff --check`, and optional one-shot `docker build` / `docker compose -f infra/docker-compose.yml config` when Docker is available. No development server, worker, watcher, or interactive command is started by validation.
