@@ -1,8 +1,11 @@
 """HTTP surface for watches, and the prompt path that opens one."""
 
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 import pytest
 
+from backend.config import ConfigurationError
 from backend.db.repositories.watches import InMemoryWatchRepository
 from backend.integrations.mock_booking import MockBookingAdapter
 from backend.main import create_app, get_watch_service
@@ -135,3 +138,65 @@ def test_the_default_app_wires_a_real_watch_service_without_overrides() -> None:
     # The default in-process queue polls immediately, and the mock adapter has
     # a slot, so the watch is already resolved by the time we read it back.
     assert created.json()["watch_id"].startswith("watch_")
+
+
+# --------------------------------------------------------------------------
+# Property 1: Bug Condition - the watch-settings invariant on the route path
+# --------------------------------------------------------------------------
+
+
+class TrackingService(WatchService):
+    """Fails the test if route work reaches the service at all."""
+
+    def __init__(self, queue: RecordingTaskQueue) -> None:
+        super().__init__(InMemoryWatchRepository(), EmptyAdapter(), queue)
+        self.creates: list[object] = []
+
+    async def create(self, query, *, auto_book: bool = False):  # noqa: ANN001, ANN201
+        self.creates.append(query)
+        return await super().create(query, auto_book=auto_book)
+
+
+def _request_scope(app):  # noqa: ANN001, ANN202
+    """A minimal Request stand-in whose `app.state` is the state under test."""
+
+    return SimpleNamespace(app=app)
+
+
+def test_missing_watch_settings_without_a_retained_error_is_an_invariant_failure(
+    queue: RecordingTaskQueue,
+) -> None:
+    """C_route(X): no settings and no retained error must stop before route work.
+
+    Without the invariant the route silently substitutes UTC for the configured
+    reservation timezone, which shifts the past-date boundary by hours.
+    """
+
+    app = create_app()
+    service = TrackingService(queue)
+    app.state.watch_settings = None
+    app.state.watch_settings_error = None
+    app.state.watch_service = service
+
+    with pytest.raises(RuntimeError):
+        get_watch_service(_request_scope(app))
+
+    assert service.creates == []
+    assert queue.dispatches == []
+
+
+def test_the_invariant_failure_is_not_a_configuration_error(
+    queue: RecordingTaskQueue,
+) -> None:
+    """A missing-settings anomaly is a bug, not a user-facing 503."""
+
+    app = create_app()
+    service = TrackingService(queue)
+    app.state.watch_settings = None
+    app.state.watch_settings_error = None
+    app.state.watch_service = service
+
+    with pytest.raises(RuntimeError) as caught:
+        get_watch_service(_request_scope(app))
+
+    assert not isinstance(caught.value, ConfigurationError)
