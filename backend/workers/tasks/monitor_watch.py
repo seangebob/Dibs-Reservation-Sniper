@@ -101,8 +101,14 @@ atexit.register(_close_worker_resources)
 
 
 @celery_app.task(name="dibs.monitor_watch", bind=True, max_retries=3)
-def monitor_watch(self, watch_id: str) -> dict[str, object]:
+def monitor_watch(
+    self, watch_id: str, window_id: str | None = None
+) -> dict[str, object]:
     """Poll one watch and report what happened.
+
+    `window_id` identifies the cadence window a delivery belongs to. It is
+    optional so an already-queued one-argument job stays valid; the
+    window-aware poll path is wired in when the service adopts it.
 
     The task reschedules itself through the service, so a successful run either
     finishes the watch or leaves exactly one successor job on the queue. A
