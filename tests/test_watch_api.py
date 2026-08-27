@@ -1,11 +1,14 @@
 """HTTP surface for watches, and the prompt path that opens one."""
 
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 import pytest
 
-from backend.config import ConfigurationError
+from backend.config import ConfigurationError, WatchSettings
 from backend.db.repositories.watches import InMemoryWatchRepository
 from backend.integrations.mock_booking import MockBookingAdapter
 from backend.main import create_app, get_watch_service
@@ -200,3 +203,125 @@ def test_the_invariant_failure_is_not_a_configuration_error(
         get_watch_service(_request_scope(app))
 
     assert not isinstance(caught.value, ConfigurationError)
+
+
+# --------------------------------------------------------------------------
+# Property 2: Preservation - retained configuration errors and timezone dates
+# --------------------------------------------------------------------------
+
+
+def _configured_app(
+    queue: RecordingTaskQueue,
+    *,
+    settings: WatchSettings | None,
+    error: ConfigurationError | None,
+) -> tuple[Any, TrackingService]:
+    """An app whose watch state is set directly, bypassing lifespan."""
+
+    app = create_app()
+    service = TrackingService(queue)
+    app.state.watch_settings = settings
+    app.state.watch_settings_error = error
+    app.state.watch_service = service
+    return app, service
+
+
+def test_a_retained_configuration_error_is_raised_by_identity(
+    queue: RecordingTaskQueue,
+) -> None:
+    retained = ConfigurationError("WATCH_POLL_INTERVAL_SECONDS must be an integer")
+    app, service = _configured_app(queue, settings=None, error=retained)
+
+    with pytest.raises(ConfigurationError) as caught:
+        get_watch_service(_request_scope(app))
+
+    assert caught.value is retained
+    assert service.creates == []
+    assert queue.dispatches == []
+
+
+def test_the_retained_error_wins_even_when_settings_are_also_present(
+    queue: RecordingTaskQueue,
+) -> None:
+    """Error precedence is checked before anything else, and stays that way."""
+
+    retained = ConfigurationError("Unknown RESERVATION_TIMEZONE: Mars/Olympus_Mons")
+    app, _ = _configured_app(queue, settings=WatchSettings(), error=retained)
+
+    with pytest.raises(ConfigurationError) as caught:
+        get_watch_service(_request_scope(app))
+
+    assert caught.value is retained
+
+
+def test_a_retained_configuration_error_becomes_a_503_before_route_work(
+    queue: RecordingTaskQueue,
+) -> None:
+    retained = ConfigurationError("Invalid REDIS_URL: 'ftp://nope'")
+    app, service = _configured_app(queue, settings=None, error=retained)
+
+    response = TestClient(app).post("/api/watches", json=QUERY)
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": str(retained)}
+    assert service.creates == []
+    assert queue.dispatches == []
+
+
+def test_valid_settings_return_the_service_already_bound_to_the_app(
+    queue: RecordingTaskQueue,
+) -> None:
+    app, service = _configured_app(queue, settings=WatchSettings(), error=None)
+
+    assert get_watch_service(_request_scope(app)) is service
+
+
+#: Deliberately far from UTC, so a UTC fallback would land on a different day
+#: for part of every calendar day.
+FAR_TIMEZONE = "Pacific/Kiritimati"
+
+
+def _far_timezone_today() -> date:
+    return datetime.now(ZoneInfo(FAR_TIMEZONE)).date()
+
+
+def test_a_past_date_in_the_configured_timezone_is_422_with_no_service_call(
+    queue: RecordingTaskQueue,
+) -> None:
+    settings = WatchSettings(timezone_name=FAR_TIMEZONE)
+    app, service = _configured_app(queue, settings=settings, error=None)
+    yesterday = _far_timezone_today() - timedelta(days=1)
+
+    response = TestClient(app).post(
+        "/api/watches",
+        json={**QUERY, "date": yesterday.isoformat()},
+    )
+
+    assert response.status_code == 422
+    assert service.creates == []
+    assert queue.dispatches == []
+
+
+@pytest.mark.parametrize(
+    "days_ahead",
+    [0, 1],
+    ids=["today-in-configured-timezone", "tomorrow"],
+)
+def test_a_current_date_creates_normally_with_one_zero_delay_dispatch(
+    queue: RecordingTaskQueue,
+    days_ahead: int,
+) -> None:
+    settings = WatchSettings(timezone_name=FAR_TIMEZONE)
+    app, service = _configured_app(queue, settings=settings, error=None)
+    target = _far_timezone_today() + timedelta(days=days_ahead)
+
+    response = TestClient(app).post(
+        "/api/watches",
+        json={**QUERY, "date": target.isoformat()},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "ACTIVE"
+    assert len(service.creates) == 1
+    assert queue.dispatches == [(body["watch_id"], 0.0)]
