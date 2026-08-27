@@ -53,6 +53,9 @@ class FakePipeline:
     def srem(self, key: str, member: str) -> None:
         self._commands.append(("srem", (key, member)))
 
+    def zrem(self, key: str, member: str) -> None:
+        self._commands.append(("srem", (key, member)))
+
     def delete(self, key: str) -> None:
         self._commands.append(("delete", (key,)))
 

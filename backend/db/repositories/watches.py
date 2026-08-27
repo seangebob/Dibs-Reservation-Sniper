@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
+from backend.db.repositories import watch_scripts
 from backend.db.repositories.watch_decisions import (
     BookingPermit,
     BookingPermitStatus,
@@ -32,6 +33,26 @@ _TERMINAL_EVENT_STATUSES = frozenset(
 )
 
 
+def _text(value: Any) -> str:
+    """Decode a Redis reply element to str, tolerating a non-decoding client."""
+
+    return value.decode("utf-8") if isinstance(value, bytes) else value
+
+
+def _code(reply: Any) -> str:
+    """First element of a script reply: its decision code."""
+
+    return _text(reply[0])
+
+
+def _to_ms(moment: datetime) -> int:
+    return int(moment.timestamp() * 1000)
+
+
+def _from_ms(milliseconds: int) -> datetime:
+    return datetime.fromtimestamp(milliseconds / 1000, UTC)
+
+
 def terminal_event_id(watch_id: str, status: WatchStatus, revision: int) -> str:
     """Deterministic id for one terminal transition, stable across processes.
 
@@ -51,6 +72,9 @@ def terminal_event_id(watch_id: str, status: WatchStatus, revision: int) -> str:
 KEY_PREFIX = "dibs:watch"
 INDEX_KEY = "dibs:watches"
 ACTIVE_INDEX_KEY = "dibs:watches:active"
+SCHEDULE_INDEX_KEY = "dibs:watches:schedule"
+TERMINAL_INDEX_KEY = "dibs:watches:terminal"
+EVENTS_KEY = "dibs:watch:events"
 
 
 class WatchRepository(Protocol):
@@ -74,6 +98,65 @@ class WatchRepository(Protocol):
 
     async def delete(self, watch_id: str) -> bool:
         """Remove one watch, returning whether it existed."""
+        ...
+
+    # Atomic state-machine surface (implemented by both stores).
+
+    async def get_runtime(self, watch_id: str) -> WatchRuntime | None:
+        """Return the internal sidecar, or None when unknown."""
+        ...
+
+    async def schedule_marker(self, watch_id: str) -> ScheduleMarker | None:
+        """Return the current due-window marker, or None."""
+        ...
+
+    async def create_with_schedule(
+        self,
+        watch: Watch,
+        runtime: WatchRuntime,
+    ) -> CreateResult:
+        """Persist a new watch, its sidecar, and its first schedule atomically."""
+        ...
+
+    async def claim_window(
+        self,
+        watch_id: str,
+        window_id: str,
+        owner_id: str,
+        lease_seconds: float,
+    ) -> ClaimResult:
+        """Grant one expiring, fenced claim on a due cadence window."""
+        ...
+
+    async def begin_booking(self, claim: WindowClaim) -> BookingPermit:
+        """Linearize the point before an irreversible booking call."""
+        ...
+
+    async def commit_window(
+        self,
+        claim: WindowClaim,
+        new_watch: Watch,
+        new_runtime: WatchRuntime,
+    ) -> CommitResult:
+        """Apply a claimed window's result iff the claim still owns it."""
+        ...
+
+    async def cancel_if_active(self, watch_id: str) -> TransitionResult:
+        """Cancel an active watch, fencing any in-flight claim."""
+        ...
+
+    async def expire_if_eligible(
+        self,
+        watch_id: str,
+        *,
+        expected_revision: int | None = None,
+        force: bool = False,
+    ) -> TransitionResult:
+        """Expire an exhausted or overdue watch conditionally."""
+        ...
+
+    async def release_claim(self, claim: WindowClaim) -> bool:
+        """Release a still-owned, uncommitted claim."""
         ...
 
 
@@ -211,15 +294,14 @@ class InMemoryWatchRepository:
                 token=token,
                 expires_at=lease_expires,
             )
-            claimed_runtime = runtime.model_copy(
-                update={"phase": RuntimePhase.POLLING}
-            )
-            self._runtimes[watch_id] = claimed_runtime
+            # Holding the claim *is* the ownership signal; the runtime is left
+            # unchanged until begin_booking or commit, which keeps this in step
+            # with the Redis script that writes only the claim key.
             return ClaimResult(
                 status=ClaimStatus.OWNED,
                 claim=WindowClaim(
                     watch=watch,
-                    runtime=claimed_runtime,
+                    runtime=runtime,
                     owner_id=owner_id,
                     window_id=window_id,
                     token=token,
@@ -440,8 +522,33 @@ class RedisWatchRepository:
     scheduler sweeps on startup.
     """
 
-    def __init__(self, client: Any) -> None:
+    #: Lua sources registered lazily, so a client that only serves the legacy
+    #: document surface never needs scripting support.
+    _SCRIPT_SOURCES = {
+        "create": watch_scripts.CREATE_WITH_SCHEDULE,
+        "claim": watch_scripts.CLAIM_WINDOW,
+        "begin_booking": watch_scripts.BEGIN_BOOKING,
+        "commit": watch_scripts.COMMIT_WINDOW,
+        "cancel": watch_scripts.CANCEL_IF_ACTIVE,
+        "expire": watch_scripts.EXPIRE_IF_ELIGIBLE,
+        "release": watch_scripts.RELEASE_CLAIM,
+    }
+
+    def __init__(
+        self,
+        client: Any,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self._client = client
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._scripts: dict[str, Any] = {}
+
+    def _script(self, name: str) -> Any:
+        script = self._scripts.get(name)
+        if script is None:
+            script = self._client.register_script(self._SCRIPT_SOURCES[name])
+            self._scripts[name] = script
+        return script
 
     async def save(self, watch: Watch) -> Watch:
         pipeline = self._client.pipeline()
@@ -472,8 +579,13 @@ class RedisWatchRepository:
     async def delete(self, watch_id: str) -> bool:
         pipeline = self._client.pipeline()
         pipeline.delete(self._key(watch_id))
+        pipeline.delete(self._runtime_key(watch_id))
+        pipeline.delete(self._fence_key(watch_id))
+        pipeline.delete(self._claim_key(watch_id))
         pipeline.srem(INDEX_KEY, watch_id)
         pipeline.srem(ACTIVE_INDEX_KEY, watch_id)
+        pipeline.zrem(SCHEDULE_INDEX_KEY, watch_id)
+        pipeline.zrem(TERMINAL_INDEX_KEY, watch_id)
         results = await pipeline.execute()
         return bool(results[0])
 
@@ -517,3 +629,373 @@ class RedisWatchRepository:
     @staticmethod
     def _key(watch_id: str) -> str:
         return f"{KEY_PREFIX}:{watch_id}"
+
+    @staticmethod
+    def _runtime_key(watch_id: str) -> str:
+        return f"{KEY_PREFIX}:{watch_id}:runtime"
+
+    @staticmethod
+    def _fence_key(watch_id: str) -> str:
+        return f"{KEY_PREFIX}:{watch_id}:fence"
+
+    @staticmethod
+    def _claim_key(watch_id: str) -> str:
+        return f"{KEY_PREFIX}:{watch_id}:claim"
+
+    # -- atomic state-machine surface ---------------------------------------
+
+    async def get_runtime(self, watch_id: str) -> WatchRuntime | None:
+        raw = await self._client.get(self._runtime_key(watch_id))
+        if raw is None:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        try:
+            return WatchRuntime.model_validate_json(raw)
+        except ValidationError:
+            return None
+
+    async def schedule_marker(self, watch_id: str) -> ScheduleMarker | None:
+        score = await self._client.zscore(SCHEDULE_INDEX_KEY, watch_id)
+        if score is None:
+            return None
+        runtime = await self.get_runtime(watch_id)
+        if runtime is None or runtime.window_id is None:
+            return None
+        return ScheduleMarker(
+            watch_id=watch_id,
+            window_id=runtime.window_id,
+            scheduled_for=_from_ms(int(score)),
+        )
+
+    async def create_with_schedule(
+        self,
+        watch: Watch,
+        runtime: WatchRuntime,
+    ) -> CreateResult:
+        scheduled_ms = ""
+        if runtime.window_id is not None and runtime.scheduled_for is not None:
+            scheduled_ms = str(_to_ms(runtime.scheduled_for))
+        out = await self._script('create')(
+            keys=[
+                self._key(watch.watch_id),
+                self._runtime_key(watch.watch_id),
+                self._fence_key(watch.watch_id),
+                INDEX_KEY,
+                ACTIVE_INDEX_KEY,
+                SCHEDULE_INDEX_KEY,
+            ],
+            args=[
+                watch.watch_id,
+                watch.model_dump_json(),
+                runtime.model_dump_json(),
+                scheduled_ms,
+            ],
+        )
+        if _code(out) == "CREATED":
+            return CreateResult(
+                status=CreateStatus.CREATED, watch=watch, runtime=runtime
+            )
+        return CreateResult(
+            status=CreateStatus.ALREADY_EXISTS,
+            watch=Watch.model_validate_json(_text(out[1])),
+            runtime=WatchRuntime.model_validate_json(_text(out[2])),
+        )
+
+    async def claim_window(
+        self,
+        watch_id: str,
+        window_id: str,
+        owner_id: str,
+        lease_seconds: float,
+    ) -> ClaimResult:
+        now_ms = self._now_ms()
+        out = await self._script('claim')(
+            keys=[
+                self._key(watch_id),
+                self._runtime_key(watch_id),
+                self._fence_key(watch_id),
+                self._claim_key(watch_id),
+                SCHEDULE_INDEX_KEY,
+            ],
+            args=[
+                watch_id,
+                window_id,
+                owner_id,
+                str(int(lease_seconds * 1000)),
+                str(now_ms),
+            ],
+        )
+        code = _code(out)
+        if code != "OWNED":
+            return ClaimResult(status=ClaimStatus(code))
+        return ClaimResult(
+            status=ClaimStatus.OWNED,
+            claim=WindowClaim(
+                watch=Watch.model_validate_json(_text(out[1])),
+                runtime=WatchRuntime.model_validate_json(_text(out[2])),
+                owner_id=owner_id,
+                window_id=window_id,
+                token=int(out[3]),
+                lease_expires_at=_from_ms(int(out[4])),
+            ),
+        )
+
+    async def begin_booking(self, claim: WindowClaim) -> BookingPermit:
+        booking_runtime = claim.runtime.model_copy(
+            update={"phase": RuntimePhase.BOOKING}
+        )
+        out = await self._script('begin_booking')(
+            keys=[
+                self._key(claim.watch.watch_id),
+                self._runtime_key(claim.watch.watch_id),
+                self._claim_key(claim.watch.watch_id),
+            ],
+            args=[
+                claim.watch.watch_id,
+                str(claim.runtime.revision),
+                str(claim.token),
+                claim.owner_id,
+                booking_runtime.model_dump_json(),
+                str(self._now_ms()),
+            ],
+        )
+        code = _code(out)
+        if code == "GRANTED":
+            return BookingPermit(
+                status=BookingPermitStatus.GRANTED,
+                permit_id=f"{claim.watch.watch_id}:{claim.token}",
+            )
+        return BookingPermit(status=BookingPermitStatus(code))
+
+    async def commit_window(
+        self,
+        claim: WindowClaim,
+        new_watch: Watch,
+        new_runtime: WatchRuntime,
+    ) -> CommitResult:
+        watch_id = claim.watch.watch_id
+        stored_runtime = new_runtime.model_copy(
+            update={"revision": claim.runtime.revision + 1, "phase": None}
+        )
+        is_terminal = new_watch.status.is_terminal
+        next_scheduled_ms = ""
+        if (
+            not is_terminal
+            and stored_runtime.window_id is not None
+            and stored_runtime.scheduled_for is not None
+        ):
+            next_scheduled_ms = str(_to_ms(stored_runtime.scheduled_for))
+        terminal_delete_ms = ""
+        if is_terminal and stored_runtime.terminal_delete_at is not None:
+            terminal_delete_ms = str(_to_ms(stored_runtime.terminal_delete_at))
+        event_id = ""
+        if is_terminal and new_watch.status in _TERMINAL_EVENT_STATUSES:
+            event_id = terminal_event_id(
+                watch_id, new_watch.status, stored_runtime.revision
+            )
+        out = await self._script('commit')(
+            keys=[
+                self._key(watch_id),
+                self._runtime_key(watch_id),
+                self._claim_key(watch_id),
+                INDEX_KEY,
+                ACTIVE_INDEX_KEY,
+                SCHEDULE_INDEX_KEY,
+                TERMINAL_INDEX_KEY,
+                EVENTS_KEY,
+            ],
+            args=[
+                watch_id,
+                str(claim.runtime.revision),
+                str(claim.token),
+                claim.owner_id,
+                new_watch.model_dump_json(),
+                stored_runtime.model_dump_json(),
+                "1" if is_terminal else "0",
+                next_scheduled_ms,
+                terminal_delete_ms,
+                event_id,
+                "",  # retention PEXPIREAT wired in the retention phase
+                str(self._now_ms()),
+            ],
+        )
+        code = _code(out)
+        if code != "COMMITTED":
+            return CommitResult(status=CommitStatus(code))
+        returned_event = out[2] if len(out) > 2 and out[2] else None
+        return CommitResult(
+            status=CommitStatus.COMMITTED,
+            watch=new_watch,
+            event_id=returned_event,
+        )
+
+    async def cancel_if_active(self, watch_id: str) -> TransitionResult:
+        for _attempt in range(5):
+            watch = await self.get(watch_id)
+            if watch is None:
+                return TransitionResult(TransitionStatus.UNKNOWN)
+            if watch.status.is_terminal:
+                return TransitionResult(TransitionStatus.NOOP, watch=watch)
+            runtime = await self.get_runtime(watch_id)
+            cas_revision = "" if runtime is None else str(runtime.revision)
+
+            if runtime is not None and runtime.phase is RuntimePhase.BOOKING:
+                pending = runtime.model_copy(update={"cancel_requested": True})
+                out = await self._script('cancel')(
+                    keys=self._cancel_keys(watch_id),
+                    args=[
+                        watch_id,
+                        cas_revision,
+                        "pending",
+                        "",
+                        pending.model_dump_json(),
+                    ],
+                )
+            else:
+                now = self._clock()
+                cancelled = watch.model_copy(
+                    update={
+                        "status": WatchStatus.CANCELLED,
+                        "next_check_at": None,
+                        "updated_at": now,
+                    }
+                )
+                new_runtime_json = ""
+                if runtime is not None:
+                    new_runtime_json = runtime.model_copy(
+                        update={
+                            "revision": runtime.revision + 1,
+                            "window_id": None,
+                            "scheduled_for": None,
+                            "phase": None,
+                            "cancel_requested": False,
+                        }
+                    ).model_dump_json()
+                out = await self._script('cancel')(
+                    keys=self._cancel_keys(watch_id),
+                    args=[
+                        watch_id,
+                        cas_revision,
+                        "cancel",
+                        cancelled.model_dump_json(),
+                        new_runtime_json,
+                    ],
+                )
+
+            code = _code(out)
+            if code == "FENCED":
+                continue  # a concurrent commit moved us on; re-read and retry
+            if code == "APPLIED":
+                return TransitionResult(
+                    TransitionStatus.APPLIED,
+                    watch=Watch.model_validate_json(_text(out[1])),
+                )
+            if code == "NOT_ELIGIBLE":
+                return TransitionResult(TransitionStatus.NOT_ELIGIBLE, watch=watch)
+            if code == "NOOP":
+                return TransitionResult(
+                    TransitionStatus.NOOP,
+                    watch=Watch.model_validate_json(_text(out[1])),
+                )
+            return TransitionResult(TransitionStatus.UNKNOWN)
+        return TransitionResult(TransitionStatus.FENCED)
+
+    async def expire_if_eligible(
+        self,
+        watch_id: str,
+        *,
+        expected_revision: int | None = None,
+        force: bool = False,
+    ) -> TransitionResult:
+        watch = await self.get(watch_id)
+        if watch is None:
+            return TransitionResult(TransitionStatus.UNKNOWN)
+        if watch.status.is_terminal:
+            return TransitionResult(TransitionStatus.NOOP, watch=watch)
+        runtime = await self.get_runtime(watch_id)
+        if (
+            expected_revision is not None
+            and runtime is not None
+            and runtime.revision != expected_revision
+        ):
+            return TransitionResult(TransitionStatus.FENCED)
+        if not force and not watch.is_exhausted(self._clock()):
+            return TransitionResult(TransitionStatus.NOT_ELIGIBLE, watch=watch)
+
+        new_revision = (runtime.revision + 1) if runtime is not None else 0
+        expired = watch.model_copy(
+            update={
+                "status": WatchStatus.EXPIRED,
+                "next_check_at": None,
+                "updated_at": self._clock(),
+            }
+        )
+        new_runtime_json = ""
+        if runtime is not None:
+            new_runtime_json = runtime.model_copy(
+                update={
+                    "revision": new_revision,
+                    "window_id": None,
+                    "scheduled_for": None,
+                    "phase": None,
+                    "cancel_requested": False,
+                }
+            ).model_dump_json()
+        event_id = terminal_event_id(
+            watch_id, WatchStatus.EXPIRED, new_revision
+        )
+        out = await self._script('expire')(
+            keys=[
+                self._key(watch_id),
+                self._runtime_key(watch_id),
+                self._claim_key(watch_id),
+                ACTIVE_INDEX_KEY,
+                SCHEDULE_INDEX_KEY,
+                TERMINAL_INDEX_KEY,
+                EVENTS_KEY,
+            ],
+            args=[
+                watch_id,
+                "" if runtime is None else str(runtime.revision),
+                expired.model_dump_json(),
+                new_runtime_json,
+                event_id,
+                "",  # terminal_delete_ms wired in the retention phase
+                "",  # retention PEXPIREAT wired in the retention phase
+            ],
+        )
+        code = _code(out)
+        if code == "APPLIED":
+            return TransitionResult(
+                TransitionStatus.APPLIED,
+                watch=Watch.model_validate_json(_text(out[1])),
+                event_id=event_id,
+            )
+        if code == "NOOP":
+            return TransitionResult(
+                TransitionStatus.NOOP,
+                watch=Watch.model_validate_json(_text(out[1])),
+            )
+        if code == "FENCED":
+            return TransitionResult(TransitionStatus.FENCED)
+        return TransitionResult(TransitionStatus.UNKNOWN)
+
+    async def release_claim(self, claim: WindowClaim) -> bool:
+        out = await self._script('release')(
+            keys=[self._claim_key(claim.watch.watch_id)],
+            args=[claim.owner_id, str(claim.token)],
+        )
+        return bool(int(out))
+
+    def _cancel_keys(self, watch_id: str) -> list[str]:
+        return [
+            self._key(watch_id),
+            self._runtime_key(watch_id),
+            self._claim_key(watch_id),
+            ACTIVE_INDEX_KEY,
+            SCHEDULE_INDEX_KEY,
+        ]
+
+    def _now_ms(self) -> int:
+        return _to_ms(self._clock())

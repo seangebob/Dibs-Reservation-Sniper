@@ -19,12 +19,33 @@ from backend.db.repositories.watch_decisions import (
 )
 from backend.db.repositories.watches import (
     InMemoryWatchRepository,
+    RedisWatchRepository,
     terminal_event_id,
 )
 from backend.models.reservation import AvailabilityQuery
 from backend.models.watch import Watch, WatchStatus
 from backend.models.watch_runtime import initial_runtime, window_id_for
 from backend.orchestrator.schemas import VenueType
+
+
+import fakeredis.aioredis as fakeredis_aio  # noqa: E402
+
+
+@pytest.fixture(params=["memory", "redis"])
+def make_repo(request: pytest.FixtureRequest):
+    """Build either repository over a shared injected clock.
+
+    Every state-machine test runs against both stores, so the in-memory and
+    exact Redis-Lua implementations must agree on every decision.
+    """
+
+    def build(clock: Clock) -> object:
+        if request.param == "memory":
+            return InMemoryWatchRepository(clock=clock)
+        client = fakeredis_aio.FakeRedis(decode_responses=True)
+        return RedisWatchRepository(client, clock=clock)
+
+    return build
 
 
 NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
@@ -127,9 +148,10 @@ def _to_expired(claim, clock: Clock):  # noqa: ANN001, ANN202
 # --------------------------------------------------------------------------
 
 
-def test_create_persists_watch_runtime_and_a_due_marker() -> None:
+def test_create_persists_watch_runtime_and_a_due_marker(make_repo) -> None:
     async def scenario() -> None:
-        repo = InMemoryWatchRepository(clock=Clock(NOW))
+        clock = Clock(NOW)
+        repo = make_repo(clock)
         watch = _watch()
         await _create(repo, watch)
 
@@ -144,9 +166,10 @@ def test_create_persists_watch_runtime_and_a_due_marker() -> None:
     asyncio.run(scenario())
 
 
-def test_create_is_idempotent_on_a_duplicate_id() -> None:
+def test_create_is_idempotent_on_a_duplicate_id(make_repo) -> None:
     async def scenario() -> None:
-        repo = InMemoryWatchRepository(clock=Clock(NOW))
+        clock = Clock(NOW)
+        repo = make_repo(clock)
         watch = _watch()
         await _create(repo, watch)
         runtime = initial_runtime(
@@ -160,9 +183,10 @@ def test_create_is_idempotent_on_a_duplicate_id() -> None:
     asyncio.run(scenario())
 
 
-def test_legacy_list_and_delete_still_operate() -> None:
+def test_legacy_list_and_delete_still_operate(make_repo) -> None:
     async def scenario() -> None:
-        repo = InMemoryWatchRepository(clock=Clock(NOW))
+        clock = Clock(NOW)
+        repo = make_repo(clock)
         await _create(repo, _watch("watch_1"))
         await _create(repo, _watch("watch_2"))
 
@@ -182,10 +206,10 @@ def test_legacy_list_and_delete_still_operate() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_only_one_of_two_deliveries_claims_the_same_window() -> None:
+def test_only_one_of_two_deliveries_claims_the_same_window(make_repo) -> None:
     async def scenario() -> None:
         clock = Clock(NOW)
-        repo = InMemoryWatchRepository(clock=clock)
+        repo = make_repo(clock)
         watch = _watch()
         await _create(repo, watch)
         window = window_id_for(watch.watch_id, 0)
@@ -201,10 +225,10 @@ def test_only_one_of_two_deliveries_claims_the_same_window() -> None:
     asyncio.run(scenario())
 
 
-def test_a_committed_window_makes_its_predecessor_stale() -> None:
+def test_a_committed_window_makes_its_predecessor_stale(make_repo) -> None:
     async def scenario() -> None:
         clock = Clock(NOW)
-        repo = InMemoryWatchRepository(clock=clock)
+        repo = make_repo(clock)
         watch = _watch()
         await _create(repo, watch)
         window = window_id_for(watch.watch_id, 0)
@@ -226,10 +250,10 @@ def test_a_committed_window_makes_its_predecessor_stale() -> None:
     asyncio.run(scenario())
 
 
-def test_a_stale_owner_cannot_commit_after_cancellation() -> None:
+def test_a_stale_owner_cannot_commit_after_cancellation(make_repo) -> None:
     async def scenario() -> None:
         clock = Clock(NOW)
-        repo = InMemoryWatchRepository(clock=clock)
+        repo = make_repo(clock)
         watch = _watch()
         await _create(repo, watch)
         window = window_id_for(watch.watch_id, 0)
@@ -253,10 +277,10 @@ def test_a_stale_owner_cannot_commit_after_cancellation() -> None:
     asyncio.run(scenario())
 
 
-def test_no_takeover_while_the_lease_is_unexpired() -> None:
+def test_no_takeover_while_the_lease_is_unexpired(make_repo) -> None:
     async def scenario() -> None:
         clock = Clock(NOW)
-        repo = InMemoryWatchRepository(clock=clock)
+        repo = make_repo(clock)
         watch = _watch()
         await _create(repo, watch)
         window = window_id_for(watch.watch_id, 0)
@@ -271,10 +295,10 @@ def test_no_takeover_while_the_lease_is_unexpired() -> None:
     asyncio.run(scenario())
 
 
-def test_takeover_is_allowed_after_the_lease_expires() -> None:
+def test_takeover_is_allowed_after_the_lease_expires(make_repo) -> None:
     async def scenario() -> None:
         clock = Clock(NOW)
-        repo = InMemoryWatchRepository(clock=clock)
+        repo = make_repo(clock)
         watch = _watch()
         await _create(repo, watch)
         window = window_id_for(watch.watch_id, 0)
@@ -296,10 +320,10 @@ def test_takeover_is_allowed_after_the_lease_expires() -> None:
     asyncio.run(scenario())
 
 
-def test_a_window_that_is_not_yet_due_is_early() -> None:
+def test_a_window_that_is_not_yet_due_is_early(make_repo) -> None:
     async def scenario() -> None:
         clock = Clock(NOW)
-        repo = InMemoryWatchRepository(clock=clock)
+        repo = make_repo(clock)
         watch = _watch(next_check_at=NOW + timedelta(seconds=180))
         await _create(repo, watch)
         window = window_id_for(watch.watch_id, 0)
@@ -310,10 +334,10 @@ def test_a_window_that_is_not_yet_due_is_early() -> None:
     asyncio.run(scenario())
 
 
-def test_expiry_is_monotonic_and_a_stale_commit_cannot_reactivate() -> None:
+def test_expiry_is_monotonic_and_a_stale_commit_cannot_reactivate(make_repo) -> None:
     async def scenario() -> None:
         clock = Clock(NOW)
-        repo = InMemoryWatchRepository(clock=clock)
+        repo = make_repo(clock)
         watch = _watch(attempts=2, max_attempts=3)
         await _create(repo, watch)
         window = window_id_for(watch.watch_id, 0)
@@ -338,9 +362,10 @@ def test_expiry_is_monotonic_and_a_stale_commit_cannot_reactivate() -> None:
     asyncio.run(scenario())
 
 
-def test_claiming_an_unknown_watch_reports_unknown() -> None:
+def test_claiming_an_unknown_watch_reports_unknown(make_repo) -> None:
     async def scenario() -> None:
-        repo = InMemoryWatchRepository(clock=Clock(NOW))
+        clock = Clock(NOW)
+        repo = make_repo(clock)
         result = await repo.claim_window("watch_missing", "w:0", "o", LEASE)
         assert result.status is ClaimStatus.UNKNOWN
 
@@ -352,10 +377,10 @@ def test_claiming_an_unknown_watch_reports_unknown() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_begin_booking_grants_a_permit_to_the_owner() -> None:
+def test_begin_booking_grants_a_permit_to_the_owner(make_repo) -> None:
     async def scenario() -> None:
         clock = Clock(NOW)
-        repo = InMemoryWatchRepository(clock=clock)
+        repo = make_repo(clock)
         watch = _watch()
         await _create(repo, watch)
         window = window_id_for(watch.watch_id, 0)
@@ -371,10 +396,10 @@ def test_begin_booking_grants_a_permit_to_the_owner() -> None:
     asyncio.run(scenario())
 
 
-def test_cancellation_after_a_permit_is_recorded_not_applied() -> None:
+def test_cancellation_after_a_permit_is_recorded_not_applied(make_repo) -> None:
     async def scenario() -> None:
         clock = Clock(NOW)
-        repo = InMemoryWatchRepository(clock=clock)
+        repo = make_repo(clock)
         watch = _watch()
         await _create(repo, watch)
         window = window_id_for(watch.watch_id, 0)
@@ -401,10 +426,10 @@ def test_cancellation_after_a_permit_is_recorded_not_applied() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_expire_if_eligible_expires_an_exhausted_watch() -> None:
+def test_expire_if_eligible_expires_an_exhausted_watch(make_repo) -> None:
     async def scenario() -> None:
         clock = Clock(NOW)
-        repo = InMemoryWatchRepository(clock=clock)
+        repo = make_repo(clock)
         watch = _watch(attempts=3, max_attempts=3)
         await _create(repo, watch)
 
@@ -417,10 +442,10 @@ def test_expire_if_eligible_expires_an_exhausted_watch() -> None:
     asyncio.run(scenario())
 
 
-def test_expire_if_eligible_leaves_a_healthy_watch_active() -> None:
+def test_expire_if_eligible_leaves_a_healthy_watch_active(make_repo) -> None:
     async def scenario() -> None:
         clock = Clock(NOW)
-        repo = InMemoryWatchRepository(clock=clock)
+        repo = make_repo(clock)
         watch = _watch(attempts=0, max_attempts=3)
         await _create(repo, watch)
 
@@ -431,10 +456,10 @@ def test_expire_if_eligible_leaves_a_healthy_watch_active() -> None:
     asyncio.run(scenario())
 
 
-def test_expire_if_eligible_fences_on_a_revision_mismatch() -> None:
+def test_expire_if_eligible_fences_on_a_revision_mismatch(make_repo) -> None:
     async def scenario() -> None:
         clock = Clock(NOW)
-        repo = InMemoryWatchRepository(clock=clock)
+        repo = make_repo(clock)
         watch = _watch(attempts=3, max_attempts=3)
         await _create(repo, watch)
 
