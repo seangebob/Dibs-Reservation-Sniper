@@ -26,6 +26,10 @@ test = [
     "httpx==0.28.1",
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
+    # Executes the exact production Lua for the atomic watch repository in
+    # tests, so Redis atomicity is proven against real script semantics rather
+    # than a hand-written fake. The [lua] extra pulls in lupa.
+    "fakeredis[lua]==2.37.1",
 ]
 dev = [
     "mypy==2.3.1",
