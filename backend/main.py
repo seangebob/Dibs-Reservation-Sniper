@@ -16,7 +16,12 @@ from backend.api.dependencies import (
     get_watch_service,
 )
 from backend.api.routes import watches_router
-from backend.config import ConfigurationError, Settings, WatchSettings
+from backend.config import (
+    DEFAULT_MAX_POLL_ATTEMPTS,
+    ConfigurationError,
+    Settings,
+    WatchSettings,
+)
 from backend.db.repositories.watches import (
     InMemoryWatchRepository,
     RedisWatchRepository,
@@ -187,7 +192,9 @@ def _build_watch_service(
         queue,
         schedule=schedule,
         timezone_name=timezone_name,
-        **({"max_attempts": max_attempts} if max_attempts is not None else {}),
+        max_attempts=(
+            max_attempts if max_attempts is not None else DEFAULT_MAX_POLL_ATTEMPTS
+        ),
     )
 
 

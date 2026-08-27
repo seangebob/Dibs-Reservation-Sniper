@@ -1,6 +1,7 @@
 """Deterministic validation and routing for untrusted LLM extractions."""
 
 from datetime import date, datetime, timedelta
+from typing import Final
 
 from backend.data.venues import (
     SLOT_INTERVAL_MINUTES,
@@ -22,7 +23,7 @@ from backend.orchestrator.schemas import (
 class IntentValidator:
     """Turns model extraction into a safe, deterministic routing decision."""
 
-    MARKET = "Kitchener-Waterloo-Cambridge, ON"
+    MARKET: Final = "Kitchener-Waterloo-Cambridge, ON"
 
     #: Reservations further out than this are refused rather than guessed at.
     MAX_DAYS_AHEAD = 365

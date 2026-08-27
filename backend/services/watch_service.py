@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, List
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -179,7 +179,7 @@ class WatchService:
             return await self._expire(attempted, now)
         return await self._reschedule(attempted, now)
 
-    async def _search(self, watch: Watch) -> tuple[list[Any], str | None]:
+    async def _search(self, watch: Watch) -> tuple[List[Any], str | None]:
         """Check availability, turning adapter failures into a retryable miss."""
 
         try:
@@ -191,7 +191,7 @@ class WatchService:
     async def _fulfill(
         self,
         watch: Watch,
-        slots: list[Any],
+        slots: List[Any],
         now: datetime,
     ) -> WatchPollResult:
         """Record found availability, booking it when the watch asked to."""
@@ -279,7 +279,7 @@ class WatchService:
         await self._notifier.notify(booked, WatchEvent.BOOKED)
         return WatchPollResult(outcome=WatchPollOutcome.BOOKED, watch=booked)
 
-    async def _book(self, watch: Watch, slots: list[Any]) -> Any | None:
+    async def _book(self, watch: Watch, slots: List[Any]) -> Any | None:
         """Book the first slot that remains available."""
 
         for slot in slots:
