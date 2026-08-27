@@ -32,10 +32,9 @@ async def create_watch(
         Query(description="Book the first matching slot instead of only notifying"),
     ] = False,
 ) -> Watch:
-    watch_settings = getattr(request.app.state, "watch_settings", None)
-    timezone_name = (
-        watch_settings.timezone_name if watch_settings is not None else "UTC"
-    )
+    # get_watch_service has already established that settings exist; a missing
+    # value is an invariant failure there rather than a UTC fallback here.
+    timezone_name = request.app.state.watch_settings.timezone_name
     if date.fromisoformat(query.date) < datetime.now(
         ZoneInfo(timezone_name)
     ).date():

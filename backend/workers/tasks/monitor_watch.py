@@ -8,6 +8,9 @@ from threading import Lock
 from typing import Any
 
 from celery.signals import worker_process_shutdown
+from kombu.exceptions import OperationalError as BrokerOperationalError
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from backend.config import WatchSettings
 from backend.db.database import create_redis_client
@@ -22,6 +25,17 @@ from backend.workers.scheduler import PollSchedule
 logger = logging.getLogger(__name__)
 _runner_lock = Lock()
 _resources_closed = False
+
+#: The only failures worth retrying: the broker or Redis was briefly
+#: unreachable, so the same poll can succeed unchanged a minute later.
+#: Everything else -- a programming error, a validation failure, a provider
+#: contract change -- fails identically on every delivery, so retrying it
+#: only delays the traceback and holds a worker slot three times over.
+RECOVERABLE_INFRASTRUCTURE_ERRORS = (
+    RedisConnectionError,
+    RedisTimeoutError,
+    BrokerOperationalError,
+)
 
 
 @lru_cache(maxsize=1)
@@ -93,8 +107,10 @@ def monitor_watch(self, watch_id: str) -> dict[str, object]:
     The task reschedules itself through the service, so a successful run either
     finishes the watch or leaves exactly one successor job on the queue. A
     broker- or Redis-level failure is retried when the service never reached a
-    durable state transition. Runner access is serialized for threaded Celery
-    pools because asyncio.Runner cannot execute concurrent coroutines.
+    durable state transition; every other failure propagates on the first
+    delivery so it surfaces as a traceback rather than three silent retries.
+    Runner access is serialized for threaded Celery pools because
+    asyncio.Runner cannot execute concurrent coroutines.
     """
 
     service = build_watch_service()
@@ -103,7 +119,7 @@ def monitor_watch(self, watch_id: str) -> dict[str, object]:
             if _resources_closed:
                 raise RuntimeError("watch worker resources are already closed")
             result = _runner().run(service.poll_once(watch_id))
-    except Exception as exc:  # noqa: BLE001 - retry infrastructure failures
+    except RECOVERABLE_INFRASTRUCTURE_ERRORS as exc:
         logger.exception("monitor_watch failed for %s", watch_id)
         raise self.retry(exc=exc, countdown=60) from exc
 

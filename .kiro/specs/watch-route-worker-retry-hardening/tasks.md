@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. Write bug-condition exploration tests before changing production code
+- [x] 1. Write bug-condition exploration tests before changing production code
   - **Property 1: Bug Condition** - Enforce Configuration and Failure-Class Boundaries
   - **CRITICAL**: These tests MUST FAIL on the unfixed code; do not change the assertions or production code to make the initial run pass.
   - Add focused dependency/API cases to `tests/test_watch_api.py` using app-state and service doubles. Cover `C_route(X)`: `watch_settings is None` and no retained error must raise an invariant `RuntimeError` before route work, timezone fallback, date validation, service creation, or queue dispatch.
@@ -12,7 +12,7 @@
   - Run the focused tests on the unfixed code, confirm the invariant-gap and broad-handler cases fail, and record the concrete counterexamples in the test/task notes before implementing the fix.
   - _Requirements: 2.1, 2.3_
 
-- [ ] 2. Write preservation property tests before changing production code
+- [x] 2. Write preservation property tests before changing production code
   - **Property 2: Preservation** - Existing Watch and Recoverable Infrastructure Behavior
   - **IMPORTANT**: Follow the observation-first methodology: run each case against the unfixed code, record the actual baseline contract, encode that contract in deterministic parameterized tests, and verify the tests pass before implementation.
   - In `tests/test_watch_api.py`, cover app-state combinations with dependency, service, repository, and recording-queue doubles: the exact retained `ConfigurationError` object is raised first by `get_watch_service`; the application maps it to HTTP 503 before route/service work; and valid settings return the existing service.
@@ -26,9 +26,9 @@
   - Run the preservation tests on the unfixed code and confirm they pass before implementing the fix.
   - _Requirements: 2.2, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7_
 
-- [ ] 3. Fix watch configuration and worker retry boundaries
+- [x] 3. Fix watch configuration and worker retry boundaries
 
-  - [ ] 3.1 Enforce the watch-settings invariant in `get_watch_service`
+  - [x] 3.1 Enforce the watch-settings invariant in `get_watch_service`
     - Import `WatchSettings` with the existing configuration types in `backend/api/dependencies.py`.
     - Keep the retained `watch_settings_error` check first and raise that exact `ConfigurationError` object without reconstruction or translation.
     - Read `app.state.watch_settings` as `WatchSettings | None`; if it is absent after the retained-error check, raise an immediate invariant `RuntimeError` before returning the existing service.
@@ -38,7 +38,7 @@
     - _Preservation: The retained configuration failure remains first-priority and valid configured dependencies return the existing service_
     - _Requirements: 2.1, 3.7_
 
-  - [ ] 3.2 Remove the unreachable UTC branch from `create_watch`
+  - [x] 3.2 Remove the unreachable UTC branch from `create_watch`
     - In `backend/api/routes/watches.py`, treat `request.app.state.watch_settings` as the `WatchSettings` invariant established by `get_watch_service`.
     - Remove only the `None`/`"UTC"` fallback and construct `ZoneInfo` directly from the configured `timezone_name`.
     - Leave the HTTP 422 past-date comparison and `service.create(..., auto_book=...)` path unchanged.
@@ -47,7 +47,7 @@
     - _Preservation: Configured-timezone date boundaries, successful creation, and initial dispatch remain unchanged_
     - _Requirements: 2.1, 3.1, 3.2_
 
-  - [ ] 3.3 Restrict `monitor_watch` retries to the explicit infrastructure tuple
+  - [x] 3.3 Restrict `monitor_watch` retries to the explicit infrastructure tuple
     - In `backend/workers/tasks/monitor_watch.py`, import `kombu.exceptions.OperationalError`, `redis.exceptions.ConnectionError`, and `redis.exceptions.TimeoutError` with unambiguous broker/Redis aliases and define one module-level recoverable exception tuple.
     - Replace only the broad `except Exception` clause with the aliased tuple; do not catch Python built-in connection/timeout errors, `OSError`, Pydantic/provider/configuration/state exceptions, custom exceptions, or generic `Exception`.
     - Keep the retry-handler behavior equivalent for recognized failures: `logger.exception` retains traceback context and `self.retry` receives the original exception with `countdown=60` and exception chaining.
@@ -58,21 +58,21 @@
     - _Preservation: Original-exception Redis/Kombu retry, traceback logging, countdown, retry limit, runner serialization, cleanup, and success result remain unchanged_
     - _Requirements: 2.2, 2.3, 3.3, 3.4, 3.5, 3.6, 3.7_
 
-  - [ ] 3.4 Verify the bug-condition exploration tests now pass
+  - [x] 3.4 Verify the bug-condition exploration tests now pass
     - **Property 1: Expected Behavior** - Enforce Configuration and Failure-Class Boundaries
     - Re-run the same tests from task 1; do not replace them with new post-fix tests.
     - Confirm missing settings cannot enter route work or use UTC and every generated non-recoverable worker exception escapes by identity without retry or retry-failure logging.
     - **EXPECTED OUTCOME**: The tests that failed on the unfixed code now pass.
     - _Requirements: 2.1, 2.3_
 
-  - [ ] 3.5 Verify all preservation property tests still pass
+  - [x] 3.5 Verify all preservation property tests still pass
     - **Property 2: Preservation** - Existing Watch and Recoverable Infrastructure Behavior
     - Re-run the same tests from task 2; do not rewrite their baseline expectations after the fix.
     - Confirm configured-timezone API behavior, exact Redis/Kombu retry semantics, success serialization, runner locking, cleanup, and optional-worker operation are unchanged.
     - **EXPECTED OUTCOME**: All preservation tests continue to pass with no regression.
     - _Requirements: 2.2, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7_
 
-- [ ] 4. Checkpoint - validate the completed bugfix and review the diff
+- [x] 4. Checkpoint - validate the completed bugfix and review the diff
   - Run the focused suite once with the worker extra available: `python -m pytest tests/test_watch_api.py tests/test_monitor_watch.py`.
   - Run the complete suite: `python -m pytest`.
   - Run compile/collection diagnostics: `python -m compileall backend tests` and a non-worker environment collection/run confirming worker tests skip safely while API tests remain operational.

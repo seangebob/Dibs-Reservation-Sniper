@@ -47,5 +47,5 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 
 [[tool.mypy.overrides]]
-module = ["celery.*"]
+module = ["celery.*", "kombu.*"]
 ignore_missing_imports = true

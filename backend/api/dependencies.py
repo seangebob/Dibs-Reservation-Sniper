@@ -9,7 +9,7 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 
-from backend.config import ConfigurationError, Settings
+from backend.config import ConfigurationError, Settings, WatchSettings
 from backend.orchestrator.engine import OrchestratorEngine
 from backend.orchestrator.providers import OpenAIIntentProvider
 from backend.orchestrator.router import PromptRouter
@@ -48,7 +48,16 @@ def get_booking_service(request: Request) -> BookingService:
 
 
 def get_watch_service(request: Request) -> WatchService:
-    """Return the configured watch service and its background queue."""
+    """Return the configured watch service and its background queue.
+
+    Settings are validated once during startup, so by the time a request
+    arrives exactly one of two things is true: validation failed and the error
+    was retained, or settings exist. Neither being true means startup did not
+    run to completion, and the route below would silently fall back to UTC for
+    its past-date comparison. That is a bug in our wiring rather than a
+    configuration problem the caller can fix, so it fails loudly instead of
+    reaching the route with a timezone nobody configured.
+    """
 
     error: ConfigurationError | None = getattr(
         request.app.state,
@@ -57,6 +66,17 @@ def get_watch_service(request: Request) -> WatchService:
     )
     if error is not None:
         raise error
+
+    settings: WatchSettings | None = getattr(
+        request.app.state,
+        "watch_settings",
+        None,
+    )
+    if settings is None:
+        raise RuntimeError(
+            "watch settings are unavailable and no configuration error was "
+            "retained; application startup did not complete"
+        )
     return request.app.state.watch_service
 
 

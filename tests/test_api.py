@@ -261,6 +261,26 @@ class FailingAdapter(MockBookingAdapter):
         raise self._error
 
 
+@pytest.fixture(autouse=True)
+def started_shared_app():
+    """Give the module-level `app` the watch settings startup would have set.
+
+    These tests drive the shared `app` with a bare `TestClient(app)`, which
+    never runs lifespan. Uvicorn always does, so an app serving requests with
+    no watch settings and no retained configuration error is a state that
+    cannot occur in production; `get_watch_service` now rejects it outright.
+    Populating the settings here keeps these tests representing a started
+    application rather than that impossible one. The rejection itself is
+    covered directly in `tests/test_watch_api.py`.
+    """
+
+    previous = app.state.watch_settings
+    if previous is None:
+        app.state.watch_settings = WatchSettings()
+    yield
+    app.state.watch_settings = previous
+
+
 def override(engine: object, service: object | None = None) -> None:
     app.dependency_overrides[get_orchestrator] = lambda: engine
     if service is not None:
