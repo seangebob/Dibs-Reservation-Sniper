@@ -39,7 +39,7 @@
     - _Preservation: valid existing environment values and request-time configuration failure semantics remain unchanged_
     - _Requirements: 2.3, 2.6, 2.8, 2.10, 2.13, 2.15, 3.7, 3.11_
 
-  - [ ] 3.2 Implement `AvailabilityPolicyFactory` in `backend/services/watch_policy.py`
+  - [x] 3.2 Implement `AvailabilityPolicyFactory` in `backend/services/watch_policy.py`
     - Derive remaining lifetime from aware UTC instants and integer microseconds; use checked ceil-division and checked addition for `required_attempts = 1 + ceil(remaining / earliest_delay)` and `effective_attempts = min(required, safety_ceiling)`.
     - Return bounded policy facts (`required_attempts`, `effective_attempts`, `supports_deadline`, limiting reason) plus one formatter shared by API headers and PromptRouter.
     - Cover same-day/+1/+7/+30, DST-short/long days, zero remaining lifetime, earliest jitter extremes, custom hot cadences, and ceiling-limited policies. Never enumerate attempts or schedule after `expires_at`.
@@ -49,7 +49,7 @@
     - _Preservation: immediate first check, timezone-derived expiry, and public `Watch.max_attempts`/`attempts` meanings remain intact_
     - _Requirements: 2.1, 2.2, 2.3, 3.1, 3.4, 3.5_
 
-  - [ ] 3.3 Apply truthful policy messaging without changing public watch JSON
+  - [x] 3.3 Apply truthful policy messaging without changing public watch JSON
     - Make watch creation store `effective_attempts` and expose policy metadata internally to the route/router without adding fields to the `Watch` response model.
     - In `backend/api/routes/watches.py`, add only `X-Watch-Monitoring-Policy`, `X-Watch-Max-Availability-Checks`, and an attempt-limited `Warning`; retain the existing body, status 201, request/query contract, validation order, and immediate first-dispatch contract. The durable marker implementation remains explicitly deferred to tasks 4–5.
     - In `backend/orchestrator/router.py`, reuse the same formatter: keep the current deadline promise only when `supports_deadline`, otherwise state “up to N availability checks” and that monitoring may stop before the reservation date.
@@ -58,7 +58,7 @@
     - _Preservation: deadline-capable wording, public JSON/enums, HTTP status, and immediate first check remain unchanged_
     - _Requirements: 2.1, 2.2, 3.1, 3.3, 3.5_
 
-  - [ ] 3.4 Re-run the same policy/messaging characterization and preservation tests
+  - [x] 3.4 Re-run the same policy/messaging characterization and preservation tests
     - **Property 1: Expected Behavior** - Re-run the task 1 lifetime, bounds, header, and router assertions; the former counterexamples must now pass without replacing their assertions.
     - **Property 2: Preservation** - Re-run the task 2 API JSON, enums, immediate dispatch, timezone expiry, configuration precedence, and healthy jitter assertions unchanged.
     - Use one-shot focused pytest commands only. **EXPECTED OUTCOME**: corrected policy tests pass and all selected preservation tests remain green.

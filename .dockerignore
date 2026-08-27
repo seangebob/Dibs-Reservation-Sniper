@@ -1,0 +1,45 @@
+# Version control
+.git
+.gitignore
+
+# Virtual environments
+.venv
+venv
+
+# Python caches / build artifacts
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+*.egg-info
+build
+dist
+
+# Coverage
+.coverage
+htmlcov
+
+# Secrets and local configuration
+.env
+.env.*
+
+# Editor / OS files
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Tests are not needed in the runtime image
+tests
+
+# Spec / planning artifacts not needed at runtime
+.kiro
+semantic-review
+structure + deadlines
+README.md
+
+# Local service data (Redis / Postgres) and infra compose state
+infra/redis-data
+infra/postgres-data
+redis-data
+postgres-data

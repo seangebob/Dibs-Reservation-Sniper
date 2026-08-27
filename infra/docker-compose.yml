@@ -38,6 +38,37 @@ services:
       timeout: 3s
       retries: 5
 
+  # Application services live behind the "app" profile so the default
+  # `docker compose up` still starts ONLY redis + postgres. Start them with:
+  #   docker compose --profile app up
+  # Both build the same root image; the worker just overrides the command.
+  api:
+    profiles: ["app"]
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: dibs-api
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    profiles: ["app"]
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: dibs-worker
+    command: celery -A backend.workers.celery_app worker --loglevel=info
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
 volumes:
   redis-data:
   postgres-data:

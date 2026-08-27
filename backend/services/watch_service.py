@@ -29,6 +29,10 @@ from backend.services.notification_service import (
     NotificationService,
     WatchEvent,
 )
+from backend.services.watch_policy import (
+    AvailabilityPolicy,
+    AvailabilityPolicyFactory,
+)
 from backend.workers.scheduler import PollSchedule
 
 
@@ -68,6 +72,7 @@ class WatchService:
         self._reservation_timezone = (
             ZoneInfo(timezone_name) if timezone_name is not None else None
         )
+        self._policy_factory = AvailabilityPolicyFactory(self._schedule)
 
     async def create_from_intent(
         self,
@@ -91,6 +96,15 @@ class WatchService:
 
         now = self._clock()
         timezone = self._reservation_timezone or now.tzinfo or UTC
+        expires_at = default_expiry(query, now, timezone)
+
+        # The stored ceiling is the derived, lifetime-aware budget: enough
+        # checks to reach the deadline, or the operator's smaller ceiling.
+        policy = self._policy_factory.derive(
+            now=now,
+            expires_at=expires_at,
+            safety_ceiling=self._max_attempts,
+        )
 
         watch = Watch(
             watch_id=f"watch_{uuid4().hex}",
@@ -99,9 +113,9 @@ class WatchService:
             auto_book=auto_book,
             created_at=now,
             updated_at=now,
-            expires_at=default_expiry(query, now, timezone),
+            expires_at=expires_at,
             attempts=0,
-            max_attempts=self._max_attempts,
+            max_attempts=policy.effective_attempts,
             next_check_at=now,
         )
         await self._repository.save(watch)
@@ -109,6 +123,20 @@ class WatchService:
         # latency they see is the one that matters. Jitter starts on retries.
         await self._queue.enqueue_watch_poll(watch.watch_id, delay_seconds=0.0)
         return watch
+
+    def describe_policy(self, watch: Watch) -> AvailabilityPolicy:
+        """Recover a watch's monitoring policy for messaging surfaces.
+
+        The stored `max_attempts` is already the effective budget, so deriving
+        against it as the ceiling reproduces the creation-time policy without
+        adding any field to the public `Watch` JSON.
+        """
+
+        return self._policy_factory.derive(
+            now=watch.created_at,
+            expires_at=watch.expires_at,
+            safety_ceiling=watch.max_attempts,
+        )
 
     async def get(self, watch_id: str) -> Watch | None:
         return await self._repository.get(watch_id)

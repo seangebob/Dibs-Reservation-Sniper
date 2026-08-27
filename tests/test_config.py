@@ -1,6 +1,11 @@
 import pytest
 
-from backend.config import DEFAULT_MODEL, ConfigurationError, Settings
+from backend.config import (
+    DEFAULT_MODEL,
+    ConfigurationError,
+    Settings,
+    WatchSettings,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -90,3 +95,61 @@ def test_alternate_timezone_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("RESERVATION_TIMEZONE", "UTC")
 
     assert Settings.from_environment().timezone_name == "UTC"
+
+
+# --- watch attempt safety ceiling (milestone 3) -----------------------------
+
+
+def test_the_default_attempt_ceiling_is_the_raised_safety_bound() -> None:
+    """The default is a lifetime-covering ceiling, not the old fixed 200."""
+
+    assert WatchSettings().max_poll_attempts == 25_000
+    assert WatchSettings.from_environment().max_poll_attempts == 25_000
+
+
+@pytest.mark.parametrize("value", ["1", "999", "25000", "1000000"])
+def test_attempt_ceilings_within_bounds_are_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("WATCH_MAX_POLL_ATTEMPTS", value)
+
+    assert WatchSettings.from_environment().max_poll_attempts == int(value)
+
+
+def test_a_zero_attempt_ceiling_is_still_rejected_as_non_positive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WATCH_MAX_POLL_ATTEMPTS", "0")
+
+    with pytest.raises(ConfigurationError, match="must be a positive integer"):
+        WatchSettings.from_environment()
+
+
+@pytest.mark.parametrize("value", ["many", "5.5", "+5", "-5", "1_000"])
+def test_non_integer_attempt_text_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("WATCH_MAX_POLL_ATTEMPTS", value)
+
+    with pytest.raises(ConfigurationError, match="must be an integer"):
+        WatchSettings.from_environment()
+
+
+def test_an_attempt_ceiling_above_the_upper_bound_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WATCH_MAX_POLL_ATTEMPTS", "1000001")
+
+    with pytest.raises(ConfigurationError, match="WATCH_MAX_POLL_ATTEMPTS"):
+        WatchSettings.from_environment()
+
+
+def test_overlong_attempt_text_is_rejected_before_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WATCH_MAX_POLL_ATTEMPTS", "1" * 40)
+
+    with pytest.raises(ConfigurationError, match="WATCH_MAX_POLL_ATTEMPTS"):
+        WatchSettings.from_environment()

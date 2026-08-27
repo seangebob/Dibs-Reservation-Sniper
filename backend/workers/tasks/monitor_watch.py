@@ -31,7 +31,7 @@ _resources_closed = False
 #: Everything else -- a programming error, a validation failure, a provider
 #: contract change -- fails identically on every delivery, so retrying it
 #: only delays the traceback and holds a worker slot three times over.
-RECOVERABLE_INFRASTRUCTURE_ERRORS = (
+_RECOVERABLE_INFRASTRUCTURE_ERRORS = (
     RedisConnectionError,
     RedisTimeoutError,
     BrokerOperationalError,
@@ -119,7 +119,7 @@ def monitor_watch(self, watch_id: str) -> dict[str, object]:
             if _resources_closed:
                 raise RuntimeError("watch worker resources are already closed")
             result = _runner().run(service.poll_once(watch_id))
-    except RECOVERABLE_INFRASTRUCTURE_ERRORS as exc:
+    except _RECOVERABLE_INFRASTRUCTURE_ERRORS as exc:
         logger.exception("monitor_watch failed for %s", watch_id)
         raise self.retry(exc=exc, countdown=60) from exc
 

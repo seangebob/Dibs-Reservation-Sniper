@@ -1,5 +1,6 @@
 """HTTP surface for watches, and the prompt path that opens one."""
 
+import asyncio
 from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -12,6 +13,16 @@ from backend.config import ConfigurationError, WatchSettings
 from backend.db.repositories.watches import InMemoryWatchRepository
 from backend.integrations.mock_booking import MockBookingAdapter
 from backend.main import create_app, get_watch_service
+from backend.models.watch import Watch
+from backend.orchestrator.router import PromptRouter
+from backend.orchestrator.schemas import (
+    IntentAction,
+    IntentStatus,
+    OrchestratorRoute,
+    ReservationIntent,
+    VenueType,
+)
+from backend.services.booking_service import BookingService
 from backend.services.watch_service import WatchService
 from backend.workers.queue import RecordingTaskQueue
 
@@ -203,6 +214,101 @@ def test_the_invariant_failure_is_not_a_configuration_error(
         get_watch_service(_request_scope(app))
 
     assert not isinstance(caught.value, ConfigurationError)
+
+
+# --------------------------------------------------------------------------
+# Property 1: Bug Condition - truthful monitoring-policy disclosure
+# --------------------------------------------------------------------------
+
+
+def _client_for(service: WatchService) -> TestClient:
+    app = create_app()
+    app.dependency_overrides[get_watch_service] = lambda: service
+    return TestClient(app)
+
+
+def test_a_deadline_capable_watch_advertises_the_deadline_policy(
+    client: TestClient,
+) -> None:
+    response = client.post("/api/watches", json=QUERY)
+
+    assert response.status_code == 201
+    assert response.headers["X-Watch-Monitoring-Policy"] == "deadline"
+    assert int(response.headers["X-Watch-Max-Availability-Checks"]) == (
+        response.json()["max_attempts"]
+    )
+    assert "Warning" not in response.headers
+
+
+def test_an_attempt_limited_watch_advertises_the_limitation() -> None:
+    service = WatchService(
+        InMemoryWatchRepository(),
+        EmptyAdapter(),
+        RecordingTaskQueue(),
+        max_attempts=5,
+    )
+
+    with _client_for(service) as client:
+        response = client.post("/api/watches", json=QUERY)
+
+    assert response.status_code == 201
+    assert response.headers["X-Watch-Monitoring-Policy"] == "attempt-limited"
+    assert response.headers["X-Watch-Max-Availability-Checks"] == "5"
+    assert response.json()["max_attempts"] == 5
+    assert response.headers["Warning"].startswith("199")
+    assert "may stop" in response.headers["Warning"]
+
+
+def _watch_intent() -> ReservationIntent:
+    return ReservationIntent(
+        status=IntentStatus.READY,
+        route=OrchestratorRoute.WATCH_SERVICE,
+        action=IntentAction.CREATE_WATCH,
+        venue_name="Cote",
+        venue_type=VenueType.RESTAURANT,
+        market="Kitchener-Waterloo-Cambridge, ON",
+        party_size=4,
+        date=QUERY["date"],
+        preferred_time="19:00",
+        time_window=None,
+        duration_minutes=None,
+        special_requests=[],
+        missing_fields=[],
+        clarification_question=None,
+    )
+
+
+def _router_for(max_attempts: int) -> PromptRouter:
+    service = WatchService(
+        InMemoryWatchRepository(),
+        EmptyAdapter(),
+        RecordingTaskQueue(),
+        max_attempts=max_attempts,
+    )
+    return PromptRouter(BookingService(EmptyAdapter()), service)
+
+
+def test_a_deadline_capable_router_message_keeps_the_original_promise() -> None:
+    result = asyncio.run(_router_for(25_000).execute(_watch_intent()))
+
+    assert "until a slot opens or the date passes" in result.message
+    assert "up to" not in result.message
+
+
+def test_an_attempt_limited_router_message_states_the_limitation() -> None:
+    result = asyncio.run(_router_for(5).execute(_watch_intent()))
+
+    assert "up to 5 availability checks" in result.message
+    assert "may stop before" in result.message
+    assert "until a slot opens or the date passes" not in result.message
+
+
+def test_the_public_watch_json_gains_no_policy_fields(client: TestClient) -> None:
+    """Policy disclosure is header-only; the body schema is unchanged."""
+
+    body = client.post("/api/watches", json=QUERY).json()
+
+    assert set(body) == set(Watch.model_fields)
 
 
 # --------------------------------------------------------------------------

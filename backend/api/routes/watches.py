@@ -4,11 +4,20 @@ from datetime import date, datetime
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 
 from backend.api.dependencies import get_watch_service
 from backend.models.reservation import AvailabilityQuery
 from backend.models.watch import Watch
+from backend.services.watch_policy import AvailabilityPolicy
 from backend.services.watch_service import WatchService
 
 
@@ -27,6 +36,7 @@ async def create_watch(
     request: Request,
     query: AvailabilityQuery,
     service: WatchServiceDep,
+    response: Response,
     auto_book: Annotated[
         bool,
         Query(description="Book the first matching slot instead of only notifying"),
@@ -42,7 +52,31 @@ async def create_watch(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Cannot watch a reservation date in the past: {query.date}",
         )
-    return await service.create(query, auto_book=auto_book)
+    watch = await service.create(query, auto_book=auto_book)
+    _apply_policy_headers(response, service.describe_policy(watch))
+    return watch
+
+
+def _apply_policy_headers(
+    response: Response,
+    policy: AvailabilityPolicy,
+) -> None:
+    """Disclose the effective monitoring policy without changing the body.
+
+    Deadline-capable watches carry only the informational policy/limit headers.
+    An attempt-limited watch additionally carries a `Warning`, so a client that
+    surfaces standard headers tells the user monitoring may stop early.
+    """
+
+    response.headers["X-Watch-Monitoring-Policy"] = policy.monitoring_policy_header
+    response.headers["X-Watch-Max-Availability-Checks"] = str(
+        policy.effective_attempts
+    )
+    if policy.is_attempt_limited:
+        response.headers["Warning"] = (
+            f'199 - "Monitoring may stop after {policy.effective_attempts} '
+            'availability checks, before the reservation date."'
+        )
 
 
 @router.get("", response_model=list[Watch], summary="List watches")
