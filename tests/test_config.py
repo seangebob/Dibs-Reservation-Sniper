@@ -18,6 +18,7 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "WATCH_POLL_INTERVAL_SECONDS",
         "WATCH_POLL_JITTER_SECONDS",
         "WATCH_MAX_POLL_ATTEMPTS",
+        "WATCH_DISPATCH_HORIZON_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -152,4 +153,44 @@ def test_overlong_attempt_text_is_rejected_before_conversion(
     monkeypatch.setenv("WATCH_MAX_POLL_ATTEMPTS", "1" * 40)
 
     with pytest.raises(ConfigurationError, match="WATCH_MAX_POLL_ATTEMPTS"):
+        WatchSettings.from_environment()
+
+
+# --- dispatch horizon (milestone 3) -----------------------------------------
+
+
+def test_the_default_dispatch_horizon_is_five_minutes() -> None:
+    assert WatchSettings().dispatch_horizon_seconds == 300
+    assert WatchSettings.from_environment().dispatch_horizon_seconds == 300
+
+
+@pytest.mark.parametrize("value", ["30", "300", "3600"])
+def test_dispatch_horizons_within_bounds_are_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("WATCH_DISPATCH_HORIZON_SECONDS", value)
+
+    assert WatchSettings.from_environment().dispatch_horizon_seconds == int(value)
+
+
+@pytest.mark.parametrize("value", ["29", "3601"])
+def test_dispatch_horizons_outside_bounds_are_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("WATCH_DISPATCH_HORIZON_SECONDS", value)
+
+    with pytest.raises(ConfigurationError, match="between 30 and 3600"):
+        WatchSettings.from_environment()
+
+
+@pytest.mark.parametrize("value", ["5.0", "-30", "lots"])
+def test_non_integer_dispatch_horizon_text_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("WATCH_DISPATCH_HORIZON_SECONDS", value)
+
+    with pytest.raises(ConfigurationError, match="must be an integer"):
         WatchSettings.from_environment()

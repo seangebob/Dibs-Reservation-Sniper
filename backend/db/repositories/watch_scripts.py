@@ -197,3 +197,61 @@ if owner == ARGV[1] and token == ARGV[2] then
 end
 return 0
 """
+
+# The dispatch lease is single-flight for *publishing* a marker to the queue,
+# separate from the poll claim that fences provider work. Its key is per-window
+# (`:dispatch:{hash}`), so a lease left over from a consumed window is simply a
+# different key that expires on its own. The schedule ZSET score stays the
+# logical due time; deferral after a successful publish is expressed by
+# extending this lease's expiry to the recovery grace, not by moving the score
+# (which would make the poll claim read the window as not-yet-due).
+#
+# KEYS: watch, runtime, dispatch_fence, dispatch_lease, schedule
+# ARGV: watch_id, window_id, owner_id, lease_ms, now_ms
+CLAIM_DISPATCH = _PARSE_CLAIM + """
+local w = redis.call('GET', KEYS[1])
+if not w then return {'STALE'} end
+if cjson.decode(w).status ~= 'ACTIVE' then return {'STALE'} end
+local rraw = redis.call('GET', KEYS[2])
+if not rraw then return {'STALE'} end
+if cjson.decode(rraw).window_id ~= ARGV[2] then return {'STALE'} end
+if not redis.call('ZSCORE', KEYS[5], ARGV[1]) then return {'STALE'} end
+local now = tonumber(ARGV[5])
+local held = redis.call('GET', KEYS[4])
+if held then
+  local _, _, exp = parse_claim(held)
+  if exp > now then return {'BUSY'} end
+end
+local gen = redis.call('INCR', KEYS[3])
+local expires = now + tonumber(ARGV[4])
+redis.call('SET', KEYS[4], ARGV[3] .. '|' .. gen .. '|' .. expires,
+           'PX', tonumber(ARGV[4]))
+return {'CLAIMED', tostring(gen), tostring(expires)}
+"""
+
+# KEYS: dispatch_lease
+# ARGV: owner_id, generation, redispatch_after_ms, now_ms
+MARK_DISPATCHED = _PARSE_CLAIM + """
+local held = redis.call('GET', KEYS[1])
+if not held then return 0 end
+local owner, gen, _ = parse_claim(held)
+if owner ~= ARGV[1] or gen ~= ARGV[2] then return 0 end
+local redispatch = tonumber(ARGV[3])
+local px = redispatch - tonumber(ARGV[4])
+if px < 1 then px = 1 end
+redis.call('SET', KEYS[1], owner .. '|' .. gen .. '|' .. redispatch, 'PX', px)
+return 1
+"""
+
+# KEYS: dispatch_lease
+# ARGV: owner_id, generation
+RELEASE_DISPATCH = _PARSE_CLAIM + """
+local held = redis.call('GET', KEYS[1])
+if not held then return 0 end
+local owner, gen, _ = parse_claim(held)
+if owner == ARGV[1] and gen == ARGV[2] then
+  redis.call('DEL', KEYS[1])
+  return 1
+end
+return 0
+"""

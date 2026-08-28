@@ -19,6 +19,9 @@ from backend.db.repositories.watch_decisions import (
     CommitStatus,
     CreateResult,
     CreateStatus,
+    DispatchClaim,
+    DispatchResult,
+    DispatchStatus,
     ScheduleMarker,
     TransitionResult,
     TransitionStatus,
@@ -51,6 +54,17 @@ def _to_ms(moment: datetime) -> int:
 
 def _from_ms(milliseconds: int) -> datetime:
     return datetime.fromtimestamp(milliseconds / 1000, UTC)
+
+
+def dispatch_window_hash(window_id: str) -> str:
+    """Short, bounded, deterministic key suffix for one window's dispatch lease.
+
+    Hashing keeps the key length bounded regardless of the window id and gives
+    the same suffix in both stores, so a lease acquired by one process is
+    addressable by any other.
+    """
+
+    return hashlib.sha1(window_id.encode()).hexdigest()[:16]
 
 
 def terminal_event_id(watch_id: str, status: WatchStatus, revision: int) -> str:
@@ -108,6 +122,36 @@ class WatchRepository(Protocol):
 
     async def schedule_marker(self, watch_id: str) -> ScheduleMarker | None:
         """Return the current due-window marker, or None."""
+        ...
+
+    async def due_schedule_markers(
+        self,
+        now: datetime,
+        horizon_seconds: float,
+        limit: int,
+    ) -> list[ScheduleMarker]:
+        """Return markers whose due time is within the dispatch horizon."""
+        ...
+
+    async def claim_dispatch(
+        self,
+        marker: ScheduleMarker,
+        owner_id: str,
+        lease_seconds: float,
+    ) -> DispatchResult:
+        """Acquire the single-flight lease to publish one marker."""
+        ...
+
+    async def mark_dispatched(
+        self,
+        claim: DispatchClaim,
+        redispatch_after: datetime,
+    ) -> bool:
+        """Record broker acceptance, deferring redispatch until the grace time."""
+        ...
+
+    async def release_dispatch(self, claim: DispatchClaim) -> bool:
+        """Release a still-owned dispatch lease so the marker is redispatchable."""
         ...
 
     async def create_with_schedule(
@@ -170,6 +214,16 @@ class _ClaimLease:
     expires_at: datetime
 
 
+@dataclass(slots=True)
+class _DispatchLease:
+    """One process's expiring right to publish a window to the queue."""
+
+    window_id: str
+    owner_id: str
+    generation: int
+    expires_at: datetime
+
+
 class InMemoryWatchRepository:
     """Process-local store used by tests and by `--no-redis` local runs.
 
@@ -188,6 +242,8 @@ class InMemoryWatchRepository:
         self._runtimes: dict[str, WatchRuntime] = {}
         self._fence: dict[str, int] = {}
         self._claims: dict[str, _ClaimLease] = {}
+        self._dispatch_fence: dict[str, int] = {}
+        self._dispatch_leases: dict[str, _DispatchLease] = {}
         self._markers: dict[str, ScheduleMarker] = {}
         self._terminal_delete_at: dict[str, datetime] = {}
         self._events: set[str] = set()
@@ -223,6 +279,8 @@ class InMemoryWatchRepository:
             self._runtimes.pop(watch_id, None)
             self._fence.pop(watch_id, None)
             self._claims.pop(watch_id, None)
+            self._dispatch_fence.pop(watch_id, None)
+            self._dispatch_leases.pop(watch_id, None)
             self._markers.pop(watch_id, None)
             self._terminal_delete_at.pop(watch_id, None)
             return existed
@@ -236,6 +294,98 @@ class InMemoryWatchRepository:
     async def schedule_marker(self, watch_id: str) -> ScheduleMarker | None:
         async with self._lock:
             return self._markers.get(watch_id)
+
+    async def due_schedule_markers(
+        self,
+        now: datetime,
+        horizon_seconds: float,
+        limit: int,
+    ) -> list[ScheduleMarker]:
+        async with self._lock:
+            cutoff = now + timedelta(seconds=horizon_seconds)
+            due = [
+                marker
+                for marker in self._markers.values()
+                if marker.scheduled_for <= cutoff
+            ]
+        due.sort(key=lambda marker: marker.scheduled_for)
+        return due[:limit]
+
+    async def claim_dispatch(
+        self,
+        marker: ScheduleMarker,
+        owner_id: str,
+        lease_seconds: float,
+    ) -> DispatchResult:
+        async with self._lock:
+            now = self._clock()
+            watch = self._watches.get(marker.watch_id)
+            current = self._markers.get(marker.watch_id)
+            if (
+                watch is None
+                or watch.status.is_terminal
+                or current is None
+                or current.window_id != marker.window_id
+            ):
+                return DispatchResult(DispatchStatus.STALE)
+
+            held = self._dispatch_leases.get(marker.watch_id)
+            if (
+                held is not None
+                and held.window_id == marker.window_id
+                and held.expires_at > now
+            ):
+                return DispatchResult(DispatchStatus.BUSY)
+
+            generation = self._dispatch_fence.get(marker.watch_id, 0) + 1
+            self._dispatch_fence[marker.watch_id] = generation
+            expires = now + timedelta(seconds=lease_seconds)
+            self._dispatch_leases[marker.watch_id] = _DispatchLease(
+                window_id=marker.window_id,
+                owner_id=owner_id,
+                generation=generation,
+                expires_at=expires,
+            )
+            return DispatchResult(
+                status=DispatchStatus.CLAIMED,
+                claim=DispatchClaim(
+                    watch_id=marker.watch_id,
+                    window_id=marker.window_id,
+                    scheduled_for=current.scheduled_for,
+                    owner_id=owner_id,
+                    generation=generation,
+                    lease_expires_at=expires,
+                ),
+            )
+
+    async def mark_dispatched(
+        self,
+        claim: DispatchClaim,
+        redispatch_after: datetime,
+    ) -> bool:
+        async with self._lock:
+            held = self._dispatch_leases.get(claim.watch_id)
+            if held is None or not self._owns_dispatch(claim, held):
+                return False
+            # Deferral is expressed as the lease surviving until the grace time,
+            # leaving the schedule marker (the logical due time) untouched.
+            held.expires_at = redispatch_after
+            return True
+
+    async def release_dispatch(self, claim: DispatchClaim) -> bool:
+        async with self._lock:
+            held = self._dispatch_leases.get(claim.watch_id)
+            if held is not None and self._owns_dispatch(claim, held):
+                del self._dispatch_leases[claim.watch_id]
+                return True
+            return False
+
+    @staticmethod
+    def _owns_dispatch(claim: DispatchClaim, held: _DispatchLease) -> bool:
+        return (
+            held.generation == claim.generation
+            and held.owner_id == claim.owner_id
+        )
 
     async def create_with_schedule(
         self,
@@ -487,6 +637,7 @@ class InMemoryWatchRepository:
                 }
             )
         self._claims.pop(watch_id, None)
+        self._dispatch_leases.pop(watch_id, None)
         self._markers.pop(watch_id, None)
         return revision
 
@@ -532,6 +683,9 @@ class RedisWatchRepository:
         "cancel": watch_scripts.CANCEL_IF_ACTIVE,
         "expire": watch_scripts.EXPIRE_IF_ELIGIBLE,
         "release": watch_scripts.RELEASE_CLAIM,
+        "claim_dispatch": watch_scripts.CLAIM_DISPATCH,
+        "mark_dispatched": watch_scripts.MARK_DISPATCHED,
+        "release_dispatch": watch_scripts.RELEASE_DISPATCH,
     }
 
     def __init__(
@@ -642,6 +796,14 @@ class RedisWatchRepository:
     def _claim_key(watch_id: str) -> str:
         return f"{KEY_PREFIX}:{watch_id}:claim"
 
+    @staticmethod
+    def _dispatch_fence_key(watch_id: str) -> str:
+        return f"{KEY_PREFIX}:{watch_id}:dispfence"
+
+    @staticmethod
+    def _dispatch_key(watch_id: str, window_id: str) -> str:
+        return f"{KEY_PREFIX}:{watch_id}:dispatch:{dispatch_window_hash(window_id)}"
+
     # -- atomic state-machine surface ---------------------------------------
 
     async def get_runtime(self, watch_id: str) -> WatchRuntime | None:
@@ -667,6 +829,101 @@ class RedisWatchRepository:
             window_id=runtime.window_id,
             scheduled_for=_from_ms(int(score)),
         )
+
+    async def due_schedule_markers(
+        self,
+        now: datetime,
+        horizon_seconds: float,
+        limit: int,
+    ) -> list[ScheduleMarker]:
+        cutoff_ms = _to_ms(now + timedelta(seconds=horizon_seconds))
+        rows = await self._client.zrangebyscore(
+            SCHEDULE_INDEX_KEY,
+            min="-inf",
+            max=cutoff_ms,
+            start=0,
+            num=max(0, limit),
+            withscores=True,
+        )
+        markers: list[ScheduleMarker] = []
+        for member, _score in rows:
+            watch_id = _text(member)
+            runtime = await self.get_runtime(watch_id)
+            # A member without a live current window is a stale index entry;
+            # recovery prunes it. The logical due time comes from the runtime,
+            # not the score, so it matches the in-memory store bit for bit.
+            if runtime is None or runtime.window_id is None:
+                continue
+            if runtime.scheduled_for is None:
+                continue
+            markers.append(
+                ScheduleMarker(
+                    watch_id=watch_id,
+                    window_id=runtime.window_id,
+                    scheduled_for=runtime.scheduled_for,
+                )
+            )
+        return markers
+
+    async def claim_dispatch(
+        self,
+        marker: ScheduleMarker,
+        owner_id: str,
+        lease_seconds: float,
+    ) -> DispatchResult:
+        out = await self._script('claim_dispatch')(
+            keys=[
+                self._key(marker.watch_id),
+                self._runtime_key(marker.watch_id),
+                self._dispatch_fence_key(marker.watch_id),
+                self._dispatch_key(marker.watch_id, marker.window_id),
+                SCHEDULE_INDEX_KEY,
+            ],
+            args=[
+                marker.watch_id,
+                marker.window_id,
+                owner_id,
+                str(int(lease_seconds * 1000)),
+                str(self._now_ms()),
+            ],
+        )
+        code = _code(out)
+        if code != "CLAIMED":
+            return DispatchResult(status=DispatchStatus(code))
+        return DispatchResult(
+            status=DispatchStatus.CLAIMED,
+            claim=DispatchClaim(
+                watch_id=marker.watch_id,
+                window_id=marker.window_id,
+                scheduled_for=marker.scheduled_for,
+                owner_id=owner_id,
+                generation=int(out[1]),
+                lease_expires_at=_from_ms(int(out[2])),
+            ),
+        )
+
+    async def mark_dispatched(
+        self,
+        claim: DispatchClaim,
+        redispatch_after: datetime,
+    ) -> bool:
+        out = await self._script('mark_dispatched')(
+            keys=[self._dispatch_key(claim.watch_id, claim.window_id)],
+            args=[
+                claim.owner_id,
+                str(claim.generation),
+                str(_to_ms(redispatch_after)),
+                str(self._now_ms()),
+            ],
+        )
+        return bool(int(out))
+
+    async def release_dispatch(self, claim: DispatchClaim) -> bool:
+        out = await self._script('release_dispatch')(
+            keys=[self._dispatch_key(claim.watch_id, claim.window_id)],
+            args=[claim.owner_id, str(claim.generation)],
+        )
+        return bool(int(out))
 
     async def create_with_schedule(
         self,

@@ -15,6 +15,7 @@ from backend.db.repositories.watch_decisions import (
     ClaimStatus,
     CommitStatus,
     CreateStatus,
+    DispatchStatus,
     TransitionStatus,
 )
 from backend.db.repositories.watches import (
@@ -468,5 +469,171 @@ def test_expire_if_eligible_fences_on_a_revision_mismatch(make_repo) -> None:
         )
 
         assert result.status is TransitionStatus.FENCED
+
+    asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------------
+# Single-flight dispatch lease
+# --------------------------------------------------------------------------
+
+
+def test_due_markers_return_only_windows_within_the_horizon(make_repo) -> None:
+    async def scenario() -> None:
+        clock = Clock(NOW)
+        repo = make_repo(clock)
+        # One due now, one due in five minutes (inside a 300s horizon), one due
+        # in an hour (a far-future watch that must stay durable, not dispatched).
+        await _create(repo, _watch("watch_now", next_check_at=NOW))
+        await _create(
+            repo, _watch("watch_soon", next_check_at=NOW + timedelta(seconds=300))
+        )
+        await _create(
+            repo, _watch("watch_far", next_check_at=NOW + timedelta(seconds=3600))
+        )
+
+        due = await repo.due_schedule_markers(clock(), 300.0, 100)
+
+        assert {marker.watch_id for marker in due} == {"watch_now", "watch_soon"}
+
+    asyncio.run(scenario())
+
+
+def test_only_one_dispatcher_claims_a_marker_until_the_lease_expires(
+    make_repo,
+) -> None:
+    async def scenario() -> None:
+        clock = Clock(NOW)
+        repo = make_repo(clock)
+        await _create(repo, _watch())
+        marker = await repo.schedule_marker("watch_1")
+        assert marker is not None
+
+        first = await repo.claim_dispatch(marker, "disp-a", 30.0)
+        second = await repo.claim_dispatch(marker, "disp-b", 30.0)
+
+        assert first.status is DispatchStatus.CLAIMED
+        assert second.status is DispatchStatus.BUSY
+
+        clock.advance(31)  # the first dispatcher's lease has expired
+        third = await repo.claim_dispatch(marker, "disp-b", 30.0)
+        assert third.status is DispatchStatus.CLAIMED
+
+    asyncio.run(scenario())
+
+
+def test_marking_dispatched_defers_redispatch_past_the_grace(make_repo) -> None:
+    async def scenario() -> None:
+        clock = Clock(NOW)
+        repo = make_repo(clock)
+        await _create(repo, _watch())
+        marker = await repo.schedule_marker("watch_1")
+        assert marker is not None
+
+        claim = (await repo.claim_dispatch(marker, "disp-a", 30.0)).claim
+        assert claim is not None
+        assert await repo.mark_dispatched(claim, clock() + timedelta(seconds=60))
+
+        # Within the grace, even after the short lease would have lapsed, the
+        # marker stays claimed so no replica republishes it.
+        clock.advance(45)
+        again = await repo.claim_dispatch(marker, "disp-b", 30.0)
+        assert again.status is DispatchStatus.BUSY
+
+        # After the grace, a lost broker message becomes redispatchable.
+        clock.advance(20)
+        recovered = await repo.claim_dispatch(marker, "disp-b", 30.0)
+        assert recovered.status is DispatchStatus.CLAIMED
+
+    asyncio.run(scenario())
+
+
+def test_releasing_a_dispatch_lease_makes_the_marker_immediately_claimable(
+    make_repo,
+) -> None:
+    async def scenario() -> None:
+        clock = Clock(NOW)
+        repo = make_repo(clock)
+        await _create(repo, _watch())
+        marker = await repo.schedule_marker("watch_1")
+        assert marker is not None
+
+        claim = (await repo.claim_dispatch(marker, "disp-a", 30.0)).claim
+        assert claim is not None
+        assert await repo.release_dispatch(claim) is True
+
+        # No wait for the lease: a failed publish leaves the marker due at once.
+        again = await repo.claim_dispatch(marker, "disp-b", 30.0)
+        assert again.status is DispatchStatus.CLAIMED
+
+    asyncio.run(scenario())
+
+
+def test_a_stale_dispatch_owner_cannot_defer_or_release_a_newer_generation(
+    make_repo,
+) -> None:
+    async def scenario() -> None:
+        clock = Clock(NOW)
+        repo = make_repo(clock)
+        await _create(repo, _watch())
+        marker = await repo.schedule_marker("watch_1")
+        assert marker is not None
+
+        stale = (await repo.claim_dispatch(marker, "disp-a", 30.0)).claim
+        assert stale is not None
+        clock.advance(31)  # its lease expires
+        fresh = (await repo.claim_dispatch(marker, "disp-b", 30.0)).claim
+        assert fresh is not None and fresh.generation != stale.generation
+
+        # The crashed owner's late calls must not touch the new generation.
+        assert await repo.mark_dispatched(stale, clock() + timedelta(60)) is False
+        assert await repo.release_dispatch(stale) is False
+        # The fresh owner still holds the lease.
+        assert (
+            await repo.claim_dispatch(marker, "disp-c", 30.0)
+        ).status is DispatchStatus.BUSY
+
+    asyncio.run(scenario())
+
+
+def test_dispatch_claim_is_stale_once_the_window_advances(make_repo) -> None:
+    async def scenario() -> None:
+        clock = Clock(NOW)
+        repo = make_repo(clock)
+        await _create(repo, _watch())
+        window = window_id_for("watch_1", 0)
+        marker = await repo.schedule_marker("watch_1")
+        assert marker is not None
+
+        # A normal miss commits the successor window, consuming this marker.
+        claim = (
+            await repo.claim_window("watch_1", window, "owner-a", LEASE)
+        ).claim
+        assert claim is not None
+        new_watch, new_runtime = _next_miss(claim, clock)
+        assert (
+            await repo.commit_window(claim, new_watch, new_runtime)
+        ).status is CommitStatus.COMMITTED
+
+        # The old marker no longer matches the current window.
+        result = await repo.claim_dispatch(marker, "disp-a", 30.0)
+        assert result.status is DispatchStatus.STALE
+
+    asyncio.run(scenario())
+
+
+def test_dispatch_claim_is_stale_for_a_terminal_watch(make_repo) -> None:
+    async def scenario() -> None:
+        clock = Clock(NOW)
+        repo = make_repo(clock)
+        await _create(repo, _watch())
+        marker = await repo.schedule_marker("watch_1")
+        assert marker is not None
+
+        cancel = await repo.cancel_if_active("watch_1")
+        assert cancel.status is TransitionStatus.APPLIED
+
+        result = await repo.claim_dispatch(marker, "disp-a", 30.0)
+        assert result.status is DispatchStatus.STALE
 
     asyncio.run(scenario())

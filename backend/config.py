@@ -31,11 +31,17 @@ DEFAULT_POLL_JITTER_SECONDS = 30
 #: covers the worst supported default horizon (a +30-day watch at the earliest
 #: 150-second delay needs under 18,000 checks including a possible DST hour).
 DEFAULT_MAX_POLL_ATTEMPTS = 25_000
+#: Celery is handed a poll only once its due time is within this horizon, so a
+#: +7/+30-day watch never becomes a multi-day broker ETA and the durable
+#: schedule marker stays the authority for far-future work.
+DEFAULT_DISPATCH_HORIZON_SECONDS = 300
 
 _MIN_POLL_INTERVAL_SECONDS = 15
 _MAX_POLL_INTERVAL_SECONDS = 3_600
 _MIN_MAX_POLL_ATTEMPTS = 1
 _MAX_MAX_POLL_ATTEMPTS = 1_000_000
+_MIN_DISPATCH_HORIZON_SECONDS = 30
+_MAX_DISPATCH_HORIZON_SECONDS = 3_600
 
 #: Longest integer text accepted for a bounded count, rejected before any
 #: `int()` conversion so a pathologically long digit string can never be
@@ -73,8 +79,12 @@ def _bounded_count(name: str, default: int, *, minimum: int, maximum: int) -> in
         raise ConfigurationError(f"{name} must be an integer")
     value = int(raw)
     if value < minimum:
-        # Preserve the historical wording for the common zero case.
-        raise ConfigurationError(f"{name} must be a positive integer")
+        if minimum <= 1:
+            # Preserve the historical wording for the common zero case.
+            raise ConfigurationError(f"{name} must be a positive integer")
+        raise ConfigurationError(
+            f"{name} must be between {minimum} and {maximum}"
+        )
     if value > maximum:
         raise ConfigurationError(
             f"{name} must be between {minimum} and {maximum}"
@@ -95,6 +105,7 @@ class WatchSettings:
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
     poll_jitter_seconds: int = DEFAULT_POLL_JITTER_SECONDS
     max_poll_attempts: int = DEFAULT_MAX_POLL_ATTEMPTS
+    dispatch_horizon_seconds: int = DEFAULT_DISPATCH_HORIZON_SECONDS
 
     @classmethod
     def from_environment(cls) -> "WatchSettings":
@@ -141,12 +152,20 @@ class WatchSettings:
             maximum=_MAX_MAX_POLL_ATTEMPTS,
         )
 
+        dispatch_horizon = _bounded_count(
+            "WATCH_DISPATCH_HORIZON_SECONDS",
+            DEFAULT_DISPATCH_HORIZON_SECONDS,
+            minimum=_MIN_DISPATCH_HORIZON_SECONDS,
+            maximum=_MAX_DISPATCH_HORIZON_SECONDS,
+        )
+
         return cls(
             timezone_name=timezone_name,
             redis_url=redis_url,
             poll_interval_seconds=interval,
             poll_jitter_seconds=jitter,
             max_poll_attempts=attempts,
+            dispatch_horizon_seconds=dispatch_horizon,
         )
 
 
@@ -159,6 +178,7 @@ class Settings:
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
     poll_jitter_seconds: int = DEFAULT_POLL_JITTER_SECONDS
     max_poll_attempts: int = DEFAULT_MAX_POLL_ATTEMPTS
+    dispatch_horizon_seconds: int = DEFAULT_DISPATCH_HORIZON_SECONDS
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -187,4 +207,5 @@ class Settings:
             poll_interval_seconds=watch.poll_interval_seconds,
             poll_jitter_seconds=watch.poll_jitter_seconds,
             max_poll_attempts=watch.max_poll_attempts,
+            dispatch_horizon_seconds=watch.dispatch_horizon_seconds,
         )

@@ -23,6 +23,9 @@ __all__ = [
     "CommitStatus",
     "CreateResult",
     "CreateStatus",
+    "DispatchClaim",
+    "DispatchResult",
+    "DispatchStatus",
     "ScheduleMarker",
     "TransitionResult",
     "TransitionStatus",
@@ -123,3 +126,34 @@ class ScheduleMarker:
     watch_id: str
     window_id: str
     scheduled_for: datetime
+
+
+class DispatchStatus(str, Enum):
+    """Outcome of trying to acquire the single-flight dispatch lease."""
+
+    CLAIMED = "CLAIMED"      # this owner may publish the window to the queue
+    BUSY = "BUSY"           # another dispatcher holds an unexpired lease
+    STALE = "STALE"         # the marker is no longer the current due window
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchClaim:
+    """Proof of the right to publish one schedule marker for one generation.
+
+    `scheduled_for` is the logical due time (used to compute the queue delay),
+    kept distinct from `lease_expires_at`, which bounds only how long this
+    dispatch attempt fences other dispatchers off the same window.
+    """
+
+    watch_id: str
+    window_id: str
+    scheduled_for: datetime
+    owner_id: str
+    generation: int
+    lease_expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchResult:
+    status: DispatchStatus
+    claim: DispatchClaim | None = None
