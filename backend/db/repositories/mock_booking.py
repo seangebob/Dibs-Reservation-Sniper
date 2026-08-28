@@ -20,8 +20,9 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Protocol
+from typing import Any, Protocol
 
+from backend.db.repositories import mock_booking_scripts
 from backend.integrations.base import (
     ReconciliationResult,
     ReconciliationStatus,
@@ -36,7 +37,22 @@ from backend.models.reservation import AvailabilitySlot, BookingConfirmation
 #: state forever.
 _OPERATION_PIN_SECONDS = 120.0
 
+#: Extra margin on the native key TTL past the logical protection deadline, so a
+#: backstop expiry can never remove a record before coordinated cleanup does.
+_CLEANUP_GRACE_SECONDS = 3_600.0
+
+#: Every mock-state key lives under this one prefix on a shared Redis primary.
+MOCK_KEY_PREFIX = "dibs:mock"
+
 ConfirmationFactory = Callable[[AvailabilitySlot], BookingConfirmation]
+
+
+def _to_ms(moment: datetime) -> int:
+    return int(moment.timestamp() * 1000)
+
+
+def _text(value: Any) -> str:
+    return value.decode("utf-8") if isinstance(value, bytes) else value
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,9 +127,12 @@ class _Tombstone:
     protected_until: datetime
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class _Pin:
-    slot_ids: set[str]
+    #: Each slot is pinned by at most one operation -- the most recent search to
+    #: return it -- so pin ownership is a single value per slot, which is what
+    #: lets the Redis store reproduce the identical eviction victim.
+    operation_id: str
     expires_at: datetime
 
 
@@ -140,6 +159,7 @@ class InMemoryMockBookingStateRepository:
         self._slots: dict[str, _SlotEntry] = {}
         self._tombstones: dict[str, _Tombstone] = {}
         self._bookings: dict[str, _Booking] = {}
+        #: slot_id -> its single current pin.
         self._pins: dict[str, _Pin] = {}
         self._lock = asyncio.Lock()
 
@@ -176,9 +196,11 @@ class InMemoryMockBookingStateRepository:
                 admitted.add(slot_id)
                 result.append(slot)
 
-            if admitted:
-                self._pins[operation_id] = _Pin(
-                    slot_ids=admitted, expires_at=now + self._pin
+            # Pin every admitted slot to this operation, transferring ownership
+            # from any earlier operation that had returned the same slot.
+            for slot_id in admitted:
+                self._pins[slot_id] = _Pin(
+                    operation_id=operation_id, expires_at=now + self._pin
                 )
             return result
 
@@ -246,7 +268,11 @@ class InMemoryMockBookingStateRepository:
 
     async def release_operation(self, operation_id: str) -> None:
         async with self._lock:
-            self._pins.pop(operation_id, None)
+            self._pins = {
+                slot_id: pin
+                for slot_id, pin in self._pins.items()
+                if pin.operation_id != operation_id
+            }
 
     async def cleanup(self, now: datetime, batch_size: int) -> CleanupCounts:
         async with self._lock:
@@ -285,17 +311,17 @@ class InMemoryMockBookingStateRepository:
 
     def _expire_pins(self, now: datetime) -> None:
         self._pins = {
-            operation_id: pin
-            for operation_id, pin in self._pins.items()
+            slot_id: pin
+            for slot_id, pin in self._pins.items()
             if pin.expires_at > now
         }
 
     def _pinned_ids(self, now: datetime) -> set[str]:
-        pinned: set[str] = set()
-        for pin in self._pins.values():
-            if pin.expires_at > now:
-                pinned |= pin.slot_ids
-        return pinned
+        return {
+            slot_id
+            for slot_id, pin in self._pins.items()
+            if pin.expires_at > now
+        }
 
     def _evict_one(self, now: datetime, *, protected: set[str]) -> bool:
         """Remove the oldest evictable unbooked slot; return whether one went."""
@@ -313,8 +339,145 @@ class InMemoryMockBookingStateRepository:
         return True
 
     def _unpin_slot(self, slot_id: str) -> None:
-        for pin in self._pins.values():
-            pin.slot_ids.discard(slot_id)
+        self._pins.pop(slot_id, None)
+
+
+class RedisMockBookingStateRepository:
+    """Redis-backed shared mock state, one atomic script per decision.
+
+    Behaviorally equivalent to the in-memory store for every generated trace:
+    the same capacity, eviction victim, pin ownership, booking protection, and
+    cleanup decisions, verified by a differential oracle. The client is injected
+    so it works against a real primary or a Lua-capable test double.
+    """
+
+    _SCRIPT_SOURCES = {
+        "publish": mock_booking_scripts.PUBLISH_AND_FILTER,
+        "book": mock_booking_scripts.BOOK_SLOT,
+        "release": mock_booking_scripts.RELEASE_OPERATION,
+        "cleanup": mock_booking_scripts.CLEANUP,
+    }
+
+    def __init__(
+        self,
+        client: Any,
+        *,
+        capacity: int,
+        idle_ttl_seconds: float,
+        retention_seconds: float,
+        pin_seconds: float = _OPERATION_PIN_SECONDS,
+        prefix: str = MOCK_KEY_PREFIX,
+    ) -> None:
+        self._client = client
+        self._capacity = capacity
+        self._idle_ttl_ms = int(idle_ttl_seconds * 1000)
+        self._retention_ms = int(retention_seconds * 1000)
+        self._pin_ms = int(pin_seconds * 1000)
+        self._grace_ms = int(_CLEANUP_GRACE_SECONDS * 1000)
+        self._prefix = prefix
+        self._scripts: dict[str, Any] = {}
+
+    def _script(self, name: str) -> Any:
+        script = self._scripts.get(name)
+        if script is None:
+            script = self._client.register_script(self._SCRIPT_SOURCES[name])
+            self._scripts[name] = script
+        return script
+
+    async def publish_and_filter(
+        self,
+        candidates: list[AvailabilitySlot],
+        operation_id: str,
+        now: datetime,
+    ) -> list[AvailabilitySlot]:
+        args: list[Any] = [
+            self._prefix,
+            operation_id,
+            str(_to_ms(now)),
+            str(self._pin_ms),
+            str(self._capacity),
+        ]
+        for slot in candidates:
+            args.append(slot.slot_id)
+            args.append(slot.model_dump_json())
+        out = await self._script("publish")(keys=[], args=args)
+        return [AvailabilitySlot.model_validate_json(_text(raw)) for raw in out]
+
+    async def get_booking(
+        self, idempotency_key: str, now: datetime
+    ) -> BookingConfirmation | None:
+        raw = await self._client.get(f"{self._prefix}:booking:{idempotency_key}")
+        if raw is None:
+            return None
+        score = await self._client.zscore(
+            f"{self._prefix}:bookexp", idempotency_key
+        )
+        if score is None or int(score) <= _to_ms(now):
+            return None
+        return BookingConfirmation.model_validate_json(_text(raw))
+
+    async def reconcile_booking(
+        self,
+        idempotency_key: str,
+        booking_permit_id: str | None,
+        now: datetime,
+    ) -> ReconciliationResult:
+        booking = await self.get_booking(idempotency_key, now)
+        if booking is not None:
+            return ReconciliationResult(
+                ReconciliationStatus.CONFIRMED, booking
+            )
+        return ReconciliationResult(ReconciliationStatus.DEFINITIVELY_ABSENT)
+
+    async def book_slot(
+        self,
+        slot_id: str,
+        idempotency_key: str,
+        confirmation_factory: ConfirmationFactory,
+        now: datetime,
+    ) -> BookingConfirmation:
+        raw = await self._client.get(f"{self._prefix}:slot:{slot_id}")
+        confirmation_json = ""
+        if raw is not None:
+            slot = AvailabilitySlot.model_validate_json(_text(raw))
+            confirmation_json = confirmation_factory(slot).model_dump_json()
+
+        out = await self._script("book")(
+            keys=[],
+            args=[
+                self._prefix,
+                slot_id,
+                idempotency_key,
+                confirmation_json,
+                str(_to_ms(now) + self._retention_ms),
+                str(_to_ms(now)),
+                str(self._grace_ms),
+            ],
+        )
+        code = _text(out[0])
+        if code in ("BOOKED", "EXISTING"):
+            return BookingConfirmation.model_validate_json(_text(out[1]))
+        if code == "UNAVAILABLE":
+            raise SlotUnavailableError(f"Mock slot is already booked: {slot_id}")
+        raise SlotNotFoundError(f"Unknown mock slot: {slot_id}")
+
+    async def release_operation(self, operation_id: str) -> None:
+        await self._script("release")(
+            keys=[], args=[self._prefix, operation_id]
+        )
+
+    async def cleanup(self, now: datetime, batch_size: int) -> CleanupCounts:
+        now_ms = _to_ms(now)
+        out = await self._script("cleanup")(
+            keys=[],
+            args=[
+                self._prefix,
+                str(now_ms),
+                str(now_ms - self._idle_ttl_ms),
+                str(batch_size),
+            ],
+        )
+        return CleanupCounts(idle_slots=int(out[0]), expired_records=int(out[1]))
 
 
 def in_memory_mock_state(
