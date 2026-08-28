@@ -108,9 +108,10 @@ def monitor_watch(
 ) -> dict[str, object]:
     """Poll one watch and report what happened.
 
-    `window_id` identifies the cadence window a delivery belongs to. It is
-    optional so an already-queued one-argument job stays valid; the
-    window-aware poll path is wired in when the service adopts it.
+    `window_id` identifies the cadence window a delivery belongs to. When it is
+    present the task takes the window-aware, claim-first service path; an
+    already-queued one-argument job omits it and resolves the current window
+    through `poll_once`. Both paths return the identical result shape.
 
     The task reschedules itself through the service, so a successful run either
     finishes the watch or leaves exactly one successor job on the queue. A
@@ -126,7 +127,11 @@ def monitor_watch(
         with _runner_lock:
             if _resources_closed:
                 raise RuntimeError("watch worker resources are already closed")
-            result = _runner().run(service.poll_once(watch_id))
+            result = _runner().run(
+                service.poll_once(watch_id)
+                if window_id is None
+                else service.poll_window(watch_id, window_id)
+            )
     except _RECOVERABLE_INFRASTRUCTURE_ERRORS as exc:
         logger.exception("monitor_watch failed for %s", watch_id)
         raise self.retry(exc=exc, countdown=60) from exc

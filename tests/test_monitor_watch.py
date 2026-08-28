@@ -116,9 +116,24 @@ class PollServiceDouble:
         self._raises = raises
         self._result = result
         self.calls: list[str] = []
+        self.window_calls: list[tuple[str, str]] = []
 
     async def poll_once(self, watch_id: str) -> WatchPollResult:
         self.calls.append(watch_id)
+        if self._raises is not None:
+            raise self._raises
+        assert self._result is not None
+        return self._result
+
+    async def poll_window(
+        self,
+        watch_id: str,
+        window_id: str,
+        *,
+        owner_id: str | None = None,
+        enforce_due: bool = True,
+    ) -> WatchPollResult:
+        self.window_calls.append((watch_id, window_id))
         if self._raises is not None:
             raise self._raises
         assert self._result is not None
@@ -331,6 +346,48 @@ def test_a_successful_poll_returns_the_exact_result_shape(
     assert isinstance(returned["outcome"], str)
     assert retry_spy.calls == []
     assert not _retry_failure_logged(caplog)
+
+
+def test_a_window_argument_takes_the_window_aware_service_path(
+    monkeypatch: pytest.MonkeyPatch,
+    retry_spy: RetrySpy,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A two-argument delivery polls the exact window; the result shape is kept."""
+
+    service = PollServiceDouble(
+        result=_result(WatchPollOutcome.NO_AVAILABILITY, 180.0)
+    )
+    _bind(monkeypatch, service, RunnerDouble())
+
+    with caplog.at_level(logging.ERROR, logger=task_module.__name__):
+        returned = monitor_watch.run("watch_win", "watch_win:3")
+
+    assert service.window_calls == [("watch_win", "watch_win:3")]
+    assert service.calls == []  # the legacy poll_once path was not taken
+    assert returned == {
+        "watch_id": "watch_win",
+        "outcome": "NO_AVAILABILITY",
+        "retry_in_seconds": 180.0,
+    }
+    assert retry_spy.calls == []
+    assert not _retry_failure_logged(caplog)
+
+
+def test_a_one_argument_delivery_still_resolves_the_current_window(
+    monkeypatch: pytest.MonkeyPatch,
+    retry_spy: RetrySpy,
+) -> None:
+    """An already-queued one-argument job keeps using `poll_once`."""
+
+    service = PollServiceDouble(result=_result(WatchPollOutcome.FOUND))
+    _bind(monkeypatch, service, RunnerDouble())
+
+    monitor_watch.run("watch_legacy")
+
+    assert service.calls == ["watch_legacy"]
+    assert service.window_calls == []
+    assert retry_spy.calls == []
 
 
 def test_the_runner_lock_admits_only_one_concurrent_poll(
