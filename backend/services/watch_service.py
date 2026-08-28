@@ -28,6 +28,7 @@ from backend.db.repositories.watch_decisions import (
 from backend.integrations.base import (
     AdapterError,
     ProviderSequenceTimeout,
+    ReconciliationStatus,
     ReservationAdapter,
     SlotNotFoundError,
     SlotUnavailableError,
@@ -65,6 +66,11 @@ MAX_RECORDED_SLOTS = 16
 #: limit, so no other owner can take over while the original task can still be
 #: running. Wired to a dedicated setting when timing validation lands.
 _POLL_LEASE_SECONDS = 120.0
+
+#: How many times one poll re-asks the provider to reconcile an ambiguous
+#: booking before giving up and treating it as an outage. Bounded so a stuck
+#: provider cannot hold the claim for the whole lease.
+_RECONCILE_ATTEMPTS = 3
 
 
 class WatchService:
@@ -317,7 +323,11 @@ class WatchService:
             return await self._commit_terminal(
                 claim, self._booked_watch(watch, now, payload, attempted=False)
             )
-        # NOOP: a cancellation or a fence beat the booking-permit linearization.
+        if kind is _Sequence.CANCELLED:
+            return await self._commit_terminal(
+                claim, self._cancelled_watch(watch, now)
+            )
+        # NOOP: a fence beat the booking-permit linearization.
         await self._repository.release_claim(claim)
         return self._noop(await self._repository.get(watch.watch_id))
 
@@ -345,14 +355,68 @@ class WatchService:
             return _Sequence.MISS, None
         if not watch.auto_book:
             return _Sequence.FOUND, slots
+        return await self._auto_book_sequence(claim, watch, slots)
+
+    async def _auto_book_sequence(
+        self, claim: WindowClaim, watch: Watch, slots: List[Any]
+    ) -> tuple[_Sequence, Any]:
+        """The fenced booking path: permit, irreversible call, then resolve.
+
+        `begin_booking` is the linearization point. A cancellation that reaches
+        the repository before it wins outright; one that arrives after it is
+        recorded as `cancel_requested` and resolved here -- to the real
+        `BOOKED` watch if the reservation exists, or to `CANCELLED` only once
+        the provider authoritatively confirms none does -- so a confirmed
+        booking is never silently discarded and a cancellation never lies.
+        """
 
         permit = await self._repository.begin_booking(claim)
+        if permit.status is BookingPermitStatus.CANCELLED:
+            # Recorded before the irreversible call; nothing is booked yet.
+            return _Sequence.CANCELLED, None
         if permit.status is not BookingPermitStatus.GRANTED:
             return _Sequence.NOOP, None
-        confirmation = await self._book(watch, slots)
-        if confirmation is None:
-            return _Sequence.MISS, None
-        return _Sequence.BOOKED, confirmation
+
+        try:
+            confirmation = await self._book(watch, slots)
+        except AdapterError as exc:
+            # The outcome is ambiguous; only authoritative reconciliation may
+            # decide, never a blind retry or a false cancellation.
+            return await self._resolve_ambiguous(watch, exc)
+
+        if confirmation is not None:
+            # The reservation exists, so a cancellation that lost this race
+            # resolves to the real BOOKED watch rather than a false cancel.
+            return _Sequence.BOOKED, confirmation
+        # `_book` exhausted every slot without reserving: definitively not
+        # booked, so a pending cancellation wins; otherwise it is a normal miss.
+        if await self._cancel_requested(watch.watch_id):
+            return _Sequence.CANCELLED, None
+        return _Sequence.MISS, None
+
+    async def _resolve_ambiguous(
+        self, watch: Watch, error: AdapterError
+    ) -> tuple[_Sequence, Any]:
+        """Decide an ambiguous booking error by authoritative reconciliation."""
+
+        key = self._idempotency_key(watch)
+        for _ in range(_RECONCILE_ATTEMPTS):
+            outcome = await self._adapter.reconcile_booking(key)
+            if outcome.status is ReconciliationStatus.CONFIRMED:
+                return _Sequence.BOOKED, outcome.confirmation
+            if outcome.status is ReconciliationStatus.DEFINITIVELY_ABSENT:
+                if await self._cancel_requested(watch.watch_id):
+                    return _Sequence.CANCELLED, None
+                # No reservation and no cancellation: a genuine provider outage.
+                raise error
+        # Still unknown after bounded retries: never claim a cancellation and
+        # never issue a second booking. Fall to the outage path; the stable
+        # idempotency key stops a future poll from creating a duplicate.
+        raise error
+
+    async def _cancel_requested(self, watch_id: str) -> bool:
+        runtime = await self._repository.get_runtime(watch_id)
+        return runtime is not None and runtime.cancel_requested
 
     async def _commit_outage(
         self,
@@ -540,10 +604,17 @@ class WatchService:
             return self._noop(await self._repository.get(new_watch.watch_id))
 
         committed = result.watch or new_watch
+        if committed.status is WatchStatus.CANCELLED:
+            # Cancellation is terminal but user-initiated: it earns no
+            # notification, and the delivery just reports it has no more work.
+            return WatchPollResult(
+                outcome=WatchPollOutcome.ALREADY_FINISHED, watch=committed
+            )
         # A terminal event id is issued at most once per transition, so gating
         # the notification on it makes delivery observably at-most-once.
-        if result.event_id is not None:
-            await self._notifier.notify(committed, _EVENT_FOR[committed.status])
+        event = _EVENT_FOR.get(committed.status)
+        if result.event_id is not None and event is not None:
+            await self._notifier.notify(committed, event)
         return WatchPollResult(
             outcome=_OUTCOME_FOR[committed.status], watch=committed
         )
@@ -620,6 +691,15 @@ class WatchService:
             update["last_checked_at"] = now
             update["last_error"] = None
         return watch.model_copy(update=update)
+
+    def _cancelled_watch(self, watch: Watch, now: datetime) -> Watch:
+        return watch.model_copy(
+            update={
+                "status": WatchStatus.CANCELLED,
+                "next_check_at": None,
+                "updated_at": now,
+            }
+        )
 
     def _expired_watch(
         self, watch: Watch, now: datetime, *, attempted: bool
@@ -859,6 +939,7 @@ class _Sequence(Enum):
     FOUND = "found"
     BOOKED = "booked"
     BOOKED_REPLAY = "booked_replay"
+    CANCELLED = "cancelled"
     NOOP = "noop"
 
 

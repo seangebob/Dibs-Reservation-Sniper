@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from backend.db.repositories.watches import InMemoryWatchRepository
-from backend.integrations.base import AdapterError
+from backend.integrations.base import AdapterError, SlotUnavailableError
 from backend.integrations.mock_booking import MockBookingAdapter
 from backend.models.reservation import AvailabilityQuery
 from backend.models.watch import WatchPollOutcome, WatchStatus
@@ -226,27 +226,29 @@ def test_auto_book_watch_books_the_slot_it_finds() -> None:
     assert notifier.events == [(watch.watch_id, WatchEvent.BOOKED)]
 
 
-def test_replayed_auto_book_returns_the_same_reservation() -> None:
-    """A broker redelivery must not produce a second reservation."""
+def test_a_redelivery_after_an_external_booking_replays_it() -> None:
+    """A crash after booking but before commit must not double-book."""
 
+    clock = Clock()
     adapter = MockBookingAdapter()
-    service, repository, _, _ = build_service(adapter)
+    service, repository, _ = build_shared(adapter, clock)
     watch = asyncio.run(service.create(query(), auto_book=True))
-    asyncio.run(service.poll_once(watch.watch_id))
-    first = asyncio.run(repository.get(watch.watch_id)).booking
 
-    # Force the watch back to ACTIVE, as a duplicate delivery would find it.
-    asyncio.run(
-        repository.save(
-            (asyncio.run(repository.get(watch.watch_id))).model_copy(
-                update={"status": WatchStatus.ACTIVE, "booking": None}
-            )
-        )
+    # The reservation lands at the provider under the stable key, then the
+    # worker crashes before the watch can commit. The redelivery must find and
+    # adopt that same reservation rather than book a second one.
+    key = f"watch:{watch.watch_id}"
+    slots = asyncio.run(adapter.search_availability(watch.query))
+    external = asyncio.run(
+        adapter.book_slot(slots[0].slot_id, idempotency_key=key)
     )
-    asyncio.run(service.poll_once(watch.watch_id))
-    second = asyncio.run(repository.get(watch.watch_id)).booking
 
-    assert second.booking_id == first.booking_id
+    result = asyncio.run(service.poll_once(watch.watch_id))
+
+    assert result.outcome is WatchPollOutcome.BOOKED
+    stored = asyncio.run(repository.get(watch.watch_id))
+    assert stored.status is WatchStatus.BOOKED
+    assert stored.booking.booking_id == external.booking_id
 
 
 # --- stopping conditions ----------------------------------------------------
@@ -409,6 +411,7 @@ def build_shared(  # noqa: ANN201
     max_attempts: int = 10,
     provider_timeout_seconds: float = 45.0,
     backoff_max_seconds: float = 3600.0,
+    notifier=None,  # noqa: ANN001
 ):
     """A service and repository sharing one injected clock, for due-time tests."""
 
@@ -419,6 +422,7 @@ def build_shared(  # noqa: ANN201
         adapter,
         queue,
         schedule=PollSchedule(interval_seconds=180, jitter_seconds=30),
+        notifier=notifier or RecordingNotificationService(),
         max_attempts=max_attempts,
         provider_timeout_seconds=provider_timeout_seconds,
         backoff_max_seconds=backoff_max_seconds,
@@ -643,3 +647,124 @@ def test_an_atomic_commit_finishes_even_if_the_poll_task_is_cancelled() -> None:
         assert committed == ["sentinel"]
 
     asyncio.run(scenario())
+
+
+# --- fenced auto-booking and cancellation races (milestone 3) ---------------
+
+
+class _RacingBookAdapter(MockBookingAdapter):
+    """Runs a callback in the moment between the booking permit and the book.
+
+    That is exactly the window a cancellation must be able to lose or win in,
+    so the callback lets a test record `cancel_requested` at that instant.
+    """
+
+    def __init__(self, on_book, *, then_fail=None) -> None:  # noqa: ANN001
+        super().__init__()
+        self._on_book = on_book
+        self._then_fail = then_fail
+
+    async def book_slot(self, slot_id, *, idempotency_key):  # noqa: ANN001
+        await self._on_book(idempotency_key)
+        if self._then_fail is not None:
+            raise self._then_fail
+        return await super().book_slot(slot_id, idempotency_key=idempotency_key)
+
+
+def _cancel_when_booking(repository, watch_id):  # noqa: ANN001, ANN202
+    async def hook(_key: str) -> None:
+        await repository.cancel_if_active(watch_id)
+
+    return hook
+
+
+def test_a_cancellation_that_loses_the_booking_race_returns_booked() -> None:
+    """A cancellation after the reservation lands returns BOOKED, not a lie."""
+
+    clock = Clock()
+    box: dict = {}
+
+    async def hook(_key: str) -> None:
+        await box["repo"].cancel_if_active(box["id"])
+
+    adapter = _RacingBookAdapter(hook)
+    service, repository, _ = build_shared(adapter, clock)
+    box["repo"] = repository
+    watch = asyncio.run(service.create(query(), auto_book=True))
+    box["id"] = watch.watch_id
+
+    result = asyncio.run(service.poll_once(watch.watch_id))
+
+    assert result.outcome is WatchPollOutcome.BOOKED
+    stored = asyncio.run(repository.get(watch.watch_id))
+    assert stored.status is WatchStatus.BOOKED
+    assert stored.booking is not None
+
+
+def test_a_cancellation_wins_when_the_booking_definitively_fails() -> None:
+    """If nothing was booked, a cancellation recorded mid-flight wins."""
+
+    clock = Clock()
+    box: dict = {}
+
+    async def hook(_key: str) -> None:
+        await box["repo"].cancel_if_active(box["id"])
+
+    adapter = _RacingBookAdapter(hook, then_fail=SlotUnavailableError("gone"))
+    notifier = RecordingNotificationService()
+    service, repository, _ = build_shared(adapter, clock, notifier=notifier)
+    box["repo"] = repository
+    watch = asyncio.run(service.create(query(), auto_book=True))
+    box["id"] = watch.watch_id
+
+    result = asyncio.run(service.poll_once(watch.watch_id))
+
+    assert result.outcome is WatchPollOutcome.ALREADY_FINISHED
+    stored = asyncio.run(repository.get(watch.watch_id))
+    assert stored.status is WatchStatus.CANCELLED
+    assert stored.booking is None
+    assert notifier.events == []  # cancellation earns no notification
+
+
+class _AmbiguousBookAdapter(MockBookingAdapter):
+    """The reservation lands, then the confirmation is lost to an error."""
+
+    async def book_slot(self, slot_id, *, idempotency_key):  # noqa: ANN001
+        await super().book_slot(slot_id, idempotency_key=idempotency_key)
+        raise AdapterError("connection dropped after the reservation committed")
+
+
+class _FailedBookAdapter(MockBookingAdapter):
+    """The booking call fails before any reservation is created."""
+
+    async def book_slot(self, slot_id, *, idempotency_key):  # noqa: ANN001
+        raise AdapterError("provider unreachable during booking")
+
+
+def test_an_ambiguous_booking_error_reconciles_to_booked() -> None:
+    clock = Clock()
+    service, repository, _ = build_shared(_AmbiguousBookAdapter(), clock)
+    watch = asyncio.run(service.create(query(), auto_book=True))
+
+    result = asyncio.run(service.poll_once(watch.watch_id))
+
+    # Authoritative reconciliation finds the reservation the error hid.
+    assert result.outcome is WatchPollOutcome.BOOKED
+    assert asyncio.run(repository.get(watch.watch_id)).status is WatchStatus.BOOKED
+
+
+def test_an_ambiguous_booking_error_that_did_not_book_is_an_outage() -> None:
+    clock = Clock()
+    service, repository, queue = build_shared(_FailedBookAdapter(), clock)
+    watch = asyncio.run(service.create(query(), auto_book=True))
+    queue.dispatches.clear()
+
+    result = asyncio.run(service.poll_once(watch.watch_id))
+
+    # Reconciliation confirms no reservation and no cancellation: a provider
+    # outage, so no attempt is spent and the watch stays active for a retry.
+    assert result.outcome is WatchPollOutcome.NO_AVAILABILITY
+    stored = asyncio.run(repository.get(watch.watch_id))
+    assert stored.status is WatchStatus.ACTIVE
+    assert stored.attempts == 0
+    assert len(queue.dispatches) == 1

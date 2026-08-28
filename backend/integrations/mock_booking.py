@@ -14,6 +14,8 @@ from backend.data.venues import (
     profile_for,
 )
 from backend.integrations.base import (
+    ReconciliationResult,
+    ReconciliationStatus,
     ReservationAdapter,
     SlotNotFoundError,
     SlotUnavailableError,
@@ -116,6 +118,18 @@ class MockBookingAdapter(ReservationAdapter):
     ) -> BookingConfirmation | None:
         async with self._lock:
             return self._bookings_by_key.get(idempotency_key)
+
+    async def reconcile_booking(
+        self,
+        idempotency_key: str,
+    ) -> ReconciliationResult:
+        """The mock is the system of record, so absence is authoritative."""
+
+        async with self._lock:
+            booking = self._bookings_by_key.get(idempotency_key)
+        if booking is not None:
+            return ReconciliationResult(ReconciliationStatus.CONFIRMED, booking)
+        return ReconciliationResult(ReconciliationStatus.DEFINITIVELY_ABSENT)
 
     async def book_slot(
         self,
