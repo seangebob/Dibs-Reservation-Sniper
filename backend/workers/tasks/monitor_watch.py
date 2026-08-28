@@ -69,6 +69,8 @@ def build_watch_service() -> WatchService:
             jitter_seconds=float(settings.poll_jitter_seconds),
         ),
         max_attempts=settings.max_poll_attempts,
+        provider_timeout_seconds=settings.provider_call_timeout_seconds,
+        backoff_max_seconds=settings.provider_backoff_max_seconds,
         timezone_name=settings.timezone_name,
     )
 

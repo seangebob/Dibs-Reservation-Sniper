@@ -402,7 +402,14 @@ class CountingAdapter(EmptyAdapter):
         return []
 
 
-def build_shared(adapter, clock, *, max_attempts: int = 10):  # noqa: ANN001, ANN201
+def build_shared(  # noqa: ANN201
+    adapter,  # noqa: ANN001
+    clock,  # noqa: ANN001
+    *,
+    max_attempts: int = 10,
+    provider_timeout_seconds: float = 45.0,
+    backoff_max_seconds: float = 3600.0,
+):
     """A service and repository sharing one injected clock, for due-time tests."""
 
     repository = InMemoryWatchRepository(clock=clock)
@@ -413,6 +420,8 @@ def build_shared(adapter, clock, *, max_attempts: int = 10):  # noqa: ANN001, AN
         queue,
         schedule=PollSchedule(interval_seconds=180, jitter_seconds=30),
         max_attempts=max_attempts,
+        provider_timeout_seconds=provider_timeout_seconds,
+        backoff_max_seconds=backoff_max_seconds,
         clock=clock,
     )
     return service, repository, queue
@@ -487,3 +496,150 @@ def test_a_near_deadline_miss_never_schedules_past_the_deadline() -> None:
     assert result.retry_in_seconds <= 10
     stored = asyncio.run(repository.get(watch.watch_id))
     assert stored.next_check_at <= stored.expires_at
+
+
+# --- provider outage backoff (milestone 3, no-attempt capped exponential) ----
+
+
+class SleepingAdapter(EmptyAdapter):
+    """Takes longer than the provider-sequence deadline allows."""
+
+    async def search_availability(self, query):  # noqa: ANN001
+        await asyncio.sleep(0.05)
+        return []
+
+
+def _seed_active(repository, clock, *, expires_at) -> "Watch":  # noqa: ANN001
+    watch = Watch(
+        watch_id="watch_outage",
+        status=WatchStatus.ACTIVE,
+        query=query(),
+        created_at=NOW,
+        updated_at=NOW,
+        expires_at=expires_at,
+        attempts=0,
+        max_attempts=25_000,
+        next_check_at=NOW,
+    )
+    runtime = initial_runtime(watch, required_attempts=2, supports_deadline=True)
+    asyncio.run(repository.create_with_schedule(watch, runtime))
+    return watch
+
+
+def test_an_outage_consumes_no_availability_attempt() -> None:
+    clock = Clock()
+    service, repository, queue = build_shared(FailingAdapter(), clock)
+    watch = asyncio.run(service.create(query()))
+    queue.dispatches.clear()
+
+    result = asyncio.run(service.poll_once(watch.watch_id))
+
+    assert result.outcome is WatchPollOutcome.NO_AVAILABILITY
+    stored = asyncio.run(repository.get(watch.watch_id))
+    assert stored.status is WatchStatus.ACTIVE
+    assert stored.attempts == 0  # the outage did not spend the user's budget
+    assert stored.last_error == "provider is down"
+    runtime = asyncio.run(repository.get_runtime(watch.watch_id))
+    assert runtime.consecutive_outages == 1
+    assert len(queue.dispatches) == 1
+
+
+def test_consecutive_outages_back_off_exponentially() -> None:
+    clock = Clock()
+    service, repository, _ = build_shared(FailingAdapter(), clock)
+    watch = asyncio.run(service.create(query()))
+
+    first = asyncio.run(service.poll_once(watch.watch_id))
+    second = asyncio.run(service.poll_once(watch.watch_id))
+
+    # n=1 stays at the ordinary cadence; n=2 doubles the base interval. The
+    # ranges do not overlap, so the escalation is unambiguous.
+    assert 150.0 <= first.retry_in_seconds <= 210.0
+    assert 330.0 <= second.retry_in_seconds <= 390.0
+    assert asyncio.run(repository.get(watch.watch_id)).attempts == 0
+
+
+def test_a_successful_check_after_an_outage_resets_the_backoff() -> None:
+    clock = Clock()
+    service, repository, _ = build_shared(FailingAdapter(), clock)
+    watch = asyncio.run(service.create(query()))
+    asyncio.run(service.poll_once(watch.watch_id))  # outage, n=1
+
+    service._adapter = EmptyAdapter()
+    recovered = asyncio.run(service.poll_once(watch.watch_id))
+
+    assert recovered.outcome is WatchPollOutcome.NO_AVAILABILITY
+    assert 150.0 <= recovered.retry_in_seconds <= 210.0  # back to normal cadence
+    stored = asyncio.run(repository.get(watch.watch_id))
+    assert stored.attempts == 1  # the successful empty check spends one attempt
+    runtime = asyncio.run(repository.get_runtime(watch.watch_id))
+    assert runtime.consecutive_outages == 0
+
+
+def test_a_provider_sequence_timeout_is_an_outage_not_an_attempt() -> None:
+    clock = Clock()
+    service, repository, _ = build_shared(
+        SleepingAdapter(), clock, provider_timeout_seconds=0.01
+    )
+    watch = asyncio.run(service.create(query()))
+
+    result = asyncio.run(service.poll_once(watch.watch_id))
+
+    assert result.outcome is WatchPollOutcome.NO_AVAILABILITY
+    stored = asyncio.run(repository.get(watch.watch_id))
+    assert stored.attempts == 0
+    assert "timed out" in stored.last_error
+    assert asyncio.run(repository.get_runtime(watch.watch_id)).consecutive_outages == 1
+
+
+def test_an_outage_with_less_than_the_floor_left_expires_without_rescheduling() -> None:
+    clock = Clock()
+    service, repository, queue = build_shared(FailingAdapter(), clock)
+    watch = _seed_active(
+        repository, clock, expires_at=NOW + timedelta(seconds=0.5)
+    )
+
+    result = asyncio.run(
+        service.poll_window(
+            watch.watch_id, window_id_for(watch.watch_id, 0), enforce_due=False
+        )
+    )
+
+    assert result.outcome is WatchPollOutcome.EXPIRED
+    assert queue.dispatches == []
+    assert asyncio.run(repository.get(watch.watch_id)).status is WatchStatus.EXPIRED
+
+
+def test_an_atomic_commit_finishes_even_if_the_poll_task_is_cancelled() -> None:
+    """A Celery time limit must not leave a watch half-transitioned."""
+
+    from backend.db.repositories.watch_decisions import CommitResult, CommitStatus
+
+    committed: list[str] = []
+
+    class BlockingRepo:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def commit_window(self, claim, new_watch, new_runtime):  # noqa: ANN001
+            self.started.set()
+            await self.release.wait()
+            committed.append(new_watch)
+            return CommitResult(CommitStatus.COMMITTED, watch=new_watch)
+
+    async def scenario() -> None:
+        repo = BlockingRepo()
+        service = WatchService(repo, EmptyAdapter(), RecordingTaskQueue())
+        task = asyncio.ensure_future(
+            service._commit_window(claim=None, new_watch="sentinel", new_runtime=None)
+        )
+        await repo.started.wait()
+        task.cancel()  # the outer poll is cancelled mid-commit
+        repo.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The shielded commit still ran to completion before propagating.
+        assert committed == ["sentinel"]
+
+    asyncio.run(scenario())

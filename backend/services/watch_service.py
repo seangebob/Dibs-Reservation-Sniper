@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
+import contextlib
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 import logging
+import random
 from typing import Any, List
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from backend.config import DEFAULT_MAX_POLL_ATTEMPTS
+from backend.config import (
+    DEFAULT_MAX_POLL_ATTEMPTS,
+    DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS,
+    DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS,
+)
 from backend.db.repositories.watch_decisions import (
     BookingPermitStatus,
     ClaimStatus,
@@ -19,6 +27,7 @@ from backend.db.repositories.watch_decisions import (
 )
 from backend.integrations.base import (
     AdapterError,
+    ProviderSequenceTimeout,
     ReservationAdapter,
     SlotNotFoundError,
     SlotUnavailableError,
@@ -42,7 +51,7 @@ from backend.services.watch_policy import (
     AvailabilityPolicy,
     AvailabilityPolicyFactory,
 )
-from backend.workers.scheduler import PollSchedule
+from backend.workers.scheduler import MIN_DELAY_SECONDS, PollSchedule
 
 
 logger = logging.getLogger(__name__)
@@ -80,6 +89,8 @@ class WatchService:
         schedule: PollSchedule | None = None,
         notifier: NotificationService | None = None,
         max_attempts: int = DEFAULT_MAX_POLL_ATTEMPTS,
+        provider_timeout_seconds: float = DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS,
+        backoff_max_seconds: float = DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS,
         clock: Clock | None = None,
         timezone_name: str | None = None,
     ) -> None:
@@ -89,6 +100,10 @@ class WatchService:
         self._schedule = schedule or PollSchedule()
         self._notifier = notifier or LoggingNotificationService()
         self._max_attempts = max_attempts
+        self._provider_timeout_seconds = provider_timeout_seconds
+        self._backoff_max_seconds = max(
+            backoff_max_seconds, self._schedule.interval_seconds
+        )
         self._clock = clock or (lambda: datetime.now(UTC))
         self._reservation_timezone = (
             ZoneInfo(timezone_name) if timezone_name is not None else None
@@ -266,60 +281,184 @@ class WatchService:
                 claim, self._expired_watch(watch, now, attempted=False)
             )
 
-        if watch.auto_book:
-            existing = await self._adapter.get_booking(
-                self._idempotency_key(watch)
-            )
-            if existing is not None:
-                # A prior delivery of this window booked before it could commit.
-                return await self._commit_terminal(
-                    claim,
-                    self._booked_watch(watch, now, existing, attempted=False),
-                )
-
-        slots, error = await self._search(watch)
-
-        if slots and watch.auto_book:
-            return await self._auto_book(claim, watch, slots, now)
-        if slots:
-            return await self._commit_terminal(
-                claim, self._found_watch(watch, slots, now)
-            )
-        return await self._commit_miss(claim, watch, now, error=error)
-
-    async def _auto_book(
-        self,
-        claim: WindowClaim,
-        watch: Watch,
-        slots: List[Any],
-        now: datetime,
-    ) -> WatchPollResult:
-        permit = await self._repository.begin_booking(claim)
-        if permit.status is not BookingPermitStatus.GRANTED:
-            # A cancellation won the linearization point, or the claim was
-            # fenced; no booking is issued under this delivery.
-            await self._repository.release_claim(claim)
-            return self._noop(await self._repository.get(watch.watch_id))
-
         try:
-            confirmation = await self._book(watch, slots)
+            async with asyncio.timeout(self._provider_timeout_seconds):
+                kind, payload = await self._provider_sequence(claim, watch)
+        except TimeoutError:
+            # Only this owned deadline is an outage. Outer CancelledError and
+            # Celery soft/hard time limits are deliberately not caught here.
+            return await self._commit_outage(
+                claim, watch, now, error="The reservation provider timed out"
+            )
+        except (SlotUnavailableError, SlotNotFoundError):
+            # An expected slot race is a normal booking miss, never an
+            # infrastructure outage. (These are handled inside `_book`; caught
+            # here only if one escapes a future path.)
+            return await self._commit_miss(claim, watch, now, error=None)
         except AdapterError as exc:
-            return await self._commit_miss(
+            return await self._commit_outage(
                 claim,
                 watch,
                 now,
                 error=str(exc)[:500] or "The reservation provider failed",
             )
-        if confirmation is None:
-            return await self._commit_miss(
-                claim,
-                watch,
-                now,
-                error="Available slots disappeared before they could be booked",
+
+        if kind is _Sequence.MISS:
+            return await self._commit_miss(claim, watch, now, error=None)
+        if kind is _Sequence.FOUND:
+            return await self._commit_terminal(
+                claim, self._found_watch(watch, payload, now)
             )
-        return await self._commit_terminal(
-            claim, self._booked_watch(watch, now, confirmation, attempted=True)
+        if kind is _Sequence.BOOKED:
+            return await self._commit_terminal(
+                claim, self._booked_watch(watch, now, payload, attempted=True)
+            )
+        if kind is _Sequence.BOOKED_REPLAY:
+            return await self._commit_terminal(
+                claim, self._booked_watch(watch, now, payload, attempted=False)
+            )
+        # NOOP: a cancellation or a fence beat the booking-permit linearization.
+        await self._repository.release_claim(claim)
+        return self._noop(await self._repository.get(watch.watch_id))
+
+    async def _provider_sequence(
+        self, claim: WindowClaim, watch: Watch
+    ) -> tuple[_Sequence, Any]:
+        """The bounded provider interaction, run inside one owned timeout.
+
+        It performs only provider and booking-permit work and returns a plan;
+        the atomic commit happens outside the deadline, so a slow commit is
+        never misread as a provider outage. A generic `AdapterError` propagates
+        to the outage path, while an expected slot race resolves to a normal
+        miss inside `_book`.
+        """
+
+        key = self._idempotency_key(watch)
+        if watch.auto_book:
+            existing = await self._adapter.get_booking(key)
+            if existing is not None:
+                # A prior delivery of this window booked before it could commit.
+                return _Sequence.BOOKED_REPLAY, existing
+
+        slots = await self._adapter.search_availability(watch.query)
+        if not slots:
+            return _Sequence.MISS, None
+        if not watch.auto_book:
+            return _Sequence.FOUND, slots
+
+        permit = await self._repository.begin_booking(claim)
+        if permit.status is not BookingPermitStatus.GRANTED:
+            return _Sequence.NOOP, None
+        confirmation = await self._book(watch, slots)
+        if confirmation is None:
+            return _Sequence.MISS, None
+        return _Sequence.BOOKED, confirmation
+
+    async def _commit_outage(
+        self,
+        claim: WindowClaim,
+        watch: Watch,
+        now: datetime,
+        *,
+        error: str,
+    ) -> WatchPollResult:
+        """Commit a provider outage: no attempt, capped exponential backoff."""
+
+        outages = self._saturating_outages(claim.runtime.consecutive_outages + 1)
+        delay = self._outage_delay(outages, now, watch)
+        if delay is None:
+            # Less than the anti-hot-poll floor of lifetime remains; finish now
+            # rather than schedule a check that cannot run in time.
+            return await self._commit_terminal(
+                claim, self._expired_watch(watch, now, attempted=False)
+            )
+
+        scheduled = now + timedelta(seconds=delay)
+        cadence = claim.runtime.cadence_sequence + 1
+        outage_watch = watch.model_copy(
+            update={
+                # No attempt is consumed: the user's availability budget is not
+                # spent on the provider being unreachable.
+                "last_checked_at": now,
+                "updated_at": now,
+                "last_error": error,
+                "next_check_at": scheduled,
+            }
         )
+        outage_runtime = claim.runtime.model_copy(
+            update={
+                "cadence_sequence": cadence,
+                "window_id": window_id_for(watch.watch_id, cadence),
+                "scheduled_for": scheduled,
+                "phase": None,
+                "cancel_requested": False,
+                "consecutive_outages": outages,
+            }
+        )
+        result = await self._commit_window(claim, outage_watch, outage_runtime)
+        if result.status is not CommitStatus.COMMITTED:
+            return self._noop(await self._repository.get(watch.watch_id))
+
+        committed = result.watch or outage_watch
+        await self._dispatch(
+            committed.watch_id,
+            outage_runtime.window_id,
+            delay_seconds=delay,
+            due_at=scheduled,
+        )
+        return WatchPollResult(
+            outcome=WatchPollOutcome.NO_AVAILABILITY,
+            watch=committed,
+            retry_in_seconds=delay,
+        )
+
+    def _outage_delay(
+        self, outages: int, now: datetime, watch: Watch
+    ) -> float | None:
+        """`interval * 2**(n-1)` capped, jittered, floored, and deadline-clipped.
+
+        Returns None when less than the anti-hot-poll floor of lifetime remains,
+        which the caller turns into an immediate `EXPIRED` with no provider call.
+        """
+
+        interval = self._schedule.interval_seconds
+        jitter = self._schedule.jitter_seconds
+        maximum = self._backoff_max_seconds
+        exponent_limit = self._exponent_limit(interval, maximum)
+        if outages - 1 >= exponent_limit:
+            base = maximum
+        else:
+            base = interval * (2 ** (outages - 1))
+        jittered = base + random.uniform(-jitter, jitter)
+        jittered = min(max(jittered, MIN_DELAY_SECONDS), maximum)
+
+        remaining = (watch.expires_at - now).total_seconds()
+        if remaining < MIN_DELAY_SECONDS:
+            return None
+        return min(jittered, remaining)
+
+    def _saturating_outages(self, value: int) -> int:
+        # Cap the stored counter one past the exponent limit: beyond that the
+        # delay is already the maximum, so a larger count carries no meaning and
+        # a corrupt value can never drive an unbounded exponentiation.
+        cap = (
+            self._exponent_limit(
+                self._schedule.interval_seconds, self._backoff_max_seconds
+            )
+            + 1
+        )
+        return min(value, cap)
+
+    @staticmethod
+    def _exponent_limit(interval: float, maximum: float) -> int:
+        """Smallest k with `interval * 2**k >= maximum` (a bounded ceil-log2)."""
+
+        limit = 0
+        value = interval
+        while value < maximum:
+            value *= 2
+            limit += 1
+        return limit
 
     async def _commit_miss(
         self,
@@ -343,7 +482,9 @@ class WatchService:
 
         remaining_seconds = (watch.expires_at - now).total_seconds()
         delay = min(self._schedule.next_delay(), remaining_seconds)
-        if attempts >= watch.max_attempts or delay <= 0:
+        # Reaching the ceiling, or having less than the anti-hot-poll floor of
+        # lifetime left, finishes the watch on this same commit.
+        if attempts >= watch.max_attempts or delay < MIN_DELAY_SECONDS:
             return await self._commit_terminal(
                 claim, self._expired_watch(attempted, now, attempted=True)
             )
@@ -361,9 +502,7 @@ class WatchService:
                 "consecutive_outages": 0,
             }
         )
-        result = await self._repository.commit_window(
-            claim, successor, successor_runtime
-        )
+        result = await self._commit_window(claim, successor, successor_runtime)
         if result.status is not CommitStatus.COMMITTED:
             return self._noop(await self._repository.get(watch.watch_id))
 
@@ -396,9 +535,7 @@ class WatchService:
                 "consecutive_outages": 0,
             }
         )
-        result = await self._repository.commit_window(
-            claim, new_watch, terminal_runtime
-        )
+        result = await self._commit_window(claim, new_watch, terminal_runtime)
         if result.status is not CommitStatus.COMMITTED:
             return self._noop(await self._repository.get(new_watch.watch_id))
 
@@ -410,6 +547,30 @@ class WatchService:
         return WatchPollResult(
             outcome=_OUTCOME_FOR[committed.status], watch=committed
         )
+
+    async def _commit_window(
+        self,
+        claim: WindowClaim,
+        new_watch: Watch,
+        new_runtime: Any,
+    ) -> Any:
+        """Run the one atomic commit, shielded from outer cancellation.
+
+        If the surrounding task is cancelled mid-commit -- a Celery soft/hard
+        time limit -- the commit still runs to a known result before the
+        cancellation propagates, so a watch is never left half-transitioned.
+        Redis applies the underlying script all-or-nothing regardless.
+        """
+
+        task = asyncio.ensure_future(
+            self._repository.commit_window(claim, new_watch, new_runtime)
+        )
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            with contextlib.suppress(BaseException):
+                await task
+            raise
 
     def _noop(self, watch: Watch | None) -> WatchPollResult:
         """A delivery with no remaining work for this window."""
@@ -689,6 +850,16 @@ class WatchService:
         )
         await self._notifier.notify(expired, WatchEvent.EXPIRED)
         return WatchPollResult(outcome=WatchPollOutcome.EXPIRED, watch=expired)
+
+
+class _Sequence(Enum):
+    """The outcome of the bounded provider sequence, decided before committing."""
+
+    MISS = "miss"
+    FOUND = "found"
+    BOOKED = "booked"
+    BOOKED_REPLAY = "booked_replay"
+    NOOP = "noop"
 
 
 _EVENT_FOR = {

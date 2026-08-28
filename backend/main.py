@@ -18,6 +18,8 @@ from backend.api.dependencies import (
 from backend.api.routes import watches_router
 from backend.config import (
     DEFAULT_MAX_POLL_ATTEMPTS,
+    DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS,
+    DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS,
     ConfigurationError,
     Settings,
     WatchSettings,
@@ -118,6 +120,8 @@ async def _attach_redis(app: FastAPI) -> None:
         schedule=schedule,
         max_attempts=settings.max_poll_attempts,
         timezone_name=settings.timezone_name,
+        provider_timeout_seconds=settings.provider_call_timeout_seconds,
+        backoff_max_seconds=settings.provider_backoff_max_seconds,
     )
 
     try:
@@ -159,6 +163,8 @@ async def _attach_redis(app: FastAPI) -> None:
         max_attempts=settings.max_poll_attempts,
         timezone_name=settings.timezone_name,
         queue=queue,
+        provider_timeout_seconds=settings.provider_call_timeout_seconds,
+        backoff_max_seconds=settings.provider_backoff_max_seconds,
     )
     logger.info(
         "Watch state is backed by Redis at %s using the %s queue",
@@ -175,6 +181,8 @@ def _build_watch_service(
     max_attempts: int | None = None,
     timezone_name: str | None = None,
     queue: TaskQueue | None = None,
+    provider_timeout_seconds: float = DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS,
+    backoff_max_seconds: float = DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS,
 ) -> WatchService:
     """Build a watch service and its selected dispatch boundary."""
 
@@ -195,6 +203,8 @@ def _build_watch_service(
         max_attempts=(
             max_attempts if max_attempts is not None else DEFAULT_MAX_POLL_ATTEMPTS
         ),
+        provider_timeout_seconds=provider_timeout_seconds,
+        backoff_max_seconds=backoff_max_seconds,
     )
 
 

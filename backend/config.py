@@ -35,6 +35,14 @@ DEFAULT_MAX_POLL_ATTEMPTS = 25_000
 #: +7/+30-day watch never becomes a multi-day broker ETA and the durable
 #: schedule marker stays the authority for far-future work.
 DEFAULT_DISPATCH_HORIZON_SECONDS = 300
+#: One owned deadline covers the whole provider sequence (search, booking
+#: permit, booking, replay lookup). Its ceiling of 45 seconds leaves room under
+#: Celery's 60-second soft limit once the commit and overhead reserve are added.
+DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS = 45
+#: Ceiling for the capped exponential outage backoff. At least the normal
+#: interval (a backoff shorter than the cadence would be pointless) and never
+#: so long that a recovered provider waits most of a day for the next check.
+DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS = 3_600
 
 _MIN_POLL_INTERVAL_SECONDS = 15
 _MAX_POLL_INTERVAL_SECONDS = 3_600
@@ -42,6 +50,9 @@ _MIN_MAX_POLL_ATTEMPTS = 1
 _MAX_MAX_POLL_ATTEMPTS = 1_000_000
 _MIN_DISPATCH_HORIZON_SECONDS = 30
 _MAX_DISPATCH_HORIZON_SECONDS = 3_600
+_MIN_PROVIDER_CALL_TIMEOUT_SECONDS = 1
+_MAX_PROVIDER_CALL_TIMEOUT_SECONDS = 45
+_MAX_PROVIDER_BACKOFF_MAX_SECONDS = 86_400
 
 #: Longest integer text accepted for a bounded count, rejected before any
 #: `int()` conversion so a pathologically long digit string can never be
@@ -106,6 +117,8 @@ class WatchSettings:
     poll_jitter_seconds: int = DEFAULT_POLL_JITTER_SECONDS
     max_poll_attempts: int = DEFAULT_MAX_POLL_ATTEMPTS
     dispatch_horizon_seconds: int = DEFAULT_DISPATCH_HORIZON_SECONDS
+    provider_call_timeout_seconds: int = DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS
+    provider_backoff_max_seconds: int = DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS
 
     @classmethod
     def from_environment(cls) -> "WatchSettings":
@@ -159,6 +172,25 @@ class WatchSettings:
             maximum=_MAX_DISPATCH_HORIZON_SECONDS,
         )
 
+        provider_timeout = _bounded_count(
+            "WATCH_PROVIDER_CALL_TIMEOUT_SECONDS",
+            DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS,
+            minimum=_MIN_PROVIDER_CALL_TIMEOUT_SECONDS,
+            maximum=_MAX_PROVIDER_CALL_TIMEOUT_SECONDS,
+        )
+
+        backoff_max = _bounded_count(
+            "WATCH_PROVIDER_BACKOFF_MAX_SECONDS",
+            DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS,
+            minimum=1,
+            maximum=_MAX_PROVIDER_BACKOFF_MAX_SECONDS,
+        )
+        if backoff_max < interval:
+            raise ConfigurationError(
+                "WATCH_PROVIDER_BACKOFF_MAX_SECONDS must be at least "
+                "WATCH_POLL_INTERVAL_SECONDS"
+            )
+
         return cls(
             timezone_name=timezone_name,
             redis_url=redis_url,
@@ -166,6 +198,8 @@ class WatchSettings:
             poll_jitter_seconds=jitter,
             max_poll_attempts=attempts,
             dispatch_horizon_seconds=dispatch_horizon,
+            provider_call_timeout_seconds=provider_timeout,
+            provider_backoff_max_seconds=backoff_max,
         )
 
 
@@ -179,6 +213,8 @@ class Settings:
     poll_jitter_seconds: int = DEFAULT_POLL_JITTER_SECONDS
     max_poll_attempts: int = DEFAULT_MAX_POLL_ATTEMPTS
     dispatch_horizon_seconds: int = DEFAULT_DISPATCH_HORIZON_SECONDS
+    provider_call_timeout_seconds: int = DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS
+    provider_backoff_max_seconds: int = DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -208,4 +244,6 @@ class Settings:
             poll_jitter_seconds=watch.poll_jitter_seconds,
             max_poll_attempts=watch.max_poll_attempts,
             dispatch_horizon_seconds=watch.dispatch_horizon_seconds,
+            provider_call_timeout_seconds=watch.provider_call_timeout_seconds,
+            provider_backoff_max_seconds=watch.provider_backoff_max_seconds,
         )

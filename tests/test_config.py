@@ -19,6 +19,8 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "WATCH_POLL_JITTER_SECONDS",
         "WATCH_MAX_POLL_ATTEMPTS",
         "WATCH_DISPATCH_HORIZON_SECONDS",
+        "WATCH_PROVIDER_CALL_TIMEOUT_SECONDS",
+        "WATCH_PROVIDER_BACKOFF_MAX_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -193,4 +195,52 @@ def test_non_integer_dispatch_horizon_text_is_rejected(
     monkeypatch.setenv("WATCH_DISPATCH_HORIZON_SECONDS", value)
 
     with pytest.raises(ConfigurationError, match="must be an integer"):
+        WatchSettings.from_environment()
+
+
+# --- provider timeout and outage backoff (milestone 3) ----------------------
+
+
+def test_provider_timeout_and_backoff_defaults() -> None:
+    settings = WatchSettings()
+    assert settings.provider_call_timeout_seconds == 45
+    assert settings.provider_backoff_max_seconds == 3_600
+
+
+@pytest.mark.parametrize("value", ["1", "45"])
+def test_provider_timeouts_within_bounds_are_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("WATCH_PROVIDER_CALL_TIMEOUT_SECONDS", value)
+
+    settings = WatchSettings.from_environment()
+    assert settings.provider_call_timeout_seconds == int(value)
+
+
+def test_a_provider_timeout_above_the_soft_limit_headroom_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WATCH_PROVIDER_CALL_TIMEOUT_SECONDS", "46")
+
+    with pytest.raises(ConfigurationError, match="between 1 and 45"):
+        WatchSettings.from_environment()
+
+
+def test_a_backoff_ceiling_below_the_normal_interval_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WATCH_POLL_INTERVAL_SECONDS", "600")
+    monkeypatch.setenv("WATCH_PROVIDER_BACKOFF_MAX_SECONDS", "300")
+
+    with pytest.raises(ConfigurationError, match="at least"):
+        WatchSettings.from_environment()
+
+
+def test_a_backoff_ceiling_above_a_day_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WATCH_PROVIDER_BACKOFF_MAX_SECONDS", "86401")
+
+    with pytest.raises(ConfigurationError, match="between 1 and 86400"):
         WatchSettings.from_environment()
