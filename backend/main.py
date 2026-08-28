@@ -18,11 +18,19 @@ from backend.api.dependencies import (
 from backend.api.routes import watches_router
 from backend.config import (
     DEFAULT_MAX_POLL_ATTEMPTS,
+    DEFAULT_MOCK_BOOKING_RETENTION_SECONDS,
+    DEFAULT_MOCK_SLOT_CAPACITY,
+    DEFAULT_MOCK_SLOT_IDLE_TTL_SECONDS,
     DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS,
     DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS,
     ConfigurationError,
     Settings,
     WatchSettings,
+)
+from backend.db.repositories.mock_booking import (
+    MockBookingStateRepository,
+    RedisMockBookingStateRepository,
+    in_memory_mock_state,
 )
 from backend.db.repositories.watches import (
     InMemoryWatchRepository,
@@ -100,6 +108,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await engine.close()
 
 
+def _bind_mock_adapter(app: FastAPI, state: MockBookingStateRepository) -> None:
+    """Bind one shared mock state to the adapter every service in the process uses.
+
+    `BookingService` and `WatchService` both read `app.state.booking_adapter`,
+    so pointing that at an adapter over `state` makes the whole process observe
+    one booking/idempotency store rather than diverging per-adapter dictionaries.
+    """
+
+    app.state.mock_booking_state = state
+    adapter = MockBookingAdapter(state=state)
+    app.state.booking_adapter = adapter
+    app.state.booking_service = BookingService(adapter)
+
+
 async def _attach_redis(app: FastAPI) -> None:
     """Configure watch pacing, then upgrade storage and dispatch when possible."""
 
@@ -112,7 +134,16 @@ async def _attach_redis(app: FastAPI) -> None:
         jitter_seconds=float(settings.poll_jitter_seconds),
     )
 
-    # Apply watch settings even when local development has no infrastructure.
+    # Apply watch settings even when local development has no infrastructure,
+    # rebuilding the shared mock state with the configured bounds.
+    _bind_mock_adapter(
+        app,
+        in_memory_mock_state(
+            capacity=settings.mock_slot_capacity,
+            idle_ttl_seconds=settings.mock_slot_idle_ttl_seconds,
+            retention_seconds=settings.mock_booking_retention_seconds,
+        ),
+    )
     await app.state.watch_queue.close()
     app.state.watch_service = _build_watch_service(
         app,
@@ -156,6 +187,17 @@ async def _attach_redis(app: FastAPI) -> None:
     await app.state.watch_queue.close()
     app.state.redis = client
     app.state.watch_repository = RedisWatchRepository(client)
+    # Share one Redis-backed mock state over the same client/prefix, so the API
+    # and every worker child book against one store across processes.
+    _bind_mock_adapter(
+        app,
+        RedisMockBookingStateRepository(
+            client,
+            capacity=settings.mock_slot_capacity,
+            idle_ttl_seconds=settings.mock_slot_idle_ttl_seconds,
+            retention_seconds=settings.mock_booking_retention_seconds,
+        ),
+    )
     app.state.watch_service = _build_watch_service(
         app,
         repository=app.state.watch_repository,
@@ -230,9 +272,14 @@ def create_app() -> FastAPI:
     app.state.watch_queue = None
     app.state.watch_queue_mode = "asyncio"
 
-    adapter = MockBookingAdapter()
-    app.state.booking_adapter = adapter
-    app.state.booking_service = BookingService(adapter)
+    _bind_mock_adapter(
+        app,
+        in_memory_mock_state(
+            capacity=DEFAULT_MOCK_SLOT_CAPACITY,
+            idle_ttl_seconds=DEFAULT_MOCK_SLOT_IDLE_TTL_SECONDS,
+            retention_seconds=DEFAULT_MOCK_BOOKING_RETENTION_SECONDS,
+        ),
+    )
     app.state.watch_repository = InMemoryWatchRepository()
     app.state.watch_service = _build_watch_service(
         app,

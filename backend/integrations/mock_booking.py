@@ -1,11 +1,27 @@
-"""Deterministic in-memory adapter for Milestone 2 development."""
+"""Deterministic slot generation for the mock provider.
 
-import asyncio
+The adapter is deliberately **stateless**: it still generates slots the same
+way, but every piece of shared state -- which slots are published, which are
+booked, and the idempotency records that make a booking replayable -- lives in
+an injected `MockBookingStateRepository`, so the API and every worker in a
+deployment observe one store rather than diverging per-adapter dictionaries.
+When no repository is injected the adapter builds a private in-memory one, which
+keeps single-process tests and local development working unchanged.
+
+This shared demo idempotency is a property of the mock only; it is explicitly
+not a guarantee any real reservation provider makes.
+"""
+
 from collections.abc import Callable, Iterable
 from datetime import UTC, date, datetime
 from hashlib import sha256
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
+from backend.config import (
+    DEFAULT_MOCK_BOOKING_RETENTION_SECONDS,
+    DEFAULT_MOCK_SLOT_CAPACITY,
+    DEFAULT_MOCK_SLOT_IDLE_TTL_SECONDS,
+)
 from backend.data.venues import (
     MAX_GENERATED_SLOTS,
     SLOT_INTERVAL_MINUTES,
@@ -13,12 +29,14 @@ from backend.data.venues import (
     VenueProfile,
     profile_for,
 )
+from backend.db.repositories.mock_booking import (
+    ConfirmationFactory,
+    MockBookingStateRepository,
+    in_memory_mock_state,
+)
 from backend.integrations.base import (
     ReconciliationResult,
-    ReconciliationStatus,
     ReservationAdapter,
-    SlotNotFoundError,
-    SlotUnavailableError,
 )
 from backend.models.reservation import (
     AvailabilityQuery,
@@ -38,17 +56,20 @@ _MINUTES_PER_DAY = 24 * 60
 
 
 class MockBookingAdapter(ReservationAdapter):
-    """Generates reproducible slots and stores mock bookings in memory.
+    """Generates reproducible slots over an injected shared state repository.
 
     Slots follow the mock venue catalog: they sit on a fifteen-minute grid
     inside that venue's hours for that weekday, skip closed and sold-out
     dates, and carry a per-slot table size. The same query always produces
-    the same slot identifiers.
+    the same slot identifiers. Publication, booking, replay, and reconciliation
+    are delegated to the state repository so every adapter in a process (or,
+    over Redis, a deployment) shares one authoritative store.
     """
 
     def __init__(
         self,
         *,
+        state: MockBookingStateRepository | None = None,
         unavailable_venues: Iterable[str] = (),
         clock: Clock | None = None,
     ) -> None:
@@ -56,15 +77,66 @@ class MockBookingAdapter(ReservationAdapter):
             venue.strip().casefold() for venue in unavailable_venues
         }
         self._clock = clock or (lambda: datetime.now(UTC))
-        self._slots: dict[str, AvailabilitySlot] = {}
-        self._booked_slot_ids: set[str] = set()
-        self._bookings_by_key: dict[str, BookingConfirmation] = {}
-        self._lock = asyncio.Lock()
+        self._state: MockBookingStateRepository = state or in_memory_mock_state(
+            capacity=DEFAULT_MOCK_SLOT_CAPACITY,
+            idle_ttl_seconds=DEFAULT_MOCK_SLOT_IDLE_TTL_SECONDS,
+            retention_seconds=DEFAULT_MOCK_BOOKING_RETENTION_SECONDS,
+        )
 
     async def search_availability(
         self,
         query: AvailabilityQuery,
     ) -> list[AvailabilitySlot]:
+        candidates = self._generate(query)
+        if not candidates:
+            return []
+
+        operation_id = uuid4().hex
+        now = self._clock()
+        try:
+            return await self._state.publish_and_filter(
+                candidates, operation_id, now
+            )
+        finally:
+            # The pin has done its job (protecting a query's own admissions);
+            # release it promptly rather than waiting out the lease.
+            await self._state.release_operation(operation_id)
+
+    async def get_booking(
+        self,
+        idempotency_key: str,
+    ) -> BookingConfirmation | None:
+        return await self._state.get_booking(idempotency_key, self._clock())
+
+    async def reconcile_booking(
+        self,
+        idempotency_key: str,
+    ) -> ReconciliationResult:
+        return await self._state.reconcile_booking(
+            idempotency_key, None, self._clock()
+        )
+
+    async def book_slot(
+        self,
+        slot_id: str,
+        *,
+        idempotency_key: str,
+    ) -> BookingConfirmation:
+        now = self._clock()
+        return await self._state.book_slot(
+            slot_id,
+            idempotency_key,
+            self._confirmation_factory(idempotency_key, now),
+            now,
+        )
+
+    def _generate(self, query: AvailabilityQuery) -> list[AvailabilitySlot]:
+        """Deterministically build every candidate slot for one query.
+
+        State-free: the shared repository decides which candidates are admitted
+        and filters out any that are already booked.
+        """
+
         if query.venue_name.casefold() in self._unavailable_venues:
             return []
 
@@ -94,71 +166,37 @@ class MockBookingAdapter(ReservationAdapter):
                 )
             )
             slot_id = f"mock_{uuid5(NAMESPACE_URL, identity).hex}"
-            slot = AvailabilitySlot(
-                slot_id=slot_id,
-                provider="mock",
-                venue_name=query.venue_name,
-                venue_type=query.venue_type,
-                date=query.date,
-                start_time=start_time,
-                end_time=self._end_time(start_time, query.duration_minutes),
-                party_size=query.party_size,
-                max_party_size=capacity,
-                available=True,
+            slots.append(
+                AvailabilitySlot(
+                    slot_id=slot_id,
+                    provider="mock",
+                    venue_name=query.venue_name,
+                    venue_type=query.venue_type,
+                    date=query.date,
+                    start_time=start_time,
+                    end_time=self._end_time(start_time, query.duration_minutes),
+                    party_size=query.party_size,
+                    max_party_size=capacity,
+                    available=True,
+                )
             )
-            self._slots[slot_id] = slot
-            if slot_id not in self._booked_slot_ids:
-                slots.append(slot)
-
         return slots
 
-    async def get_booking(
-        self,
-        idempotency_key: str,
-    ) -> BookingConfirmation | None:
-        async with self._lock:
-            return self._bookings_by_key.get(idempotency_key)
+    def _confirmation_factory(
+        self, idempotency_key: str, now: datetime
+    ) -> ConfirmationFactory:
+        booking_id = f"mock_booking_{uuid5(NAMESPACE_URL, idempotency_key).hex}"
 
-    async def reconcile_booking(
-        self,
-        idempotency_key: str,
-    ) -> ReconciliationResult:
-        """The mock is the system of record, so absence is authoritative."""
-
-        async with self._lock:
-            booking = self._bookings_by_key.get(idempotency_key)
-        if booking is not None:
-            return ReconciliationResult(ReconciliationStatus.CONFIRMED, booking)
-        return ReconciliationResult(ReconciliationStatus.DEFINITIVELY_ABSENT)
-
-    async def book_slot(
-        self,
-        slot_id: str,
-        *,
-        idempotency_key: str,
-    ) -> BookingConfirmation:
-        async with self._lock:
-            existing = self._bookings_by_key.get(idempotency_key)
-            if existing is not None:
-                return existing
-
-            slot = self._slots.get(slot_id)
-            if slot is None:
-                raise SlotNotFoundError(f"Unknown mock slot: {slot_id}")
-            if slot_id in self._booked_slot_ids:
-                raise SlotUnavailableError(f"Mock slot is already booked: {slot_id}")
-
-            booking_id = f"mock_booking_{uuid5(NAMESPACE_URL, idempotency_key).hex}"
-            confirmation = BookingConfirmation(
+        def build(slot: AvailabilitySlot) -> BookingConfirmation:
+            return BookingConfirmation(
                 booking_id=booking_id,
                 provider="mock",
                 status=BookingStatus.MOCK_CONFIRMED,
                 slot=slot,
-                created_at=self._clock(),
+                created_at=now,
             )
-            self._booked_slot_ids.add(slot_id)
-            self._bookings_by_key[idempotency_key] = confirmation
-            return confirmation
+
+        return build
 
     @classmethod
     def _candidate_times(

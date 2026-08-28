@@ -334,3 +334,50 @@ def test_duration_longer_than_the_venue_is_open_yields_nothing() -> None:
     )
 
     assert slots == []
+
+
+# --- shared state across adapters (milestone 3) -----------------------------
+
+
+def test_two_adapters_over_one_state_share_bookings() -> None:
+    """The whole point of task 8: an API adapter and a worker adapter agree."""
+
+    from backend.db.repositories.mock_booking import in_memory_mock_state
+    from backend.integrations.base import ReconciliationStatus
+
+    fixed = datetime(2026, 8, 18, 16, 0, tzinfo=UTC)
+    shared = in_memory_mock_state(
+        capacity=1000, idle_ttl_seconds=3600.0, retention_seconds=7 * 24 * 3600.0
+    )
+    api = MockBookingAdapter(state=shared, clock=lambda: fixed)
+    worker = MockBookingAdapter(state=shared, clock=lambda: fixed)
+
+    slots = asyncio.run(api.search_availability(restaurant_query()))
+    booked = asyncio.run(
+        api.book_slot(slots[0].slot_id, idempotency_key="watch:x")
+    )
+
+    # The worker, a separate adapter, observes the booking the API made.
+    assert asyncio.run(worker.get_booking("watch:x")) == booked
+    reconciled = asyncio.run(worker.reconcile_booking("watch:x"))
+    assert reconciled.status is ReconciliationStatus.CONFIRMED
+
+    # It is not re-offered, and a different key cannot re-book it.
+    remaining = asyncio.run(worker.search_availability(restaurant_query()))
+    assert slots[0].slot_id not in {slot.slot_id for slot in remaining}
+    with pytest.raises(SlotUnavailableError):
+        asyncio.run(worker.book_slot(slots[0].slot_id, idempotency_key="watch:y"))
+
+
+def test_adapters_without_shared_state_stay_isolated() -> None:
+    """Two independent adapters own separate state -- the pre-task-8 behavior."""
+
+    fixed = datetime(2026, 8, 18, 16, 0, tzinfo=UTC)
+    api = MockBookingAdapter(clock=lambda: fixed)
+    worker = MockBookingAdapter(clock=lambda: fixed)
+
+    slots = asyncio.run(api.search_availability(restaurant_query()))
+    asyncio.run(api.book_slot(slots[0].slot_id, idempotency_key="watch:x"))
+
+    # The worker's own store knows nothing about the API's booking.
+    assert asyncio.run(worker.get_booking("watch:x")) is None

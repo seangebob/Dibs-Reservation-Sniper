@@ -14,6 +14,7 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from backend.config import WatchSettings
 from backend.db.database import create_redis_client
+from backend.db.repositories.mock_booking import RedisMockBookingStateRepository
 from backend.db.repositories.watches import RedisWatchRepository
 from backend.integrations.mock_booking import MockBookingAdapter
 from backend.services.watch_service import WatchService
@@ -60,9 +61,17 @@ def build_watch_service() -> WatchService:
     """Build one service whose async resources stay on the runner's loop."""
 
     settings = _settings()
+    # The adapter is stateless; its state lives in Redis under the shared prefix,
+    # so this worker books against the same store as the API and its siblings.
+    mock_state = RedisMockBookingStateRepository(
+        _redis_client(),
+        capacity=settings.mock_slot_capacity,
+        idle_ttl_seconds=settings.mock_slot_idle_ttl_seconds,
+        retention_seconds=settings.mock_booking_retention_seconds,
+    )
     return WatchService(
         RedisWatchRepository(_redis_client()),
-        MockBookingAdapter(),
+        MockBookingAdapter(state=mock_state),
         CeleryTaskQueue(monitor_watch),
         schedule=PollSchedule(
             interval_seconds=float(settings.poll_interval_seconds),
