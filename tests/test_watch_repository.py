@@ -191,3 +191,6 @@ def test_corrupt_document_is_skipped_rather_than_crashing_the_listing() -> None:
 
     assert [record.watch_id for record in listed] == ["watch_good"]
     assert asyncio.run(repository.get("watch_bad")) is None
+    # Self-healing: the listing prunes the corrupt member from the index rather
+    # than tripping over it again on the next read.
+    assert client.sets[INDEX_KEY] == {"watch_good"}

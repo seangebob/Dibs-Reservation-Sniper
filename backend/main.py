@@ -186,7 +186,9 @@ async def _attach_redis(app: FastAPI) -> None:
 
     await app.state.watch_queue.close()
     app.state.redis = client
-    app.state.watch_repository = RedisWatchRepository(client)
+    app.state.watch_repository = RedisWatchRepository(
+        client, terminal_retention_seconds=settings.terminal_retention_seconds
+    )
     # Share one Redis-backed mock state over the same client/prefix, so the API
     # and every worker child book against one store across processes.
     _bind_mock_adapter(

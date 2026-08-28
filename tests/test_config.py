@@ -24,6 +24,7 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "MOCK_SLOT_CAPACITY",
         "MOCK_SLOT_IDLE_TTL_SECONDS",
         "MOCK_BOOKING_RETENTION_SECONDS",
+        "WATCH_TERMINAL_RETENTION_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -274,6 +275,8 @@ def test_mock_capacity_within_bounds_is_accepted(
         ("MOCK_SLOT_CAPACITY", "100001", "between 1 and 100000"),
         ("MOCK_SLOT_IDLE_TTL_SECONDS", "59", "between 60 and 604800"),
         ("MOCK_BOOKING_RETENTION_SECONDS", "604799", "between 604800 and 31536000"),
+        ("WATCH_TERMINAL_RETENTION_SECONDS", "3599", "between 3600 and 31536000"),
+        ("WATCH_TERMINAL_RETENTION_SECONDS", "31536001", "between 3600 and 31536000"),
     ],
 )
 def test_mock_state_bounds_are_enforced(
@@ -286,3 +289,8 @@ def test_mock_state_bounds_are_enforced(
 
     with pytest.raises(ConfigurationError, match=match):
         WatchSettings.from_environment()
+
+
+def test_terminal_retention_default_is_a_week() -> None:
+    assert WatchSettings().terminal_retention_seconds == 604_800
+    assert WatchSettings.from_environment().terminal_retention_seconds == 604_800

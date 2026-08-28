@@ -9,10 +9,12 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
+from backend.config import DEFAULT_TERMINAL_RETENTION_SECONDS
 from backend.db.repositories import watch_scripts
 from backend.db.repositories.watch_decisions import (
     BookingPermit,
     BookingPermitStatus,
+    CleanupResult,
     ClaimResult,
     ClaimStatus,
     CommitResult,
@@ -210,6 +212,10 @@ class WatchRepository(Protocol):
         """Release a still-owned, uncommitted claim."""
         ...
 
+    async def cleanup_due(self, now: datetime, batch_size: int) -> CleanupResult:
+        """Remove a bounded batch of terminal watches past their retention."""
+        ...
+
 
 @dataclass(slots=True)
 class _ClaimLease:
@@ -244,7 +250,13 @@ class InMemoryWatchRepository:
     no claim that its state survives process loss.
     """
 
-    def __init__(self, clock: Callable[[], datetime] | None = None) -> None:
+    def __init__(
+        self,
+        clock: Callable[[], datetime] | None = None,
+        *,
+        terminal_retention_seconds: float = DEFAULT_TERMINAL_RETENTION_SECONDS,
+    ) -> None:
+        self._retention = timedelta(seconds=terminal_retention_seconds)
         self._watches: dict[str, Watch] = {}
         self._runtimes: dict[str, WatchRuntime] = {}
         self._fence: dict[str, int] = {}
@@ -509,20 +521,24 @@ class InMemoryWatchRepository:
                 return CommitResult(CommitStatus.FENCED)
 
             revision = runtime.revision + 1
-            stored_runtime = new_runtime.model_copy(
-                update={"revision": revision, "phase": None}
-            )
+            update: dict[str, Any] = {"revision": revision, "phase": None}
+            event_id: str | None = None
+            if new_watch.status.is_terminal:
+                # Every terminal transition gets one retention deadline, so the
+                # finished watch stays readable for the window and then cleans up.
+                update["terminal_delete_at"] = self._clock() + self._retention
+            stored_runtime = new_runtime.model_copy(update=update)
             self._watches[watch_id] = new_watch
             self._runtimes[watch_id] = stored_runtime
             self._claims.pop(watch_id, None)
 
-            event_id: str | None = None
             if new_watch.status.is_terminal:
                 self._markers.pop(watch_id, None)
-                if stored_runtime.terminal_delete_at is not None:
-                    self._terminal_delete_at[watch_id] = (
-                        stored_runtime.terminal_delete_at
-                    )
+                self._dispatch_leases.pop(watch_id, None)
+                assert stored_runtime.terminal_delete_at is not None
+                self._terminal_delete_at[watch_id] = (
+                    stored_runtime.terminal_delete_at
+                )
                 event_id = self._issue_event(
                     watch_id, new_watch.status, revision
                 )
@@ -559,7 +575,7 @@ class InMemoryWatchRepository:
                     "updated_at": now,
                 }
             )
-            self._apply_terminal(watch_id, cancelled, runtime)
+            self._apply_terminal(watch_id, cancelled, runtime, now)
             return TransitionResult(TransitionStatus.APPLIED, watch=cancelled)
 
     async def expire_if_eligible(
@@ -594,7 +610,7 @@ class InMemoryWatchRepository:
                     "updated_at": now,
                 }
             )
-            revision = self._apply_terminal(watch_id, expired, runtime)
+            revision = self._apply_terminal(watch_id, expired, runtime, now)
             event_id = self._issue_event(
                 watch_id, WatchStatus.EXPIRED, revision
             )
@@ -613,6 +629,39 @@ class InMemoryWatchRepository:
                 del self._claims[claim.watch.watch_id]
                 return True
             return False
+
+    async def cleanup_due(self, now: datetime, batch_size: int) -> CleanupResult:
+        async with self._lock:
+            due = sorted(
+                (
+                    watch_id
+                    for watch_id, deadline in self._terminal_delete_at.items()
+                    if deadline <= now
+                ),
+                key=lambda watch_id: self._terminal_delete_at[watch_id],
+            )
+            removed = 0
+            for watch_id in due[:batch_size]:
+                watch = self._watches.get(watch_id)
+                if watch is None or not watch.status.is_terminal:
+                    # Revalidate before deleting: a record that is gone or no
+                    # longer terminal is simply dropped from the cleanup index.
+                    self._terminal_delete_at.pop(watch_id, None)
+                    continue
+                self._watches.pop(watch_id, None)
+                self._runtimes.pop(watch_id, None)
+                self._fence.pop(watch_id, None)
+                self._claims.pop(watch_id, None)
+                self._dispatch_fence.pop(watch_id, None)
+                self._dispatch_leases.pop(watch_id, None)
+                self._markers.pop(watch_id, None)
+                self._terminal_delete_at.pop(watch_id, None)
+                removed += 1
+            remaining = any(
+                deadline <= now
+                for deadline in self._terminal_delete_at.values()
+            )
+            return CleanupResult(removed=removed, remaining=remaining)
 
     # -- internals ----------------------------------------------------------
 
@@ -634,10 +683,12 @@ class InMemoryWatchRepository:
         watch_id: str,
         terminal_watch: Watch,
         runtime: WatchRuntime | None,
+        now: datetime,
     ) -> int:
         """Store a terminal watch, bump revision, and clear scheduling state."""
 
         revision = (runtime.revision + 1) if runtime is not None else 0
+        deadline = now + self._retention
         self._watches[watch_id] = terminal_watch
         if runtime is not None:
             self._runtimes[watch_id] = runtime.model_copy(
@@ -647,11 +698,15 @@ class InMemoryWatchRepository:
                     "scheduled_for": None,
                     "phase": None,
                     "cancel_requested": False,
+                    "terminal_delete_at": deadline,
                 }
             )
         self._claims.pop(watch_id, None)
         self._dispatch_leases.pop(watch_id, None)
         self._markers.pop(watch_id, None)
+        # Cancellation and expiry are terminal too, so they earn the same
+        # bounded retention deadline as a committed terminal window.
+        self._terminal_delete_at[watch_id] = deadline
         return revision
 
     def _set_marker(self, watch_id: str, runtime: WatchRuntime) -> None:
@@ -699,16 +754,35 @@ class RedisWatchRepository:
         "claim_dispatch": watch_scripts.CLAIM_DISPATCH,
         "mark_dispatched": watch_scripts.MARK_DISPATCHED,
         "release_dispatch": watch_scripts.RELEASE_DISPATCH,
+        "cleanup_due": watch_scripts.CLEANUP_DUE,
     }
+
+    #: Native TTL margin past the logical retention deadline. The set-member
+    #: removal is done explicitly by cleanup; the key TTL is only a backstop.
+    _RETENTION_GRACE_SECONDS = 3_600.0
 
     def __init__(
         self,
         client: Any,
         clock: Callable[[], datetime] | None = None,
+        *,
+        terminal_retention_seconds: float = DEFAULT_TERMINAL_RETENTION_SECONDS,
     ) -> None:
         self._client = client
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._retention = timedelta(seconds=terminal_retention_seconds)
+        self._grace = timedelta(seconds=self._RETENTION_GRACE_SECONDS)
         self._scripts: dict[str, Any] = {}
+
+    def _terminal_deadlines(self, now: datetime) -> tuple[datetime, str, str]:
+        """(`terminal_delete_at`, terminal_delete_ms, retention_expire_ms)."""
+
+        deadline = now + self._retention
+        return (
+            deadline,
+            str(_to_ms(deadline)),
+            str(_to_ms(deadline + self._grace)),
+        )
 
     def _script(self, name: str) -> Any:
         script = self._scripts.get(name)
@@ -734,14 +808,27 @@ class RedisWatchRepository:
 
     async def list_all(self) -> list[Watch]:
         watch_ids = await self._client.smembers(INDEX_KEY)
-        return await self._load_many(watch_ids)
+        return await self._load_many(watch_ids, prune_index=INDEX_KEY)
 
     async def list_active(self) -> list[Watch]:
         watch_ids = await self._client.smembers(ACTIVE_INDEX_KEY)
-        watches = await self._load_many(watch_ids)
+        watches = await self._load_many(watch_ids, prune_index=ACTIVE_INDEX_KEY)
         # The index can lag behind a document that was updated elsewhere, so
-        # status on the document itself is the authority.
-        return [watch for watch in watches if watch.status is WatchStatus.ACTIVE]
+        # status on the document itself is the authority. A member whose
+        # document is no longer active is pruned from the active set on sight.
+        active: list[Watch] = []
+        stale: list[str] = []
+        for watch in watches:
+            if watch.status is WatchStatus.ACTIVE:
+                active.append(watch)
+            else:
+                stale.append(watch.watch_id)
+        if stale:
+            pipeline = self._client.pipeline()
+            for watch_id in stale:
+                pipeline.srem(ACTIVE_INDEX_KEY, watch_id)
+            await pipeline.execute()
+        return active
 
     async def delete(self, watch_id: str) -> bool:
         pipeline = self._client.pipeline()
@@ -756,7 +843,9 @@ class RedisWatchRepository:
         results = await pipeline.execute()
         return bool(results[0])
 
-    async def _load_many(self, watch_ids: Any) -> list[Watch]:
+    async def _load_many(
+        self, watch_ids: Any, *, prune_index: str | None = None
+    ) -> list[Watch]:
         ordered_ids = sorted(watch_ids or ())
         if not ordered_ids:
             return []
@@ -764,11 +853,22 @@ class RedisWatchRepository:
         raw_documents = await self._client.mget(
             [self._key(watch_id) for watch_id in ordered_ids]
         )
-        watches = [
-            watch
-            for watch_id, raw in zip(ordered_ids, raw_documents, strict=True)
-            if (watch := self._decode(watch_id, raw)) is not None
-        ]
+        watches: list[Watch] = []
+        stale: list[str] = []
+        for watch_id, raw in zip(ordered_ids, raw_documents, strict=True):
+            watch = self._decode(watch_id, raw)
+            if watch is None:
+                # Redis cannot remove a set member when a document expires by
+                # TTL alone, so a listing that meets a missing/corrupt member
+                # prunes it immediately rather than returning an invalid record.
+                stale.append(watch_id)
+            else:
+                watches.append(watch)
+        if prune_index is not None and stale:
+            pipeline = self._client.pipeline()
+            for watch_id in stale:
+                pipeline.srem(prune_index, watch_id)
+            await pipeline.execute()
         return sorted(watches, key=lambda watch: watch.created_at, reverse=True)
 
     @staticmethod
@@ -1048,10 +1148,19 @@ class RedisWatchRepository:
         new_runtime: WatchRuntime,
     ) -> CommitResult:
         watch_id = claim.watch.watch_id
-        stored_runtime = new_runtime.model_copy(
-            update={"revision": claim.runtime.revision + 1, "phase": None}
-        )
         is_terminal = new_watch.status.is_terminal
+        update: dict[str, Any] = {
+            "revision": claim.runtime.revision + 1,
+            "phase": None,
+        }
+        terminal_delete_ms = ""
+        retention_expire_ms = ""
+        if is_terminal:
+            deadline, terminal_delete_ms, retention_expire_ms = (
+                self._terminal_deadlines(self._clock())
+            )
+            update["terminal_delete_at"] = deadline
+        stored_runtime = new_runtime.model_copy(update=update)
         next_scheduled_ms = ""
         if (
             not is_terminal
@@ -1059,9 +1168,6 @@ class RedisWatchRepository:
             and stored_runtime.scheduled_for is not None
         ):
             next_scheduled_ms = str(_to_ms(stored_runtime.scheduled_for))
-        terminal_delete_ms = ""
-        if is_terminal and stored_runtime.terminal_delete_at is not None:
-            terminal_delete_ms = str(_to_ms(stored_runtime.terminal_delete_at))
         event_id = ""
         if is_terminal and new_watch.status in _TERMINAL_EVENT_STATUSES:
             event_id = terminal_event_id(
@@ -1089,7 +1195,7 @@ class RedisWatchRepository:
                 next_scheduled_ms,
                 terminal_delete_ms,
                 event_id,
-                "",  # retention PEXPIREAT wired in the retention phase
+                retention_expire_ms,
                 str(self._now_ms()),
             ],
         )
@@ -1123,10 +1229,15 @@ class RedisWatchRepository:
                         "pending",
                         "",
                         pending.model_dump_json(),
+                        "",
+                        "",
                     ],
                 )
             else:
                 now = self._clock()
+                deadline, terminal_delete_ms, retention_expire_ms = (
+                    self._terminal_deadlines(now)
+                )
                 cancelled = watch.model_copy(
                     update={
                         "status": WatchStatus.CANCELLED,
@@ -1143,6 +1254,7 @@ class RedisWatchRepository:
                             "scheduled_for": None,
                             "phase": None,
                             "cancel_requested": False,
+                            "terminal_delete_at": deadline,
                         }
                     ).model_dump_json()
                 out = await self._script('cancel')(
@@ -1153,6 +1265,8 @@ class RedisWatchRepository:
                         "cancel",
                         cancelled.model_dump_json(),
                         new_runtime_json,
+                        terminal_delete_ms,
+                        retention_expire_ms,
                     ],
                 )
 
@@ -1196,12 +1310,16 @@ class RedisWatchRepository:
         if not force and not watch.is_exhausted(self._clock()):
             return TransitionResult(TransitionStatus.NOT_ELIGIBLE, watch=watch)
 
+        now = self._clock()
+        deadline, terminal_delete_ms, retention_expire_ms = (
+            self._terminal_deadlines(now)
+        )
         new_revision = (runtime.revision + 1) if runtime is not None else 0
         expired = watch.model_copy(
             update={
                 "status": WatchStatus.EXPIRED,
                 "next_check_at": None,
-                "updated_at": self._clock(),
+                "updated_at": now,
             }
         )
         new_runtime_json = ""
@@ -1213,6 +1331,7 @@ class RedisWatchRepository:
                     "scheduled_for": None,
                     "phase": None,
                     "cancel_requested": False,
+                    "terminal_delete_at": deadline,
                 }
             ).model_dump_json()
         event_id = terminal_event_id(
@@ -1234,8 +1353,8 @@ class RedisWatchRepository:
                 expired.model_dump_json(),
                 new_runtime_json,
                 event_id,
-                "",  # terminal_delete_ms wired in the retention phase
-                "",  # retention PEXPIREAT wired in the retention phase
+                terminal_delete_ms,
+                retention_expire_ms,
             ],
         )
         code = _code(out)
@@ -1261,6 +1380,18 @@ class RedisWatchRepository:
         )
         return bool(int(out))
 
+    async def cleanup_due(self, now: datetime, batch_size: int) -> CleanupResult:
+        out = await self._script('cleanup_due')(
+            keys=[
+                TERMINAL_INDEX_KEY,
+                INDEX_KEY,
+                ACTIVE_INDEX_KEY,
+                SCHEDULE_INDEX_KEY,
+            ],
+            args=[str(_to_ms(now)), str(batch_size), KEY_PREFIX],
+        )
+        return CleanupResult(removed=int(out[0]), remaining=int(out[1]) > 0)
+
     def _cancel_keys(self, watch_id: str) -> list[str]:
         return [
             self._key(watch_id),
@@ -1268,6 +1399,7 @@ class RedisWatchRepository:
             self._claim_key(watch_id),
             ACTIVE_INDEX_KEY,
             SCHEDULE_INDEX_KEY,
+            TERMINAL_INDEX_KEY,
         ]
 
     def _now_ms(self) -> int:

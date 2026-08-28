@@ -19,6 +19,7 @@ __all__ = [
     "BookingPermitStatus",
     "ClaimResult",
     "ClaimStatus",
+    "CleanupResult",
     "CommitResult",
     "CommitStatus",
     "CreateResult",
@@ -157,3 +158,15 @@ class DispatchClaim:
 class DispatchResult:
     status: DispatchStatus
     claim: DispatchClaim | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CleanupResult:
+    """What one bounded terminal-retention cleanup pass removed.
+
+    `remaining` reports whether the due backlog was fully drained, so a caller
+    can keep readiness degraded until cleanup has caught up.
+    """
+
+    removed: int
+    remaining: bool

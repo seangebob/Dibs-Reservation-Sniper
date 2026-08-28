@@ -70,7 +70,10 @@ def build_watch_service() -> WatchService:
         retention_seconds=settings.mock_booking_retention_seconds,
     )
     return WatchService(
-        RedisWatchRepository(_redis_client()),
+        RedisWatchRepository(
+            _redis_client(),
+            terminal_retention_seconds=settings.terminal_retention_seconds,
+        ),
         MockBookingAdapter(state=mock_state),
         CeleryTaskQueue(monitor_watch),
         schedule=PollSchedule(

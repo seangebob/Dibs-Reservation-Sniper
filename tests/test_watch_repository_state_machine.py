@@ -40,11 +40,18 @@ def make_repo(request: pytest.FixtureRequest):
     exact Redis-Lua implementations must agree on every decision.
     """
 
-    def build(clock: Clock) -> object:
+    def build(clock: Clock, *, terminal_retention_seconds: float = 604_800.0) -> object:
         if request.param == "memory":
-            return InMemoryWatchRepository(clock=clock)
+            return InMemoryWatchRepository(
+                clock=clock,
+                terminal_retention_seconds=terminal_retention_seconds,
+            )
         client = fakeredis_aio.FakeRedis(decode_responses=True)
-        return RedisWatchRepository(client, clock=clock)
+        return RedisWatchRepository(
+            client,
+            clock=clock,
+            terminal_retention_seconds=terminal_retention_seconds,
+        )
 
     return build
 
@@ -635,5 +642,77 @@ def test_dispatch_claim_is_stale_for_a_terminal_watch(make_repo) -> None:
 
         result = await repo.claim_dispatch(marker, "disp-a", 30.0)
         assert result.status is DispatchStatus.STALE
+
+    asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------------
+# Task 9: terminal retention and bounded cleanup
+# --------------------------------------------------------------------------
+
+
+def test_a_terminal_watch_is_retained_then_cleaned_up(make_repo) -> None:
+    async def scenario() -> None:
+        clock = Clock(NOW)
+        repo = make_repo(clock, terminal_retention_seconds=3600.0)
+        watch = _watch(attempts=3, max_attempts=3)
+        await _create(repo, watch)
+
+        result = await repo.expire_if_eligible(watch.watch_id)
+        assert result.status is TransitionStatus.APPLIED
+
+        # Retained and retrievable through the window.
+        clock.advance(1800)
+        early = await repo.cleanup_due(clock(), 10)
+        assert early.removed == 0
+        stored = await repo.get(watch.watch_id)
+        assert stored is not None and stored.status is WatchStatus.EXPIRED
+
+        # Past the deadline, one bounded pass removes it.
+        clock.advance(1801)
+        late = await repo.cleanup_due(clock(), 10)
+        assert late.removed == 1
+        assert late.remaining is False
+        assert await repo.get(watch.watch_id) is None
+        assert await repo.get_runtime(watch.watch_id) is None
+
+    asyncio.run(scenario())
+
+
+def test_a_cancelled_watch_also_earns_a_retention_deadline(make_repo) -> None:
+    async def scenario() -> None:
+        clock = Clock(NOW)
+        repo = make_repo(clock, terminal_retention_seconds=3600.0)
+        watch = _watch()
+        await _create(repo, watch)
+
+        assert (await repo.cancel_if_active(watch.watch_id)).status is (
+            TransitionStatus.APPLIED
+        )
+        # Still retrievable now; gone after the retention window.
+        assert (await repo.get(watch.watch_id)).status is WatchStatus.CANCELLED
+        clock.advance(3601)
+        assert (await repo.cleanup_due(clock(), 10)).removed == 1
+        assert await repo.get(watch.watch_id) is None
+
+    asyncio.run(scenario())
+
+
+def test_cleanup_is_bounded_by_the_batch_size_and_reports_backlog(make_repo) -> None:
+    async def scenario() -> None:
+        clock = Clock(NOW)
+        repo = make_repo(clock, terminal_retention_seconds=3600.0)
+        for index in range(3):
+            watch = _watch(f"watch_{index}", attempts=3, max_attempts=3)
+            await _create(repo, watch)
+            await repo.expire_if_eligible(watch.watch_id)
+
+        clock.advance(3601)
+        first = await repo.cleanup_due(clock(), 2)
+        assert first.removed == 2
+        assert first.remaining is True  # one still due
+        second = await repo.cleanup_due(clock(), 2)
+        assert second.removed == 1
+        assert second.remaining is False
 
     asyncio.run(scenario())

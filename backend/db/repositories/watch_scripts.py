@@ -138,9 +138,10 @@ end
 return {'COMMITTED', ARGV[5], ''}
 """
 
-# KEYS: watch, runtime, claim, active_index, schedule
+# KEYS: watch, runtime, claim, active_index, schedule, terminal_index
 # ARGV: watch_id, cas_revision ('' to skip), mode ('cancel'/'pending'),
-#       new_watch_json ('' for pending), new_runtime_json ('' when no runtime)
+#       new_watch_json ('' for pending), new_runtime_json ('' when no runtime),
+#       terminal_delete_ms ('' for pending), retention_expire_ms ('' none)
 CANCEL_IF_ACTIVE = """
 local w = redis.call('GET', KEYS[1])
 if not w then return {'UNKNOWN'} end
@@ -158,7 +159,42 @@ if rraw then redis.call('SET', KEYS[2], ARGV[5]) end
 redis.call('DEL', KEYS[3])
 redis.call('SREM', KEYS[4], ARGV[1])
 redis.call('ZREM', KEYS[5], ARGV[1])
+if ARGV[6] ~= '' then redis.call('ZADD', KEYS[6], tonumber(ARGV[6]), ARGV[1]) end
+if ARGV[7] ~= '' then
+  redis.call('PEXPIREAT', KEYS[1], tonumber(ARGV[7]))
+  redis.call('PEXPIREAT', KEYS[2], tonumber(ARGV[7]))
+end
 return {'APPLIED', ARGV[4]}
+"""
+
+# Remove a bounded batch of terminal watches whose retention has elapsed. Each
+# is revalidated as still-present and still-terminal before deletion; a member
+# that is gone or was resurrected is just dropped from the cleanup index. Native
+# key TTLs are only a backstop, so this is what actually removes set members.
+# KEYS: terminal_index, all_index, active_index, schedule_index
+# ARGV: now_ms, batch, key_prefix
+CLEANUP_DUE = """
+local due = redis.call(
+  'ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, tonumber(ARGV[2])
+)
+local removed = 0
+for _, wid in ipairs(due) do
+  local wkey = ARGV[3]..':'..wid
+  local doc = redis.call('GET', wkey)
+  if doc and cjson.decode(doc).status ~= 'ACTIVE' then
+    redis.call('DEL', wkey)
+    redis.call('DEL', wkey..':runtime')
+    redis.call('DEL', wkey..':fence')
+    redis.call('DEL', wkey..':claim')
+    redis.call('SREM', KEYS[2], wid)
+    redis.call('SREM', KEYS[3], wid)
+    redis.call('ZREM', KEYS[4], wid)
+    removed = removed + 1
+  end
+  redis.call('ZREM', KEYS[1], wid)
+end
+local remaining = redis.call('ZCOUNT', KEYS[1], '-inf', ARGV[1])
+return {removed, remaining}
 """
 
 # KEYS: watch, runtime, claim, active_index, schedule, terminal, events

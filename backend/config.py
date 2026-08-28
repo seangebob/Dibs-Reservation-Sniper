@@ -50,6 +50,11 @@ DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS = 3_600
 DEFAULT_MOCK_SLOT_CAPACITY = 10_000
 DEFAULT_MOCK_SLOT_IDLE_TTL_SECONDS = 3_600
 DEFAULT_MOCK_BOOKING_RETENTION_SECONDS = 604_800
+#: How long a finished watch (its document, sidecar, and terminal event) stays
+#: retrievable before bounded cleanup removes it. A week by default so a client
+#: can still read a booking well after it completed; native key TTLs are only a
+#: backstop, because Redis cannot remove a set member when a key expires alone.
+DEFAULT_TERMINAL_RETENTION_SECONDS = 604_800
 
 _MIN_POLL_INTERVAL_SECONDS = 15
 _MAX_POLL_INTERVAL_SECONDS = 3_600
@@ -66,6 +71,8 @@ _MIN_MOCK_SLOT_IDLE_TTL_SECONDS = 60
 _MAX_MOCK_SLOT_IDLE_TTL_SECONDS = 604_800
 _MIN_MOCK_BOOKING_RETENTION_SECONDS = 604_800
 _MAX_MOCK_BOOKING_RETENTION_SECONDS = 31_536_000
+_MIN_TERMINAL_RETENTION_SECONDS = 3_600
+_MAX_TERMINAL_RETENTION_SECONDS = 31_536_000
 
 #: Longest integer text accepted for a bounded count, rejected before any
 #: `int()` conversion so a pathologically long digit string can never be
@@ -135,6 +142,7 @@ class WatchSettings:
     mock_slot_capacity: int = DEFAULT_MOCK_SLOT_CAPACITY
     mock_slot_idle_ttl_seconds: int = DEFAULT_MOCK_SLOT_IDLE_TTL_SECONDS
     mock_booking_retention_seconds: int = DEFAULT_MOCK_BOOKING_RETENTION_SECONDS
+    terminal_retention_seconds: int = DEFAULT_TERMINAL_RETENTION_SECONDS
 
     @classmethod
     def from_environment(cls) -> "WatchSettings":
@@ -225,6 +233,12 @@ class WatchSettings:
             minimum=_MIN_MOCK_BOOKING_RETENTION_SECONDS,
             maximum=_MAX_MOCK_BOOKING_RETENTION_SECONDS,
         )
+        terminal_retention = _bounded_count(
+            "WATCH_TERMINAL_RETENTION_SECONDS",
+            DEFAULT_TERMINAL_RETENTION_SECONDS,
+            minimum=_MIN_TERMINAL_RETENTION_SECONDS,
+            maximum=_MAX_TERMINAL_RETENTION_SECONDS,
+        )
 
         return cls(
             timezone_name=timezone_name,
@@ -238,6 +252,7 @@ class WatchSettings:
             mock_slot_capacity=mock_capacity,
             mock_slot_idle_ttl_seconds=mock_idle_ttl,
             mock_booking_retention_seconds=mock_retention,
+            terminal_retention_seconds=terminal_retention,
         )
 
 
@@ -256,6 +271,7 @@ class Settings:
     mock_slot_capacity: int = DEFAULT_MOCK_SLOT_CAPACITY
     mock_slot_idle_ttl_seconds: int = DEFAULT_MOCK_SLOT_IDLE_TTL_SECONDS
     mock_booking_retention_seconds: int = DEFAULT_MOCK_BOOKING_RETENTION_SECONDS
+    terminal_retention_seconds: int = DEFAULT_TERMINAL_RETENTION_SECONDS
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -290,4 +306,5 @@ class Settings:
             mock_slot_capacity=watch.mock_slot_capacity,
             mock_slot_idle_ttl_seconds=watch.mock_slot_idle_ttl_seconds,
             mock_booking_retention_seconds=watch.mock_booking_retention_seconds,
+            terminal_retention_seconds=watch.terminal_retention_seconds,
         )
