@@ -168,8 +168,15 @@ class WatchRepository(Protocol):
         window_id: str,
         owner_id: str,
         lease_seconds: float,
+        *,
+        ignore_schedule: bool = False,
     ) -> ClaimResult:
-        """Grant one expiring, fenced claim on a due cadence window."""
+        """Grant one expiring, fenced claim on a due cadence window.
+
+        `ignore_schedule` suppresses the not-yet-due `EARLY` guard for the
+        legacy `poll_once` path, where the arrival of the job is itself the
+        authority that the window is due; the window-aware path leaves it on.
+        """
         ...
 
     async def begin_booking(self, claim: WindowClaim) -> BookingPermit:
@@ -413,6 +420,8 @@ class InMemoryWatchRepository:
         window_id: str,
         owner_id: str,
         lease_seconds: float,
+        *,
+        ignore_schedule: bool = False,
     ) -> ClaimResult:
         async with self._lock:
             now = self._clock()
@@ -424,7 +433,11 @@ class InMemoryWatchRepository:
                 return ClaimResult(ClaimStatus.TERMINAL)
             if runtime.window_id != window_id:
                 return ClaimResult(ClaimStatus.STALE)
-            if runtime.scheduled_for is not None and runtime.scheduled_for > now:
+            if (
+                not ignore_schedule
+                and runtime.scheduled_for is not None
+                and runtime.scheduled_for > now
+            ):
                 return ClaimResult(ClaimStatus.EARLY)
 
             held = self._claims.get(watch_id)
@@ -965,6 +978,8 @@ class RedisWatchRepository:
         window_id: str,
         owner_id: str,
         lease_seconds: float,
+        *,
+        ignore_schedule: bool = False,
     ) -> ClaimResult:
         now_ms = self._now_ms()
         out = await self._script('claim')(
@@ -981,6 +996,7 @@ class RedisWatchRepository:
                 owner_id,
                 str(int(lease_seconds * 1000)),
                 str(now_ms),
+                "1" if ignore_schedule else "0",
             ],
         )
         code = _code(out)

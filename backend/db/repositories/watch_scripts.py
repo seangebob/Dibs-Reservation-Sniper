@@ -51,7 +51,7 @@ end
 """
 
 # KEYS: watch, runtime, fence, claim, schedule
-# ARGV: watch_id, window_id, owner_id, lease_ms, now_ms
+# ARGV: watch_id, window_id, owner_id, lease_ms, now_ms, ignore_schedule ('1'/'0')
 CLAIM_WINDOW = _PARSE_CLAIM + """
 local w = redis.call('GET', KEYS[1])
 if not w then return {'UNKNOWN'} end
@@ -60,8 +60,10 @@ local rraw = redis.call('GET', KEYS[2])
 if not rraw then return {'UNKNOWN'} end
 if cjson.decode(rraw).window_id ~= ARGV[2] then return {'STALE'} end
 local now = tonumber(ARGV[5])
-local due = redis.call('ZSCORE', KEYS[5], ARGV[1])
-if due and tonumber(due) > now then return {'EARLY'} end
+if ARGV[6] ~= '1' then
+  local due = redis.call('ZSCORE', KEYS[5], ARGV[1])
+  if due and tonumber(due) > now then return {'EARLY'} end
+end
 local held = redis.call('GET', KEYS[4])
 if held then
   local _, _, exp = parse_claim(held)

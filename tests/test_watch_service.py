@@ -22,6 +22,8 @@ from backend.services.notification_service import (
     RecordingNotificationService,
     WatchEvent,
 )
+from backend.models.watch import Watch
+from backend.models.watch_runtime import initial_runtime, window_id_for
 from backend.services.watch_service import WatchService
 from backend.workers.queue import RecordingTaskQueue
 from backend.workers.scheduler import PollSchedule
@@ -373,3 +375,115 @@ def test_listing_can_be_narrowed_to_active_watches() -> None:
 
     assert len(asyncio.run(service.list())) == 2
     assert len(asyncio.run(service.list(active_only=True))) == 1
+
+
+# --- claim-first cadence windows (milestone 3, single-flight) ---------------
+
+
+class Clock:
+    def __init__(self, start: datetime = NOW) -> None:
+        self.now = start
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += timedelta(seconds=seconds)
+
+
+class CountingAdapter(EmptyAdapter):
+    """Never has availability, and counts how often it is searched."""
+
+    def __init__(self) -> None:
+        self.searches = 0
+
+    async def search_availability(self, query):  # noqa: ANN001
+        self.searches += 1
+        return []
+
+
+def build_shared(adapter, clock, *, max_attempts: int = 10):  # noqa: ANN001, ANN201
+    """A service and repository sharing one injected clock, for due-time tests."""
+
+    repository = InMemoryWatchRepository(clock=clock)
+    queue = RecordingTaskQueue()
+    service = WatchService(
+        repository,
+        adapter,
+        queue,
+        schedule=PollSchedule(interval_seconds=180, jitter_seconds=30),
+        max_attempts=max_attempts,
+        clock=clock,
+    )
+    return service, repository, queue
+
+
+def test_a_duplicate_delivery_of_a_window_does_no_second_check() -> None:
+    """A redelivery of a window already advanced past is a no-op."""
+
+    clock = Clock()
+    adapter = CountingAdapter()
+    service, repository, _ = build_shared(adapter, clock)
+    watch = asyncio.run(service.create(query()))
+    window = window_id_for(watch.watch_id, 0)
+
+    first = asyncio.run(service.poll_window(watch.watch_id, window, enforce_due=False))
+    second = asyncio.run(service.poll_window(watch.watch_id, window, enforce_due=False))
+
+    assert first.outcome is WatchPollOutcome.NO_AVAILABILITY
+    # The window moved on after the first commit, so the redelivery finds it
+    # stale: no provider call, no second attempt, no extra successor.
+    assert second.outcome is WatchPollOutcome.ALREADY_FINISHED
+    assert adapter.searches == 1
+    assert asyncio.run(repository.get(watch.watch_id)).attempts == 1
+
+
+def test_a_window_polled_before_it_is_due_does_no_work() -> None:
+    """The window-aware path leaves a not-yet-due window untouched."""
+
+    clock = Clock()
+    adapter = CountingAdapter()
+    service, _, _ = build_shared(adapter, clock)
+    watch = asyncio.run(service.create(query()))
+    # The first miss schedules the next window in the future (clock is frozen).
+    asyncio.run(service.poll_once(watch.watch_id))
+    searches_after_first = adapter.searches
+    next_window = window_id_for(watch.watch_id, 1)
+
+    result = asyncio.run(
+        service.poll_window(watch.watch_id, next_window, enforce_due=True)
+    )
+
+    assert result.outcome is WatchPollOutcome.ALREADY_FINISHED
+    assert adapter.searches == searches_after_first  # no premature provider call
+
+
+def test_a_near_deadline_miss_never_schedules_past_the_deadline() -> None:
+    clock = Clock()
+    adapter = CountingAdapter()
+    service, repository, _ = build_shared(adapter, clock)
+    # Seed a watch with only ten seconds of lifetime left.
+    watch = Watch(
+        watch_id="watch_short",
+        status=WatchStatus.ACTIVE,
+        query=query(),
+        created_at=NOW,
+        updated_at=NOW,
+        expires_at=NOW + timedelta(seconds=10),
+        attempts=0,
+        max_attempts=25_000,
+        next_check_at=NOW,
+    )
+    runtime = initial_runtime(watch, required_attempts=2, supports_deadline=True)
+    asyncio.run(repository.create_with_schedule(watch, runtime))
+
+    result = asyncio.run(
+        service.poll_window(
+            watch.watch_id, window_id_for(watch.watch_id, 0), enforce_due=False
+        )
+    )
+
+    assert result.outcome is WatchPollOutcome.NO_AVAILABILITY
+    assert result.retry_in_seconds <= 10
+    stored = asyncio.run(repository.get(watch.watch_id))
+    assert stored.next_check_at <= stored.expires_at
