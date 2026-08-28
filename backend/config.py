@@ -43,6 +43,13 @@ DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS = 45
 #: interval (a backoff shorter than the cadence would be pointless) and never
 #: so long that a recovered provider waits most of a day for the next check.
 DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS = 3_600
+#: Shared mock-provider state bounds. Capacity counts generated *unbooked*
+#: slots; protected booking/tombstone/idempotency records are governed by the
+#: separate retention window, which defaults to (and never drops below) a week
+#: so idempotent replay survives across a demo.
+DEFAULT_MOCK_SLOT_CAPACITY = 10_000
+DEFAULT_MOCK_SLOT_IDLE_TTL_SECONDS = 3_600
+DEFAULT_MOCK_BOOKING_RETENTION_SECONDS = 604_800
 
 _MIN_POLL_INTERVAL_SECONDS = 15
 _MAX_POLL_INTERVAL_SECONDS = 3_600
@@ -53,6 +60,12 @@ _MAX_DISPATCH_HORIZON_SECONDS = 3_600
 _MIN_PROVIDER_CALL_TIMEOUT_SECONDS = 1
 _MAX_PROVIDER_CALL_TIMEOUT_SECONDS = 45
 _MAX_PROVIDER_BACKOFF_MAX_SECONDS = 86_400
+_MIN_MOCK_SLOT_CAPACITY = 1
+_MAX_MOCK_SLOT_CAPACITY = 100_000
+_MIN_MOCK_SLOT_IDLE_TTL_SECONDS = 60
+_MAX_MOCK_SLOT_IDLE_TTL_SECONDS = 604_800
+_MIN_MOCK_BOOKING_RETENTION_SECONDS = 604_800
+_MAX_MOCK_BOOKING_RETENTION_SECONDS = 31_536_000
 
 #: Longest integer text accepted for a bounded count, rejected before any
 #: `int()` conversion so a pathologically long digit string can never be
@@ -119,6 +132,9 @@ class WatchSettings:
     dispatch_horizon_seconds: int = DEFAULT_DISPATCH_HORIZON_SECONDS
     provider_call_timeout_seconds: int = DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS
     provider_backoff_max_seconds: int = DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS
+    mock_slot_capacity: int = DEFAULT_MOCK_SLOT_CAPACITY
+    mock_slot_idle_ttl_seconds: int = DEFAULT_MOCK_SLOT_IDLE_TTL_SECONDS
+    mock_booking_retention_seconds: int = DEFAULT_MOCK_BOOKING_RETENTION_SECONDS
 
     @classmethod
     def from_environment(cls) -> "WatchSettings":
@@ -191,6 +207,25 @@ class WatchSettings:
                 "WATCH_POLL_INTERVAL_SECONDS"
             )
 
+        mock_capacity = _bounded_count(
+            "MOCK_SLOT_CAPACITY",
+            DEFAULT_MOCK_SLOT_CAPACITY,
+            minimum=_MIN_MOCK_SLOT_CAPACITY,
+            maximum=_MAX_MOCK_SLOT_CAPACITY,
+        )
+        mock_idle_ttl = _bounded_count(
+            "MOCK_SLOT_IDLE_TTL_SECONDS",
+            DEFAULT_MOCK_SLOT_IDLE_TTL_SECONDS,
+            minimum=_MIN_MOCK_SLOT_IDLE_TTL_SECONDS,
+            maximum=_MAX_MOCK_SLOT_IDLE_TTL_SECONDS,
+        )
+        mock_retention = _bounded_count(
+            "MOCK_BOOKING_RETENTION_SECONDS",
+            DEFAULT_MOCK_BOOKING_RETENTION_SECONDS,
+            minimum=_MIN_MOCK_BOOKING_RETENTION_SECONDS,
+            maximum=_MAX_MOCK_BOOKING_RETENTION_SECONDS,
+        )
+
         return cls(
             timezone_name=timezone_name,
             redis_url=redis_url,
@@ -200,6 +235,9 @@ class WatchSettings:
             dispatch_horizon_seconds=dispatch_horizon,
             provider_call_timeout_seconds=provider_timeout,
             provider_backoff_max_seconds=backoff_max,
+            mock_slot_capacity=mock_capacity,
+            mock_slot_idle_ttl_seconds=mock_idle_ttl,
+            mock_booking_retention_seconds=mock_retention,
         )
 
 
@@ -215,6 +253,9 @@ class Settings:
     dispatch_horizon_seconds: int = DEFAULT_DISPATCH_HORIZON_SECONDS
     provider_call_timeout_seconds: int = DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS
     provider_backoff_max_seconds: int = DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS
+    mock_slot_capacity: int = DEFAULT_MOCK_SLOT_CAPACITY
+    mock_slot_idle_ttl_seconds: int = DEFAULT_MOCK_SLOT_IDLE_TTL_SECONDS
+    mock_booking_retention_seconds: int = DEFAULT_MOCK_BOOKING_RETENTION_SECONDS
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -246,4 +287,7 @@ class Settings:
             dispatch_horizon_seconds=watch.dispatch_horizon_seconds,
             provider_call_timeout_seconds=watch.provider_call_timeout_seconds,
             provider_backoff_max_seconds=watch.provider_backoff_max_seconds,
+            mock_slot_capacity=watch.mock_slot_capacity,
+            mock_slot_idle_ttl_seconds=watch.mock_slot_idle_ttl_seconds,
+            mock_booking_retention_seconds=watch.mock_booking_retention_seconds,
         )

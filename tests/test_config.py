@@ -21,6 +21,9 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "WATCH_DISPATCH_HORIZON_SECONDS",
         "WATCH_PROVIDER_CALL_TIMEOUT_SECONDS",
         "WATCH_PROVIDER_BACKOFF_MAX_SECONDS",
+        "MOCK_SLOT_CAPACITY",
+        "MOCK_SLOT_IDLE_TTL_SECONDS",
+        "MOCK_BOOKING_RETENTION_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -243,4 +246,43 @@ def test_a_backoff_ceiling_above_a_day_is_rejected(
     monkeypatch.setenv("WATCH_PROVIDER_BACKOFF_MAX_SECONDS", "86401")
 
     with pytest.raises(ConfigurationError, match="between 1 and 86400"):
+        WatchSettings.from_environment()
+
+
+# --- shared mock booking state bounds (milestone 3) -------------------------
+
+
+def test_mock_state_defaults() -> None:
+    settings = WatchSettings()
+    assert settings.mock_slot_capacity == 10_000
+    assert settings.mock_slot_idle_ttl_seconds == 3_600
+    assert settings.mock_booking_retention_seconds == 604_800
+
+
+def test_mock_capacity_within_bounds_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOCK_SLOT_CAPACITY", "100000")
+
+    assert WatchSettings.from_environment().mock_slot_capacity == 100_000
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "match"),
+    [
+        ("MOCK_SLOT_CAPACITY", "0", "positive integer"),
+        ("MOCK_SLOT_CAPACITY", "100001", "between 1 and 100000"),
+        ("MOCK_SLOT_IDLE_TTL_SECONDS", "59", "between 60 and 604800"),
+        ("MOCK_BOOKING_RETENTION_SECONDS", "604799", "between 604800 and 31536000"),
+    ],
+)
+def test_mock_state_bounds_are_enforced(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+    match: str,
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ConfigurationError, match=match):
         WatchSettings.from_environment()
