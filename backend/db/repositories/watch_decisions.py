@@ -27,6 +27,7 @@ __all__ = [
     "DispatchClaim",
     "DispatchResult",
     "DispatchStatus",
+    "RecoveryCandidate",
     "ScheduleMarker",
     "TransitionResult",
     "TransitionStatus",
@@ -158,6 +159,24 @@ class DispatchClaim:
 class DispatchResult:
     status: DispatchStatus
     claim: DispatchClaim | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryCandidate:
+    """One active-index member handed to recovery for classification.
+
+    `watch` is None when the indexed document is missing or corrupt, which is
+    itself the signal to prune the stale member. `has_marker` and
+    `has_live_claim` report the durable schedule marker and the unexpired poll
+    claim, so recovery can preserve future work, defer a live owner, or
+    synthesize a marker for an active record that has neither.
+    """
+
+    watch_id: str
+    watch: Watch | None
+    runtime: WatchRuntime | None
+    has_marker: bool
+    has_live_claim: bool
 
 
 @dataclass(frozen=True, slots=True)

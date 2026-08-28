@@ -24,6 +24,7 @@ from backend.db.repositories.watch_decisions import (
     DispatchClaim,
     DispatchResult,
     DispatchStatus,
+    RecoveryCandidate,
     ScheduleMarker,
     TransitionResult,
     TransitionStatus,
@@ -91,6 +92,7 @@ ACTIVE_INDEX_KEY = "dibs:watches:active"
 SCHEDULE_INDEX_KEY = "dibs:watches:schedule"
 TERMINAL_INDEX_KEY = "dibs:watches:terminal"
 EVENTS_KEY = "dibs:watch:events"
+LEADER_KEY = "dibs:recovery:leader"
 
 
 class WatchRepository(Protocol):
@@ -214,6 +216,24 @@ class WatchRepository(Protocol):
 
     async def cleanup_due(self, now: datetime, batch_size: int) -> CleanupResult:
         """Remove a bounded batch of terminal watches past their retention."""
+        ...
+
+    # Startup/recovery reconciliation surface.
+
+    async def list_recovery_candidates(self) -> list[RecoveryCandidate]:
+        """Return one classification record per active-index member."""
+        ...
+
+    async def prune_index_member(
+        self, watch_id: str, *, from_all: bool = False
+    ) -> None:
+        """Drop a stale member from the active index (and all index if asked)."""
+        ...
+
+    async def synthesize_marker(
+        self, watch_id: str, runtime: WatchRuntime
+    ) -> bool:
+        """Repair an active record that lost its durable schedule marker."""
         ...
 
 
@@ -663,6 +683,65 @@ class InMemoryWatchRepository:
             )
             return CleanupResult(removed=removed, remaining=remaining)
 
+    # -- recovery reconciliation surface ------------------------------------
+
+    async def list_recovery_candidates(self) -> list[RecoveryCandidate]:
+        async with self._lock:
+            now = self._clock()
+            candidates: list[RecoveryCandidate] = []
+            for watch_id, watch in self._watches.items():
+                # The process-local store has no separate active index, so the
+                # active members are exactly the watches still in ACTIVE state;
+                # it never carries a missing/corrupt/terminal stale member.
+                if watch.status is not WatchStatus.ACTIVE:
+                    continue
+                held = self._claims.get(watch_id)
+                candidates.append(
+                    RecoveryCandidate(
+                        watch_id=watch_id,
+                        watch=watch,
+                        runtime=self._runtimes.get(watch_id),
+                        has_marker=watch_id in self._markers,
+                        has_live_claim=(
+                            held is not None and held.expires_at > now
+                        ),
+                    )
+                )
+            return candidates
+
+    async def prune_index_member(
+        self, watch_id: str, *, from_all: bool = False
+    ) -> None:
+        async with self._lock:
+            # A process-local store's active membership is the ACTIVE status
+            # itself, so there is no dangling set member to remove here; the
+            # method exists for protocol parity with the indexed Redis store.
+            if from_all:
+                self._watches.pop(watch_id, None)
+                self._runtimes.pop(watch_id, None)
+                self._fence.pop(watch_id, None)
+                self._claims.pop(watch_id, None)
+                self._markers.pop(watch_id, None)
+                self._terminal_delete_at.pop(watch_id, None)
+
+    async def synthesize_marker(
+        self, watch_id: str, runtime: WatchRuntime
+    ) -> bool:
+        async with self._lock:
+            now = self._clock()
+            watch = self._watches.get(watch_id)
+            if watch is None or watch.status.is_terminal:
+                return False
+            held = self._claims.get(watch_id)
+            if held is not None and held.expires_at > now:
+                return False  # a live owner will finish or its lease expires
+            if watch_id in self._markers:
+                return False  # a healthy marker is never rewritten
+            self._runtimes[watch_id] = runtime
+            self._fence.setdefault(watch_id, 0)
+            self._set_marker(watch_id, runtime)
+            return watch_id in self._markers
+
     # -- internals ----------------------------------------------------------
 
     def _owns(self, claim: WindowClaim, current: WatchRuntime) -> bool:
@@ -755,6 +834,9 @@ class RedisWatchRepository:
         "mark_dispatched": watch_scripts.MARK_DISPATCHED,
         "release_dispatch": watch_scripts.RELEASE_DISPATCH,
         "cleanup_due": watch_scripts.CLEANUP_DUE,
+        "renew_leader": watch_scripts.RENEW_LEADER,
+        "release_leader": watch_scripts.RELEASE_LEADER,
+        "synthesize_marker": watch_scripts.SYNTHESIZE_MARKER,
     }
 
     #: Native TTL margin past the logical retention deadline. The set-member
@@ -1391,6 +1473,110 @@ class RedisWatchRepository:
             args=[str(_to_ms(now)), str(batch_size), KEY_PREFIX],
         )
         return CleanupResult(removed=int(out[0]), remaining=int(out[1]) > 0)
+
+    # -- recovery reconciliation surface ------------------------------------
+
+    async def acquire_leadership(
+        self, owner_id: str, lease_seconds: float
+    ) -> bool:
+        """Take the recovery leader lease iff no live one exists (SET NX PX)."""
+
+        acquired = await self._client.set(
+            LEADER_KEY,
+            owner_id,
+            nx=True,
+            px=max(1, int(lease_seconds * 1000)),
+        )
+        return bool(acquired)
+
+    async def renew_leadership(
+        self, owner_id: str, lease_seconds: float
+    ) -> bool:
+        """Extend the lease iff this owner still holds it; else report loss."""
+
+        out = await self._script('renew_leader')(
+            keys=[LEADER_KEY],
+            args=[owner_id, str(max(1, int(lease_seconds * 1000)))],
+        )
+        return bool(int(out))
+
+    async def release_leadership(self, owner_id: str) -> bool:
+        out = await self._script('release_leader')(
+            keys=[LEADER_KEY], args=[owner_id]
+        )
+        return bool(int(out))
+
+    async def list_recovery_candidates(self) -> list[RecoveryCandidate]:
+        watch_ids = sorted(await self._client.smembers(ACTIVE_INDEX_KEY) or ())
+        now_ms = self._now_ms()
+        candidates: list[RecoveryCandidate] = []
+        for watch_id in watch_ids:
+            raw = await self._client.get(self._key(watch_id))
+            watch = self._decode(watch_id, raw)
+            runtime = await self.get_runtime(watch_id)
+            marker = await self._client.zscore(SCHEDULE_INDEX_KEY, watch_id)
+            claim_raw = await self._client.get(self._claim_key(watch_id))
+            candidates.append(
+                RecoveryCandidate(
+                    watch_id=watch_id,
+                    watch=watch,
+                    runtime=runtime,
+                    has_marker=marker is not None,
+                    has_live_claim=self._claim_is_live(claim_raw, now_ms),
+                )
+            )
+        return candidates
+
+    async def prune_index_member(
+        self, watch_id: str, *, from_all: bool = False
+    ) -> None:
+        pipeline = self._client.pipeline()
+        pipeline.srem(ACTIVE_INDEX_KEY, watch_id)
+        if from_all:
+            # A missing or corrupt document also gets its all-index membership,
+            # sidecars, and any orphaned claim/marker removed; a terminal record
+            # stays in the all index and terminal cleanup index through retention.
+            pipeline.srem(INDEX_KEY, watch_id)
+            pipeline.delete(self._runtime_key(watch_id))
+            pipeline.delete(self._fence_key(watch_id))
+            pipeline.delete(self._claim_key(watch_id))
+            pipeline.zrem(SCHEDULE_INDEX_KEY, watch_id)
+        await pipeline.execute()
+
+    async def synthesize_marker(
+        self, watch_id: str, runtime: WatchRuntime
+    ) -> bool:
+        if runtime.window_id is None or runtime.scheduled_for is None:
+            return False
+        out = await self._script('synthesize_marker')(
+            keys=[
+                self._key(watch_id),
+                self._runtime_key(watch_id),
+                self._fence_key(watch_id),
+                self._claim_key(watch_id),
+                SCHEDULE_INDEX_KEY,
+            ],
+            args=[
+                watch_id,
+                runtime.model_dump_json(),
+                str(_to_ms(runtime.scheduled_for)),
+                str(self._now_ms()),
+            ],
+        )
+        return bool(int(out))
+
+    @staticmethod
+    def _claim_is_live(claim_raw: Any, now_ms: int) -> bool:
+        """Whether a `owner|token|expires_ms` claim value is still unexpired."""
+
+        if claim_raw is None:
+            return False
+        text = _text(claim_raw)
+        expires = text.rsplit("|", 1)[-1]
+        try:
+            return int(expires) > now_ms
+        except ValueError:
+            return False
 
     def _cancel_keys(self, watch_id: str) -> list[str]:
         return [

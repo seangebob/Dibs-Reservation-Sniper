@@ -293,3 +293,50 @@ if owner == ARGV[1] and gen == ARGV[2] then
 end
 return 0
 """
+
+# Compare-owner renewal of the recovery leader lease. Acquisition is a plain
+# `SET NX PX`; only renewal and release need to be conditional on ownership so a
+# replica that lost the lease (its PX elapsed and another replica took it) can
+# neither extend nor delete the new owner's lease.
+# KEYS: leader
+# ARGV: owner_id, lease_ms
+RENEW_LEADER = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  redis.call('SET', KEYS[1], ARGV[1], 'PX', tonumber(ARGV[2]))
+  return 1
+end
+return 0
+"""
+
+# KEYS: leader
+# ARGV: owner_id
+RELEASE_LEADER = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  redis.call('DEL', KEYS[1])
+  return 1
+end
+return 0
+"""
+
+# Repair an active record that has no durable schedule marker. Conditional on
+# the watch still being active, no unexpired poll claim holding it, and no
+# marker already present, so a live owner is left to finish and a healthy marker
+# is never rewritten. The caller computes the full runtime (carrying the window
+# id and the capped due time) so this only stores it verbatim and re-indexes.
+# KEYS: watch, runtime, fence, claim, schedule
+# ARGV: watch_id, runtime_json, scheduled_ms, now_ms
+SYNTHESIZE_MARKER = _PARSE_CLAIM + """
+local w = redis.call('GET', KEYS[1])
+if not w then return 0 end
+if cjson.decode(w).status ~= 'ACTIVE' then return 0 end
+local claim = redis.call('GET', KEYS[4])
+if claim then
+  local _, _, exp = parse_claim(claim)
+  if exp > tonumber(ARGV[4]) then return 0 end
+end
+if redis.call('ZSCORE', KEYS[5], ARGV[1]) then return 0 end
+redis.call('SET', KEYS[2], ARGV[2])
+if redis.call('EXISTS', KEYS[3]) == 0 then redis.call('SET', KEYS[3], '0') end
+redis.call('ZADD', KEYS[5], tonumber(ARGV[3]), ARGV[1])
+return 1
+"""

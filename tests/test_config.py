@@ -25,6 +25,8 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "MOCK_SLOT_IDLE_TTL_SECONDS",
         "MOCK_BOOKING_RETENTION_SECONDS",
         "WATCH_TERMINAL_RETENTION_SECONDS",
+        "WATCH_RECOVERY_LEADER_LEASE_SECONDS",
+        "WATCH_RECOVERY_SWEEP_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -294,3 +296,63 @@ def test_mock_state_bounds_are_enforced(
 def test_terminal_retention_default_is_a_week() -> None:
     assert WatchSettings().terminal_retention_seconds == 604_800
     assert WatchSettings.from_environment().terminal_retention_seconds == 604_800
+
+
+# --- recovery leader lease and sweep (milestone 3) --------------------------
+
+
+def test_recovery_defaults() -> None:
+    settings = WatchSettings()
+    assert settings.recovery_leader_lease_seconds == 30
+    assert settings.recovery_sweep_seconds == 30
+    from_env = WatchSettings.from_environment()
+    assert from_env.recovery_leader_lease_seconds == 30
+    assert from_env.recovery_sweep_seconds == 30
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "expected"),
+    [
+        ("WATCH_RECOVERY_LEADER_LEASE_SECONDS", "5", 5),
+        ("WATCH_RECOVERY_LEADER_LEASE_SECONDS", "300", 300),
+        ("WATCH_RECOVERY_SWEEP_SECONDS", "5", 5),
+        ("WATCH_RECOVERY_SWEEP_SECONDS", "3600", 3600),
+    ],
+)
+def test_recovery_bounds_within_range_are_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+    expected: int,
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    settings = WatchSettings.from_environment()
+    actual = getattr(
+        settings,
+        "recovery_leader_lease_seconds"
+        if "LEADER" in name
+        else "recovery_sweep_seconds",
+    )
+    assert actual == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "match"),
+    [
+        ("WATCH_RECOVERY_LEADER_LEASE_SECONDS", "4", "between 5 and 300"),
+        ("WATCH_RECOVERY_LEADER_LEASE_SECONDS", "301", "between 5 and 300"),
+        ("WATCH_RECOVERY_SWEEP_SECONDS", "4", "between 5 and 3600"),
+        ("WATCH_RECOVERY_SWEEP_SECONDS", "3601", "between 5 and 3600"),
+    ],
+)
+def test_recovery_bounds_outside_range_are_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+    match: str,
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ConfigurationError, match=match):
+        WatchSettings.from_environment()
