@@ -247,6 +247,9 @@ def test_health_route_identifies_mvp() -> None:
         "service": "dibs-mvp",
         "config": "ok",
         "watch_store": "memory",
+        "watch_queue": "asyncio",
+        "queue_readiness": "ready",
+        "recovery_readiness": "unknown",
     }
 
 
@@ -799,6 +802,9 @@ def test_invalid_watch_settings_preserve_startup_dependency_and_api_behavior(
             "service": "dibs-mvp",
             "config": "error",
             "watch_store": "memory",
+            "watch_queue": "asyncio",
+            "queue_readiness": "ready",
+            "recovery_readiness": "unknown",
         }
 
 
@@ -839,6 +845,9 @@ def test_valid_watch_settings_preserve_service_state_without_validation_error(
                 "service": "dibs-mvp",
                 "config": "ok",
                 "watch_store": "memory",
+                "watch_queue": "asyncio",
+                "queue_readiness": "ready",
+                "recovery_readiness": "ready",
             }
             final_queue = fresh.state.watch_queue
 
@@ -914,11 +923,18 @@ def test_redis_available_preserves_repository_queue_and_client_lifecycle(
         if worker_available:
             assert fresh.state.watch_queue._task is fake_task
         _assert_watch_service_settings(fresh, expected_settings)
+        # The injected `_PreservationRedisClient` implements only ping/aclose,
+        # so the leadership check itself cannot complete: recovery degrades,
+        # and asyncio mode still reports its own live open/closed state while
+        # celery mode (no broker probe reached before that failure) is unknown.
         assert client.get("/health").json() == {
             "status": "ok",
             "service": "dibs-mvp",
             "config": "ok",
             "watch_store": "redis",
+            "watch_queue": expected_mode,
+            "queue_readiness": "ready" if expected_mode == "asyncio" else "unknown",
+            "recovery_readiness": "degraded",
         }
 
     assert redis_client.close_calls == 1
@@ -973,6 +989,9 @@ def test_non_watch_settings_errors_do_not_become_watch_validation_errors(
                 "service": "dibs-mvp",
                 "config": "error",
                 "watch_store": "memory",
+                "watch_queue": "asyncio",
+                "queue_readiness": "ready",
+                "recovery_readiness": "ready",
             }
 
     assert redis_client.ping_calls == 1

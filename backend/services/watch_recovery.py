@@ -53,6 +53,10 @@ class RecoveryOutcome:
     expired: int = 0
     synthesized: int = 0
     dispatched: int = 0
+    #: Broker publish failures from this pass's dispatch sweep specifically,
+    #: distinct from `failed` (candidate-reconciliation failures) so readiness
+    #: can attribute a degradation to the queue rather than to recovery itself.
+    dispatch_failed: int = 0
     failed: int = 0
     cleanup_removed: int = 0
     #: True while due markers could not all be dispatched or terminal cleanup
@@ -167,7 +171,7 @@ class RecoveryCoordinator:
             elif action == "synthesized":
                 synthesized += 1
 
-        dispatched, dispatch_backlog = await self._dispatch_due()
+        dispatched, dispatch_failed, dispatch_backlog = await self._dispatch_due()
         cleanup_removed, cleanup_backlog = await self._run_cleanup(now)
 
         return RecoveryOutcome(
@@ -177,6 +181,7 @@ class RecoveryCoordinator:
             expired=expired,
             synthesized=synthesized,
             dispatched=dispatched,
+            dispatch_failed=dispatch_failed,
             failed=failed,
             cleanup_removed=cleanup_removed,
             backlog=(
@@ -258,13 +263,15 @@ class RecoveryCoordinator:
             update={"scheduled_for": min(runtime.scheduled_for, watch.expires_at)}
         )
 
-    async def _dispatch_due(self) -> tuple[int, bool]:
+    async def _dispatch_due(self) -> tuple[int, int, bool]:
         try:
             sweep = await self._dispatcher.dispatch_due()
         except Exception:
             logger.exception("recovery dispatch sweep failed")
-            return 0, True
-        return sweep.dispatched, sweep.has_backlog
+            # The sweep itself never even ran, so this is one performed and
+            # failed probe rather than an unknown -- readiness should degrade.
+            return 0, 1, True
+        return sweep.dispatched, sweep.failed, sweep.has_backlog
 
     async def _run_cleanup(self, now: datetime) -> tuple[int, bool]:
         removed = 0

@@ -51,6 +51,7 @@ from backend.orchestrator.providers import OpenAIIntentProvider, ProviderError
 from backend.orchestrator.router import PromptRouter
 from backend.orchestrator.schemas import ParseRequest, ReservationIntent
 from backend.services.booking_service import BookingService
+from backend.services.readiness import Readiness, ReadinessTracker
 from backend.services.watch_recovery import RecoveryCoordinator
 from backend.services.watch_service import WatchService
 from backend.workers.dispatcher import WatchScheduleDispatcher
@@ -242,6 +243,23 @@ async def _attach_redis(app: FastAPI) -> None:
     await _start_recovery(app, settings, schedule, distributed=True)
 
 
+def _queue_readiness(state: Any) -> Readiness:
+    """The evidence-based readiness of the currently bound queue.
+
+    Asyncio readiness is a live, always-knowable property of the bound queue
+    object (open or closed on the running loop), so it is read directly here
+    rather than through a possibly-stale recorded observation. Celery has no
+    such live signal -- readiness there reflects only a performed broker
+    dispatch, tracked by `ReadinessTracker` from the recovery/dispatch path.
+    """
+
+    if state.watch_queue_mode == "asyncio":
+        queue = state.watch_queue
+        is_ready = queue is not None and queue.is_ready()
+        return Readiness.READY if is_ready else Readiness.DEGRADED
+    return state.readiness.queue_readiness
+
+
 async def _redis_cluster_enabled(client: Any) -> bool:
     """Whether the connected server reports Redis Cluster mode.
 
@@ -291,14 +309,18 @@ async def _start_recovery(
         mock_state=app.state.mock_booking_state,
     )
     app.state.recovery_coordinator = coordinator
-    await coordinator.reconcile_once()
+    app.state.readiness.record_recovery_outcome(await coordinator.reconcile_once())
     app.state.recovery_sweep_task = asyncio.create_task(
-        _recovery_sweep_loop(coordinator, float(settings.recovery_sweep_seconds))
+        _recovery_sweep_loop(
+            coordinator, app.state.readiness, float(settings.recovery_sweep_seconds)
+        )
     )
 
 
 async def _recovery_sweep_loop(
-    coordinator: RecoveryCoordinator, sweep_seconds: float
+    coordinator: RecoveryCoordinator,
+    readiness: ReadinessTracker,
+    sweep_seconds: float,
 ) -> None:
     """Run bounded follow-up passes while the application is up.
 
@@ -309,7 +331,7 @@ async def _recovery_sweep_loop(
     while True:
         await asyncio.sleep(sweep_seconds)
         try:
-            await coordinator.reconcile_once()
+            readiness.record_recovery_outcome(await coordinator.reconcile_once())
         except Exception:
             logger.exception("recovery follow-up sweep failed")
 
@@ -389,6 +411,7 @@ def create_app() -> FastAPI:
     app.state.recovery_owner_id = uuid.uuid4().hex
     app.state.recovery_coordinator = None
     app.state.recovery_sweep_task = None
+    app.state.readiness = ReadinessTracker()
 
     _bind_mock_adapter(
         app,
@@ -457,6 +480,7 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["system"])
     async def health(request: Request) -> dict[str, str]:
         error: ConfigurationError | None = request.app.state.settings_error
+        queue_mode: str = request.app.state.watch_queue_mode
         return {
             "status": "ok",
             "service": "dibs-mvp",
@@ -464,6 +488,9 @@ def create_app() -> FastAPI:
             "watch_store": (
                 "redis" if request.app.state.redis is not None else "memory"
             ),
+            "watch_queue": queue_mode,
+            "queue_readiness": _queue_readiness(request.app.state).value,
+            "recovery_readiness": request.app.state.readiness.recovery_readiness.value,
         }
 
     async def parse_prompt(
