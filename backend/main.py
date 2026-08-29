@@ -1,10 +1,12 @@
 """FastAPI entry point for the Dibs MVP."""
 
 import asyncio
+import contextlib
 import logging
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.responses import JSONResponse
@@ -49,7 +51,9 @@ from backend.orchestrator.providers import OpenAIIntentProvider, ProviderError
 from backend.orchestrator.router import PromptRouter
 from backend.orchestrator.schemas import ParseRequest, ReservationIntent
 from backend.services.booking_service import BookingService
+from backend.services.watch_recovery import RecoveryCoordinator
 from backend.services.watch_service import WatchService
+from backend.workers.dispatcher import WatchScheduleDispatcher
 from backend.workers.queue import AsyncioTaskQueue, CeleryTaskQueue, TaskQueue
 from backend.workers.scheduler import PollSchedule
 
@@ -94,6 +98,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await _attach_redis(app)
 
     yield
+
+    await _stop_recovery(app)
 
     queue = app.state.watch_queue
     if queue is not None:
@@ -159,6 +165,7 @@ async def _attach_redis(app: FastAPI) -> None:
         from backend.db.database import create_redis_client, ping
     except ModuleNotFoundError:
         logger.warning("redis is not installed; watches stay in process memory")
+        await _start_recovery(app, settings, schedule, distributed=False)
         return
 
     client = create_redis_client(settings.redis_url)
@@ -168,6 +175,23 @@ async def _attach_redis(app: FastAPI) -> None:
             settings.redis_url,
         )
         await client.aclose()
+        await _start_recovery(app, settings, schedule, distributed=False)
+        return
+
+    if await _redis_cluster_enabled(client):
+        # The atomic multi-key Lua scripts assume every key for one watch (and
+        # the shared indexes) lives on one node; Redis Cluster shards keys
+        # across slots, so those scripts would fail or silently stop being
+        # atomic. Standalone, a direct primary endpoint, and rediss:// are the
+        # only supported topologies -- unsupported cluster mode is refused
+        # exactly like an unreachable server, keeping watches in process memory.
+        logger.warning(
+            "Redis at %s reports cluster mode, which the atomic watch "
+            "repository does not support; watches stay in process memory",
+            settings.redis_url,
+        )
+        await client.aclose()
+        await _start_recovery(app, settings, schedule, distributed=False)
         return
 
     queue: TaskQueue | None = None
@@ -215,6 +239,95 @@ async def _attach_redis(app: FastAPI) -> None:
         settings.redis_url,
         app.state.watch_queue_mode,
     )
+    await _start_recovery(app, settings, schedule, distributed=True)
+
+
+async def _redis_cluster_enabled(client: Any) -> bool:
+    """Whether the connected server reports Redis Cluster mode.
+
+    A client that cannot answer `INFO` (a minimal test double, or a transient
+    error right after a successful ping) is treated as not-cluster rather than
+    failing startup here; the cross-slot Lua scripts either work correctly or
+    surface their own errors later, but this probe never blocks the upgrade on
+    its own account.
+    """
+
+    try:
+        info = await client.info()
+    except Exception:
+        return False
+    return bool(info.get("cluster_enabled"))
+
+
+async def _start_recovery(
+    app: FastAPI,
+    settings: WatchSettings,
+    schedule: PollSchedule,
+    *,
+    distributed: bool,
+) -> None:
+    """Build the recovery coordinator over the final bound components.
+
+    Called exactly once, at the tail of whichever `_attach_redis` path the
+    process took -- in-process fallback, a degraded/unreachable/cluster Redis,
+    or the fully upgraded topology -- so recovery always reconciles the
+    repository, queue, and mock state the application actually ended up using,
+    never a component a later branch replaced.
+    """
+
+    dispatcher = WatchScheduleDispatcher(
+        app.state.watch_repository,
+        app.state.watch_queue,
+        owner_id=app.state.recovery_owner_id,
+        horizon_seconds=float(settings.dispatch_horizon_seconds),
+    )
+    coordinator = RecoveryCoordinator(
+        app.state.watch_repository,
+        dispatcher,
+        owner_id=app.state.recovery_owner_id,
+        distributed=distributed,
+        leader_lease_seconds=float(settings.recovery_leader_lease_seconds),
+        earliest_delay_seconds=schedule.earliest_delay,
+        mock_state=app.state.mock_booking_state,
+    )
+    app.state.recovery_coordinator = coordinator
+    await coordinator.reconcile_once()
+    app.state.recovery_sweep_task = asyncio.create_task(
+        _recovery_sweep_loop(coordinator, float(settings.recovery_sweep_seconds))
+    )
+
+
+async def _recovery_sweep_loop(
+    coordinator: RecoveryCoordinator, sweep_seconds: float
+) -> None:
+    """Run bounded follow-up passes while the application is up.
+
+    A failed pass is logged and never propagates, so one bad sweep cannot kill
+    the loop; the next sweep tries again on its own schedule.
+    """
+
+    while True:
+        await asyncio.sleep(sweep_seconds)
+        try:
+            await coordinator.reconcile_once()
+        except Exception:
+            logger.exception("recovery follow-up sweep failed")
+
+
+async def _stop_recovery(app: FastAPI) -> None:
+    """Idempotently cancel the follow-up loop and release leadership."""
+
+    task = app.state.recovery_sweep_task
+    if task is not None:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        app.state.recovery_sweep_task = None
+
+    coordinator = app.state.recovery_coordinator
+    if coordinator is not None:
+        await coordinator.release()
+        app.state.recovery_coordinator = None
 
 
 def _build_watch_service(
@@ -273,6 +386,9 @@ def create_app() -> FastAPI:
     app.state.redis = None
     app.state.watch_queue = None
     app.state.watch_queue_mode = "asyncio"
+    app.state.recovery_owner_id = uuid.uuid4().hex
+    app.state.recovery_coordinator = None
+    app.state.recovery_sweep_task = None
 
     _bind_mock_adapter(
         app,

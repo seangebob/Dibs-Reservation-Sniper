@@ -99,7 +99,16 @@ class RecoveryCoordinator:
         """Run one bounded pass, holding leadership for its duration."""
 
         async with self._pass_lock:
-            if not await self._hold_leadership():
+            try:
+                leading = await self._hold_leadership()
+            except Exception:
+                # A leader-lease call that cannot even complete (an unreachable
+                # or topology-incompatible Redis) must degrade, not crash the
+                # caller -- this runs from application startup and a periodic
+                # background loop, neither of which may raise out of a pass.
+                logger.exception("recovery leadership acquisition failed")
+                return RecoveryOutcome(is_leader=False, failed=1, backlog=True)
+            if not leading:
                 # Another replica leads; per-window dispatch leases keep an
                 # accidental overlap safe, so we simply do not scan this pass.
                 return RecoveryOutcome(is_leader=False)
