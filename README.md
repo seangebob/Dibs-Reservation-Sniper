@@ -233,11 +233,12 @@ Run deterministic tests without model or booking-provider API calls:
 
 The provider uses OpenAI's Responses API with native Pydantic structured output, following the [official Structured Outputs guide](https://platform.openai.com/docs/guides/structured-outputs). Content from that guide was rephrased for compliance with licensing restrictions.
 
-## Milestone 3 MVP: Background queue + state
+## Milestone 3: Distributed watch coordinator
 
-Milestone 3 turns `CREATE_WATCH` from a deferred stub into a real background
-job. A watch is persisted, polled on a jittered interval, and finished the
-moment a slot appears.
+Milestone 3 turns `CREATE_WATCH` from a deferred stub into a coordinated
+background job: persisted, fenced against duplicate concurrent delivery,
+polled on a jittered interval, recovered after a crash or restart, and
+finished the moment a slot appears or its lifetime runs out.
 
 ```text
 backend/
@@ -248,18 +249,26 @@ backend/
 ├── db/
 │   ├── database.py            # Redis connection factory
 │   └── repositories/
-│       └── watches.py         # WatchRepository + in-memory and Redis stores
+│       ├── watches.py         # WatchRepository: atomic state machine, in-memory + Redis-Lua
+│       ├── watch_scripts.py   # The exact Redis Lua source
+│       ├── watch_decisions.py # Typed decision results shared by both stores
+│       └── mock_booking.py    # Shared mock provider state (in-memory + Redis-Lua)
 ├── models/
-│   └── watch.py               # Watch, WatchStatus, poll results
+│   ├── watch.py               # Watch, WatchStatus, poll results (public contract)
+│   └── watch_runtime.py       # WatchRuntime sidecar: fencing, cadence, retention (internal)
 ├── orchestrator/
 │   └── router.py              # Sends ready intents to booking or watch
 ├── services/
-│   ├── watch_service.py       # Watch lifecycle + the poll handler
+│   ├── watch_service.py       # Claim-first poll state machine
+│   ├── watch_policy.py        # Derives each watch's attempt budget from its lifetime
+│   ├── watch_recovery.py      # RecoveryCoordinator: leader lease + reconciliation
+│   ├── readiness.py           # ReadinessTracker: evidence-based /health fields
 │   └── notification_service.py
 └── workers/
     ├── celery_app.py          # Celery bound to the Redis broker
     ├── scheduler.py           # Jittered poll pacing
-    ├── queue.py               # TaskQueue dispatch boundary
+    ├── queue.py                # TaskQueue dispatch boundary
+    ├── dispatcher.py          # WatchScheduleDispatcher: single-flight due-marker publishing
     └── tasks/
         └── monitor_watch.py   # The Celery task
 ```
@@ -282,12 +291,19 @@ uvicorn backend.main:app --reload
 celery -A backend.workers.celery_app worker --loglevel=info
 ```
 
-`GET /health` reports which store is live: `"watch_store": "redis"` once Redis
-is reachable, `"memory"` otherwise. **Redis is an upgrade, not a requirement** —
-the app boots with an in-memory repository and an in-process asyncio queue, so
-`uvicorn backend.main:app` works with no infrastructure at all. That fallback is
-not durable: pending polls are lost on restart, which is what the Celery worker
-is for.
+**Redis is an upgrade, not a requirement.** The app boots with an in-memory
+repository and an in-process asyncio queue, so `uvicorn backend.main:app` works
+with no infrastructure at all. That fallback is not restart-durable — pending
+polls and recovery state are lost on process exit, and coordination is only
+within one process — which is what the Redis-backed atomic repository and the
+Celery worker are for. `GET /health` reports which store and queue are
+actually live; see [Health and readiness](#health-and-readiness) below.
+
+Redis Cluster and Sentinel are not supported. Startup checks `cluster_enabled`
+on connect, and if cluster mode is detected the app logs a warning, stays on
+the in-memory fallback, and never runs the atomic Lua scripts against a
+sharded keyspace (they assume every key for one watch lives on one node). A
+standalone server, a directly addressed primary, and `rediss://` all work.
 
 See the loop without any infrastructure:
 
@@ -297,10 +313,11 @@ PYTHONPATH=. python3 scripts/watch_demo.py
 
 ### How the polling works
 
-`WatchService.poll_once(watch_id)` is the queue handler, and it is a plain
-coroutine — no Celery or Redis import of its own. The Celery task is a thin
-wrapper around it, which is what lets the whole contract be tested without a
-broker.
+`WatchService.poll_window(watch_id, window_id)` is the window-aware queue
+handler; `poll_once(watch_id)` is a compatibility wrapper that resolves the
+current window itself, for a delivery that only carries the watch id. Neither
+imports Celery or Redis directly — the Celery task is a thin wrapper, which is
+what lets the whole contract be tested without a broker.
 
 Each poll ends in exactly one of these, so a watch can never fan out into
 several concurrent polling chains:
@@ -325,18 +342,100 @@ Deterministic behaviours worth knowing:
   that latency is the one they actually see. Jitter starts on retries.
 - A watch **expires at the end of its reservation date**; a table for tonight is
   worthless tomorrow. `WATCH_MAX_POLL_ATTEMPTS` is a second, independent ceiling.
-- A **provider outage does not kill the watch**. The error is recorded in
-  `last_error` and polling continues, because the outage is temporary and the
-  reservation the user wanted is not.
-- Auto-book uses the **watch itself as the idempotency key**, so a job the
-  broker redelivers replays the same reservation instead of making a second one.
-- **Cancelling** is a status change, not a dequeue. The next scheduled poll sees
-  a terminal status and stops the chain.
+- A **provider outage does not kill the watch and does not consume an attempt**.
+  The error is recorded in `last_error`, an exponential backoff (capped by
+  `WATCH_PROVIDER_BACKOFF_MAX_SECONDS`) paces the retry, and polling continues —
+  the outage is temporary and the reservation the user wanted is not.
+- Auto-book uses the **watch itself as the idempotency key**
+  (`watch:{watch_id}`), so a job the broker redelivers replays the same
+  reservation instead of making a second one. This idempotency guarantee is
+  only as strong as the adapter behind it: the built-in mock provider is
+  authoritative, but a real provider integration is not assumed to offer the
+  same guarantee unless it implements the tri-state reconciliation contract
+  (`CONFIRMED` / `DEFINITIVELY_ABSENT` / `UNKNOWN`) in `ReservationAdapter`.
+- **Cancelling** is a status change, not a dequeue. A cancellation that arrives
+  before a booking call commits `CANCELLED` immediately; one that arrives after
+  a booking permit was already granted resolves to whichever the provider
+  actually did — a real `BOOKED` watch is never overwritten by a cancellation
+  that lost the race.
+
+### Coordination and delivery safety
+
+Two independent concerns make polling safe under duplicate delivery, crashes,
+and multiple replicas:
+
+- **Fenced single-flight claims.** Every cadence window has a monotonic fence
+  token. A poll must hold the current, unexpired claim to commit a result;
+  a stale or superseded delivery is rejected rather than silently overwriting
+  newer state. This lives in `WatchRepository`'s atomic protocol
+  (`claim_window` / `begin_booking` / `commit_window`), implemented identically
+  in memory and as exact Redis Lua scripts (`watch_scripts.py`), so both stores
+  make the same fencing decision from the same inputs.
+- **Startup and follow-up recovery.** `RecoveryCoordinator` reconciles the
+  active watch index after every process start and on a bounded interval
+  thereafter: pruning stale index entries, expiring exhausted watches,
+  re-publishing due schedule markers, and repairing a legacy or crash-orphaned
+  record that lost its marker. In Redis mode, only the replica holding the
+  finite `dibs:recovery:leader` lease scans; per-window dispatch leases remain
+  the final idempotency boundary even if two replicas briefly overlap. In
+  memory mode there is nothing to coordinate across processes, so recovery is
+  process-local and makes no restart-durability claim.
+
+### Shared mock provider state
+
+The built-in mock booking provider (`MockBookingAdapter`) is stateless — every
+adapter instance in the process delegates to one injected
+`MockBookingStateRepository`, so the API and every worker child observe the
+same slots, bookings, and idempotency records instead of diverging per-process
+dictionaries. It is bounded, not unlimited: capacity, idle eviction, and
+booking-record retention are all configured (see the settings table below),
+and Redis mode implements the identical publish/admit/evict/pin/reconcile
+model as exact Lua so the two backends agree on every eviction and replay
+decision.
+
+### Terminal retention and cleanup
+
+A finished watch (`FOUND`, `BOOKED`, `EXPIRED`, or `CANCELLED`) stays fully
+readable through `WATCH_TERMINAL_RETENTION_SECONDS` (a week by default), then
+a bounded cleanup pass — run as part of every recovery sweep — removes its
+document, sidecar, and index membership. Native Redis key TTLs are only a
+crash backstop; because Redis cannot atomically remove a set member when a key
+expires by TTL alone, every read/list/cleanup/recovery path self-heals a
+missing or corrupt index member on sight rather than returning it as valid.
+
+### Health and readiness
+
+`GET /health` always returns `200` with `status: "ok"`; the additive fields
+below expose degradation without changing that top-level meaning or the
+pre-existing `service`, `config`, and `watch_store` fields:
+
+```json
+{
+  "status": "ok",
+  "service": "dibs-mvp",
+  "config": "ok",
+  "watch_store": "redis",
+  "watch_queue": "celery",
+  "queue_readiness": "ready",
+  "recovery_readiness": "ready"
+}
+```
+
+- `watch_queue` is the actually bound queue (`asyncio` or `celery`), never
+  merely what was configured.
+- `queue_readiness` is `ready` for an open asyncio queue on the running loop,
+  or after a successful finite Celery broker dispatch; `degraded` after a
+  performed dispatch failure; `unknown` before any dispatch has been
+  attempted. A Redis ping alone does not prove a Celery worker is consuming.
+- `recovery_readiness` is `ready` after a complete reconciliation pass with no
+  due backlog; `degraded` after a failed candidate, a due backlog, or a lost
+  leader lease; `unknown` before this process has ever led a reconciliation
+  pass (another healthy replica may be leading instead).
 
 ### Watch API
 
 ```text
-POST   /api/watches?auto_book=false   # 201, dispatches the first check
+POST   /api/watches?auto_book=false   # 201, durably scheduled + best-effort dispatched
 GET    /api/watches?active_only=false
 GET    /api/watches/{watch_id}
 DELETE /api/watches/{watch_id}        # cancels; the queued poll stops itself
@@ -345,9 +444,67 @@ DELETE /api/watches/{watch_id}        # cancels; the queued poll stops itself
 `POST /api/parse-and-book` now routes a ready `CREATE_WATCH` intent here
 automatically and returns `WATCH_CREATED` with the `watch_id` to poll.
 
+Every creation response also carries `X-Watch-Monitoring-Policy`
+(`deadline` or `attempt-limited`) and `X-Watch-Max-Availability-Checks`. Most
+watches are **deadline-capable**: `WATCH_MAX_POLL_ATTEMPTS` comfortably covers
+every check the watch could need before its reservation date, so it is really
+watching until the date arrives. A watch whose derived requirement exceeds
+that configured ceiling is **attempt-limited** instead — it also carries a
+`Warning` header, so a client that surfaces standard HTTP headers tells the
+user monitoring may stop before the reservation date.
+
 State still lives in Redis rather than PostgreSQL; durable user-owned records
 arrive with Milestone 4, and `WatchRepository` is the seam that swap goes
 through.
+
+### Configuration
+
+All watch/worker settings are read once at startup by `WatchSettings`/`Settings`
+and validated with closed bounds — an out-of-range or malformed value fails
+startup with a `ConfigurationError` rather than silently clamping:
+
+| Variable | Default | Bounds |
+| --- | --- | --- |
+| `RESERVATION_TIMEZONE` | `America/Toronto` | any IANA zone |
+| `REDIS_URL` | `redis://localhost:6379/0` | `redis://`, `rediss://`, or `unix://` |
+| `WATCH_POLL_INTERVAL_SECONDS` | 180 | 15–3,600 |
+| `WATCH_POLL_JITTER_SECONDS` | 30 | 0 ≤ jitter < interval |
+| `WATCH_MAX_POLL_ATTEMPTS` | 25,000 | 1–1,000,000 |
+| `WATCH_DISPATCH_HORIZON_SECONDS` | 300 | 30–3,600 |
+| `WATCH_PROVIDER_CALL_TIMEOUT_SECONDS` | 45 | 1–45 |
+| `WATCH_PROVIDER_BACKOFF_MAX_SECONDS` | 3,600 | ≥ interval, ≤ 86,400 |
+| `WATCH_TERMINAL_RETENTION_SECONDS` | 604,800 | 3,600–31,536,000 |
+| `WATCH_RECOVERY_LEADER_LEASE_SECONDS` | 30 | 5–300 |
+| `WATCH_RECOVERY_SWEEP_SECONDS` | 30 | 5–3,600 |
+| `MOCK_SLOT_CAPACITY` | 10,000 | 1–100,000 |
+| `MOCK_SLOT_IDLE_TTL_SECONDS` | 3,600 | 60–604,800 |
+| `MOCK_BOOKING_RETENTION_SECONDS` | 604,800 | 604,800–31,536,000 |
+
+`WATCH_DISPATCH_HORIZON_SECONDS` is how far ahead a due schedule marker is
+handed to Celery — far-future work stays durable in Redis rather than becoming
+a multi-day broker ETA. `WATCH_PROVIDER_CALL_TIMEOUT_SECONDS` bounds one
+provider-sequence attempt and must leave headroom under Celery's 60-second
+soft time limit once commit work is added.
+
+### Deploying a change
+
+Because old (unfenced) and new (fenced) worker code are not safe to run
+concurrently against the same Redis, a rolling deploy is not supported for
+this component. Deploy in this order:
+
+1. **Drain and stop old workers first** — let in-flight polls finish, then
+   stop consuming.
+2. **Deploy the API and worker from the same image/version.** Mixed versions
+   can commit or fence state inconsistently.
+3. **Let startup recovery run** before workers start consuming again —
+   `RecoveryCoordinator`'s initial pass reconciles the active index and
+   republishes anything due, so no watch is stuck on the old topology.
+4. **Start consumers** once `queue_readiness`/`recovery_readiness` on
+   `/health` report `ready` (or a bounded time has passed and only `unknown`
+   remains, for a fresh deployment with no prior observations).
+
+Rollback follows the same order: stop workers first, then roll back the
+image, then let recovery run again before workers resume.
 
 ---
 
