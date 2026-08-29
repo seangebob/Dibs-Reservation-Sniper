@@ -47,7 +47,7 @@ from backend.integrations.mock_booking import MockBookingAdapter
 from backend.logging_config import configure_application_logging
 from backend.models.reservation import PromptExecutionResult
 from backend.orchestrator.engine import OrchestratorEngine
-from backend.orchestrator.providers import OpenAIIntentProvider, ProviderError
+from backend.orchestrator.providers import ProviderError
 from backend.orchestrator.router import PromptRouter
 from backend.orchestrator.schemas import ParseRequest, ReservationIntent
 from backend.services.booking_service import BookingService
