@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. Characterize current behavior before adding the history/frontend seam
+- [x] 1. Characterize current behavior before adding the history/frontend seam
   - Write tests proving today's contract: `WatchService.create`/poll/cancel take no owner concept,
     `GET /api/watches` is globally unscoped, `/health` has no history field, and no CORS headers are
     sent on any response. These are the preservation baselines Requirement 6 checks against.
