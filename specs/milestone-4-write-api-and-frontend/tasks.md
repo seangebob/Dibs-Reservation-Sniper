@@ -8,7 +8,7 @@
     services.
   - _Requirements: 6.1, 6.2_
 
-- [ ] 2. Add PostgreSQL settings, connection, and migration runner
+- [x] 2. Add PostgreSQL settings, connection, and migration runner
   - Add `PostgresSettings` to `config.py` (DSN, pool size, statement timeout) following the exact
     `from_environment()`/bounded-validation pattern `WatchSettings` already uses; a missing or
     malformed DSN raises `ConfigurationError`.

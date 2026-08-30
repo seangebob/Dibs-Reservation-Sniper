@@ -8,6 +8,7 @@ version = "0.4.0"
 description = "AI orchestration backend for KW venue reservations"
 requires-python = ">=3.12"
 dependencies = [
+    "asyncpg==0.30.0",
     "fastapi==0.141.1",
     "openai==3.2.0",
     "pydantic==2.13.4",
@@ -51,5 +52,5 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 
 [[tool.mypy.overrides]]
-module = ["celery.*", "kombu.*"]
+module = ["celery.*", "kombu.*", "asyncpg", "asyncpg.*"]
 ignore_missing_imports = true

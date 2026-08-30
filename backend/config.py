@@ -63,6 +63,14 @@ DEFAULT_RECOVERY_LEADER_LEASE_SECONDS = 30
 #: is the minimum of this, the next horizon entry, and the leader renewal, so a
 #: long sweep can never let a due marker dispatch late.
 DEFAULT_RECOVERY_SWEEP_SECONDS = 30
+#: Bounds for the PostgreSQL projection pool. A tiny pool is deliberate:
+#: `WatchHistoryRepository` writes are single-row upserts on the hot path and
+#: reads are dashboard-scoped, so a five-connection ceiling is generous for a
+#: single API process. `POSTGRES_URL` is optional; when unset, the projection
+#: is disabled and the backend runs standalone exactly as before this milestone.
+DEFAULT_POSTGRES_POOL_MIN_SIZE = 1
+DEFAULT_POSTGRES_POOL_MAX_SIZE = 5
+DEFAULT_POSTGRES_STATEMENT_TIMEOUT_SECONDS = 10
 
 _MIN_POLL_INTERVAL_SECONDS = 15
 _MAX_POLL_INTERVAL_SECONDS = 3_600
@@ -85,6 +93,10 @@ _MIN_RECOVERY_LEADER_LEASE_SECONDS = 5
 _MAX_RECOVERY_LEADER_LEASE_SECONDS = 300
 _MIN_RECOVERY_SWEEP_SECONDS = 5
 _MAX_RECOVERY_SWEEP_SECONDS = 3_600
+_MIN_POSTGRES_POOL_SIZE = 1
+_MAX_POSTGRES_POOL_SIZE = 64
+_MIN_POSTGRES_STATEMENT_TIMEOUT_SECONDS = 1
+_MAX_POSTGRES_STATEMENT_TIMEOUT_SECONDS = 300
 
 #: Longest integer text accepted for a bounded count, rejected before any
 #: `int()` conversion so a pathologically long digit string can never be
@@ -281,6 +293,74 @@ class WatchSettings:
             terminal_retention_seconds=terminal_retention,
             recovery_leader_lease_seconds=recovery_leader_lease,
             recovery_sweep_seconds=recovery_sweep,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PostgresSettings:
+    """Configuration for the durable watch-history projection.
+
+    ``dsn`` is optional: when unset the projection is disabled entirely and the
+    backend runs standalone. When set, it must be a syntactically valid
+    ``postgres://`` or ``postgresql://`` URL -- an empty or malformed value
+    fails startup with `ConfigurationError` rather than silently disabling.
+    """
+
+    dsn: str | None = None
+    pool_min_size: int = DEFAULT_POSTGRES_POOL_MIN_SIZE
+    pool_max_size: int = DEFAULT_POSTGRES_POOL_MAX_SIZE
+    statement_timeout_seconds: int = DEFAULT_POSTGRES_STATEMENT_TIMEOUT_SECONDS
+
+    @property
+    def enabled(self) -> bool:
+        return self.dsn is not None
+
+    @classmethod
+    def from_environment(cls) -> "PostgresSettings":
+        raw = os.environ.get("POSTGRES_URL")
+        if raw is None:
+            return cls()
+
+        dsn = raw.strip()
+        if not dsn:
+            raise ConfigurationError(
+                "POSTGRES_URL was set but is empty. Unset it entirely to "
+                "disable the watch-history projection."
+            )
+        scheme = urlparse(dsn).scheme
+        if scheme not in {"postgres", "postgresql"}:
+            raise ConfigurationError(
+                f"Invalid POSTGRES_URL: {dsn!r}. Expected a postgres:// or "
+                "postgresql:// URL."
+            )
+
+        pool_min = _bounded_count(
+            "POSTGRES_POOL_MIN_SIZE",
+            DEFAULT_POSTGRES_POOL_MIN_SIZE,
+            minimum=_MIN_POSTGRES_POOL_SIZE,
+            maximum=_MAX_POSTGRES_POOL_SIZE,
+        )
+        pool_max = _bounded_count(
+            "POSTGRES_POOL_MAX_SIZE",
+            DEFAULT_POSTGRES_POOL_MAX_SIZE,
+            minimum=_MIN_POSTGRES_POOL_SIZE,
+            maximum=_MAX_POSTGRES_POOL_SIZE,
+        )
+        if pool_max < pool_min:
+            raise ConfigurationError(
+                "POSTGRES_POOL_MAX_SIZE must be at least POSTGRES_POOL_MIN_SIZE"
+            )
+        statement_timeout = _bounded_count(
+            "POSTGRES_STATEMENT_TIMEOUT_SECONDS",
+            DEFAULT_POSTGRES_STATEMENT_TIMEOUT_SECONDS,
+            minimum=_MIN_POSTGRES_STATEMENT_TIMEOUT_SECONDS,
+            maximum=_MAX_POSTGRES_STATEMENT_TIMEOUT_SECONDS,
+        )
+        return cls(
+            dsn=dsn,
+            pool_min_size=pool_min,
+            pool_max_size=pool_max,
+            statement_timeout_seconds=statement_timeout,
         )
 
 
