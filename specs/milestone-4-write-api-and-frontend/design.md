@@ -89,21 +89,26 @@ i.e., everywhere `WatchService` already calls `self._notifier.notify(...)`. This
 | ------------------ | ------------- | -------------------------------------------------------- |
 | `watch_id`          | `text` PK     | Same value as the live `Watch.watch_id`                  |
 | `owner_client_id`   | `text`, null  | Requirement 2.3/2.4; indexed for dashboard listing        |
-| `status`            | `text`        | Mirrors `WatchStatus`                                     |
-| `query`             | `jsonb`       | The full `AvailabilityQuery`, for display without re-parsing |
-| `auto_book`         | `boolean`     |                                                          |
-| `attempts`          | `integer`     |                                                          |
-| `found_slots`       | `jsonb`       |                                                          |
-| `booking`           | `jsonb`, null |                                                          |
-| `last_error`        | `text`, null  |                                                          |
+| `status`            | `text`        | Mirrors `WatchStatus`; queryable without parsing `watch_json` |
 | `created_at`        | `timestamptz` |                                                          |
-| `updated_at`        | `timestamptz` | Drives "most recently created/updated first" ordering      |
+| `updated_at`        | `timestamptz` | Drives "most recently updated first" ordering              |
 | `expires_at`        | `timestamptz` |                                                          |
+| `watch_json`        | `jsonb`       | The exact `Watch.model_dump_json()` payload                |
+
+**Refined during implementation** from the original per-field breakdown (separate `query`/
+`found_slots`/`booking` columns) to one `watch_json` column holding the full serialized `Watch`,
+plus only the columns actually needed for ordering/filtering (`owner_client_id`, `status`,
+`updated_at`). This matches the exact convention `RedisWatchRepository` already uses
+(`model_dump_json()`/`model_validate_json()`) rather than inventing a second, hand-maintained SQL
+schema that has to stay in sync with `backend/models/reservation.py` by hand every time a field is
+added there. `asyncpg` returns a `jsonb` column as the same JSON text `model_validate_json()`
+already parses, so this costs nothing over `text` while gaining Postgres-side JSON validation.
 
 An upsert on `watch_id` keeps this a single denormalized row per watch rather than an event log —
-Requirement 3.1 asks for "current state," not history-of-history. `jsonb` columns store the same
-Pydantic-serialized shapes already used over the wire, so no second schema needs to stay in sync
-with `backend/models/reservation.py` by hand.
+Requirement 3.1 asks for "current state," not history-of-history. The upsert's `owner_client_id`
+column uses `COALESCE(EXCLUDED.owner_client_id, watch_history.owner_client_id)`: a later call with
+no owner (every poll outcome, which carries no client identity today) can never erase the owner
+recorded at creation.
 
 ### Migration
 

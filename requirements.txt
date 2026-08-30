@@ -8,6 +8,7 @@
 # Source of truth for versions is pyproject.toml; keep the two in sync.
 
 # --- API ---
+asyncpg==0.30.0
 fastapi==0.141.1
 openai==3.2.0
 pydantic==2.13.4

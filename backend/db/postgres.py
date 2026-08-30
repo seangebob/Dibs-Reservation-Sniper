@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import asyncpg
 
@@ -60,7 +60,10 @@ class _ConnectionLike(Protocol):
 
     async def execute(self, query: str, *args: object) -> object: ...
     async def fetchval(self, query: str, *args: object) -> object: ...
-    async def fetch(self, query: str, *args: object) -> list[object]: ...
+    # Each row is an `asyncpg.Record` in production (or a dict-like fake in
+    # tests) -- both support `row["column"]`, so `Any` is the honest element
+    # type rather than an unindexable `object`.
+    async def fetch(self, query: str, *args: object) -> list[Any]: ...
 
 
 class _AcquireContext(Protocol):
@@ -220,4 +223,4 @@ def _transaction(conn: _ConnectionLike) -> _TransactionContext:
 
 async def _applied_versions(conn: _ConnectionLike) -> set[str]:
     rows = await conn.fetch("SELECT version FROM schema_migrations")
-    return {row["version"] for row in rows}  # type: ignore[index]
+    return {row["version"] for row in rows}

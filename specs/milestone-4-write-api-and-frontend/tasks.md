@@ -19,7 +19,7 @@
     unmigrated database is migrated automatically before serving requests_
   - _Requirements: 3.4, 5.4_
 
-- [ ] 3. Add the `watch_history` schema and `WatchHistoryRepository`
+- [x] 3. Add the `watch_history` schema and `WatchHistoryRepository`
   - Write the migration for the `watch_history` table (see design.md's data model).
   - Implement `WatchHistoryRepository.record(watch, owner_client_id)` (upsert on `watch_id`),
     `list_for_owner(owner_client_id)`, and `get(watch_id)` (returns the durable projection even
