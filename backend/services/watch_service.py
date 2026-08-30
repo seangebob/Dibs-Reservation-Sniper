@@ -25,6 +25,7 @@ from backend.db.repositories.watch_decisions import (
     TransitionStatus,
     WindowClaim,
 )
+from backend.db.repositories.watch_history import WatchHistoryRecorder
 from backend.integrations.base import (
     AdapterError,
     ProviderSequenceTimeout,
@@ -94,6 +95,7 @@ class WatchService:
         *,
         schedule: PollSchedule | None = None,
         notifier: NotificationService | None = None,
+        history: WatchHistoryRecorder | None = None,
         max_attempts: int = DEFAULT_MAX_POLL_ATTEMPTS,
         provider_timeout_seconds: float = DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS,
         backoff_max_seconds: float = DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS,
@@ -105,6 +107,7 @@ class WatchService:
         self._queue = queue
         self._schedule = schedule or PollSchedule()
         self._notifier = notifier or LoggingNotificationService()
+        self._history = history
         self._max_attempts = max_attempts
         self._provider_timeout_seconds = provider_timeout_seconds
         self._backoff_max_seconds = max(
@@ -115,6 +118,27 @@ class WatchService:
             ZoneInfo(timezone_name) if timezone_name is not None else None
         )
         self._policy_factory = AvailabilityPolicyFactory(self._schedule)
+
+    async def _record_history(
+        self, watch: Watch, owner_client_id: str | None = None
+    ) -> None:
+        """Best-effort mirror of ``watch`` into the durable history projection.
+
+        Never raises and never delays the caller: a Postgres outage degrades
+        only `history_readiness` (Task 7), and must not affect the timing or
+        outcome of any live watch operation (Requirement 3.2).
+        """
+
+        if self._history is None:
+            return
+        try:
+            await self._history.record(watch, owner_client_id)
+        except Exception:
+            logger.warning(
+                "watch history projection failed",
+                extra={"watch_id": watch.watch_id},
+                exc_info=True,
+            )
 
     async def create_from_intent(
         self,
@@ -173,6 +197,7 @@ class WatchService:
         )
         result = await self._repository.create_with_schedule(watch, runtime)
         stored = result.watch or watch
+        await self._record_history(stored)
 
         # The first check runs without jitter: the user just asked, so the
         # latency they see is the one that matters. Jitter starts on retries.
@@ -212,6 +237,8 @@ class WatchService:
         # APPLIED -> the CANCELLED watch; NOOP -> the already-terminal watch;
         # NOT_ELIGIBLE -> a booking is in flight, so the request is recorded and
         # the still-active watch is returned (its resolution is the owner's).
+        if result.watch is not None:
+            await self._record_history(result.watch)
         return result.watch
 
     # -- polling ------------------------------------------------------------
@@ -637,11 +664,16 @@ class WatchService:
             self._repository.commit_window(claim, new_watch, new_runtime)
         )
         try:
-            return await asyncio.shield(task)
+            result = await asyncio.shield(task)
         except asyncio.CancelledError:
             with contextlib.suppress(BaseException):
                 await task
             raise
+        if result.status is CommitStatus.COMMITTED:
+            # Every reschedule (outage or miss) and every terminal transition
+            # funnels through here, so this one call-out covers all of them.
+            await self._record_history(result.watch or new_watch)
+        return result
 
     def _noop(self, watch: Watch | None) -> WatchPollResult:
         """A delivery with no remaining work for this window."""
@@ -851,6 +883,7 @@ class WatchService:
                 )
             )
             await self._notifier.notify(booked, WatchEvent.BOOKED)
+            await self._record_history(booked)
             return WatchPollResult(outcome=WatchPollOutcome.BOOKED, watch=booked)
 
         found = await self._repository.save(
@@ -864,6 +897,7 @@ class WatchService:
             )
         )
         await self._notifier.notify(found, WatchEvent.AVAILABILITY_FOUND)
+        await self._record_history(found)
         return WatchPollResult(outcome=WatchPollOutcome.FOUND, watch=found)
 
     async def _legacy_retry_auto_book(
@@ -894,6 +928,7 @@ class WatchService:
             )
         )
         await self._notifier.notify(booked, WatchEvent.BOOKED)
+        await self._record_history(booked)
         return WatchPollResult(outcome=WatchPollOutcome.BOOKED, watch=booked)
 
     async def _legacy_reschedule(
@@ -912,6 +947,7 @@ class WatchService:
             )
         )
         await self._queue.enqueue_watch_poll(watch.watch_id, delay_seconds=delay)
+        await self._record_history(pending)
         return WatchPollResult(
             outcome=WatchPollOutcome.NO_AVAILABILITY,
             watch=pending,
@@ -929,6 +965,7 @@ class WatchService:
             )
         )
         await self._notifier.notify(expired, WatchEvent.EXPIRED)
+        await self._record_history(expired)
         return WatchPollResult(outcome=WatchPollOutcome.EXPIRED, watch=expired)
 
 

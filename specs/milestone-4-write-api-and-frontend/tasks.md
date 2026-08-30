@@ -30,7 +30,7 @@
     (or per a documented history-retention setting), independent of the live store's lifecycle_
   - _Requirements: 3.1, 3.3_
 
-- [ ] 4. Wire `WatchHistoryRepository` into `WatchService` as a passive observer
+- [x] 4. Wire `WatchHistoryRepository` into `WatchService` as a passive observer
   - Add an optional constructor parameter; call `record(...)` beside every existing
     `self._notifier.notify(...)` call site (creation, each poll outcome, cancellation, expiry).
   - Wrap every call in try/except that logs and never propagates or delays the triggering request.

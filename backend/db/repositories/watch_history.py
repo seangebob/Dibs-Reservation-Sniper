@@ -13,11 +13,25 @@ not this repository's.
 
 from __future__ import annotations
 
+from typing import Protocol
+
 from backend.db.postgres import PoolLike
 from backend.models.watch import Watch
 
 
-__all__ = ["WatchHistoryRepository"]
+__all__ = ["WatchHistoryRecorder", "WatchHistoryRepository"]
+
+
+class WatchHistoryRecorder(Protocol):
+    """The subset of `WatchHistoryRepository` `WatchService` depends on.
+
+    Structural, mirroring how `NotificationService` decouples `WatchService`
+    from any concrete notifier: a test double, or a future readiness-tracking
+    decorator around the real repository (Task 7), only needs to satisfy this
+    one method to stand in for it.
+    """
+
+    async def record(self, watch: Watch, owner_client_id: str | None = None) -> None: ...
 
 
 _UPSERT_SQL = """
