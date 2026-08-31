@@ -8,9 +8,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, Request, status
+from fastapi import Depends, FastAPI, Header, Request, status
 from fastapi.responses import JSONResponse
 
+from backend.api.client_identity import extract_client_id
 from backend.api.dependencies import (
     get_booking_service,
     get_orchestrator,
@@ -26,14 +27,17 @@ from backend.config import (
     DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS,
     DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS,
     ConfigurationError,
+    PostgresSettings,
     Settings,
     WatchSettings,
 )
+from backend.db.postgres import create_pool, run_migrations
 from backend.db.repositories.mock_booking import (
     MockBookingStateRepository,
     RedisMockBookingStateRepository,
     in_memory_mock_state,
 )
+from backend.db.repositories.watch_history import WatchHistoryRepository
 from backend.db.repositories.watches import (
     InMemoryWatchRepository,
     RedisWatchRepository,
@@ -96,6 +100,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.settings = None
         app.state.settings_error = exc
 
+    await _attach_postgres(app)
     await _attach_redis(app)
 
     yield
@@ -109,6 +114,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     redis_client = app.state.redis
     if redis_client is not None:
         await redis_client.aclose()
+
+    postgres_pool = app.state.postgres_pool
+    if postgres_pool is not None:
+        await postgres_pool.close()
 
     engine: OrchestratorEngine | None = app.state.orchestrator
     if engine is not None:
@@ -127,6 +136,45 @@ def _bind_mock_adapter(app: FastAPI, state: MockBookingStateRepository) -> None:
     adapter = MockBookingAdapter(state=state)
     app.state.booking_adapter = adapter
     app.state.booking_service = BookingService(adapter)
+
+
+async def _attach_postgres(app: FastAPI) -> None:
+    """Best-effort: connect PostgreSQL and migrate, or leave history disabled.
+
+    Every failure here -- bad `POSTGRES_URL`, an unreachable server, a broken
+    migration -- degrades to a disabled history projection with a logged
+    error, never a startup failure. Unlike `WatchSettings`/`Settings`, nothing
+    about the core watch or orchestrator routes depends on this: the durable
+    history projection is optional, additive infrastructure for this
+    milestone (design.md's "Key decision"; Requirement 3.1/3.2).
+    """
+
+    try:
+        settings = PostgresSettings.from_environment()
+    except ConfigurationError as exc:
+        logger.error(
+            "PostgreSQL configuration is invalid; watch history projection "
+            "disabled: %s",
+            str(exc),
+        )
+        return
+    if not settings.enabled:
+        return
+
+    try:
+        pool = await create_pool(settings)
+        applied = await run_migrations(pool)
+    except ConfigurationError as exc:
+        logger.error(
+            "PostgreSQL is unreachable; watch history projection disabled: %s",
+            str(exc),
+        )
+        return
+
+    if applied:
+        logger.info("Applied PostgreSQL migrations: %s", ", ".join(applied))
+    app.state.postgres_pool = pool
+    app.state.watch_history = WatchHistoryRepository(pool)
 
 
 async def _attach_redis(app: FastAPI) -> None:
@@ -378,6 +426,7 @@ def _build_watch_service(
         app.state.booking_adapter,
         queue,
         schedule=schedule,
+        history=app.state.watch_history,
         timezone_name=timezone_name,
         max_attempts=(
             max_attempts if max_attempts is not None else DEFAULT_MAX_POLL_ATTEMPTS
@@ -406,6 +455,8 @@ def create_app() -> FastAPI:
     app.state.watch_settings = None
     app.state.watch_settings_error = None
     app.state.redis = None
+    app.state.postgres_pool = None
+    app.state.watch_history = None
     app.state.watch_queue = None
     app.state.watch_queue_mode = "asyncio"
     app.state.recovery_owner_id = uuid.uuid4().hex
@@ -503,9 +554,11 @@ def create_app() -> FastAPI:
         request: ParseRequest,
         engine: Annotated[OrchestratorEngine, Depends(get_orchestrator)],
         router: Annotated[PromptRouter, Depends(get_prompt_router)],
+        x_dibs_client_id: Annotated[str | None, Header()] = None,
     ) -> PromptExecutionResult:
         intent = await engine.parse(request.prompt)
-        return await router.execute(intent)
+        owner_client_id = extract_client_id(x_dibs_client_id)
+        return await router.execute(intent, owner_client_id=owner_client_id)
 
     app.add_api_route(
         "/api/orchestrator/parse",

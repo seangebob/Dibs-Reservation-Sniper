@@ -134,8 +134,15 @@ evidence-based-only pattern from Milestone 3 rather than inventing a second read
 
 ## Error Handling
 
-- **Postgres unreachable at startup:** migration fails → `ConfigurationError` → 503 on every route,
-  matching the existing `WatchSettings` failure contract operators already know.
+- **Postgres misconfigured or unreachable at startup:** **corrected during implementation** from
+  this document's original plan of mirroring `WatchSettings`'s 503-everywhere contract. That would
+  have let an optional, additive projection take down the core watch/orchestrator routes it has no
+  business affecting — a direct contradiction of Requirement 3.2's whole point. The implemented
+  behavior instead mirrors Redis's own fallback story (`_attach_redis`'s "unreachable → log a
+  warning, fall back to memory" branch, not `WatchSettings`'s "invalid → 503" branch): a bad
+  `POSTGRES_URL`, an unreachable server, or a failed migration are each caught in `_attach_postgres`,
+  logged as an error, and leave `watch_history` disabled — startup completes normally and every
+  non-history route is entirely unaffected.
 - **Postgres unreachable during a projection write:** caught, logged with `watch_id` and the
   triggering outcome, `history_readiness` degrades; the triggering request/poll succeeds normally.
 - **Frontend receives a non-2xx from the backend:** the `lib/api.ts` wrapper normalizes every

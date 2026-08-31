@@ -42,12 +42,18 @@
     call-outs are added_
   - _Requirements: 3.2, 6.3_
 
-- [ ] 5. Thread the anonymous client identifier through creation and listing
+- [x] 5. Thread the anonymous client identifier through creation and listing
   - Accept `X-Dibs-Client-Id` in the watch-creation route and `PromptRouter`'s entry point; pass it
     to `WatchService.create` as `owner_client_id: str | None = None`.
   - Add owner-scoped listing (`GET /api/watches?owner=...` or a dedicated route) backed by
     `WatchHistoryRepository.list_for_owner`, separate from the existing unscoped `list_active`/
     `list_all` behavior which stays as-is.
+  - **Scope correction found during implementation:** the scoped-listing endpoint needs a live
+    `WatchHistoryRepository` reachable from the app, but no earlier task actually connected
+    PostgreSQL into `main.py`'s lifespan (tasks 2-4 only built the standalone pieces). Folded that
+    wiring into this task rather than leaving it implicit — see design.md's Error Handling section
+    for the resulting `_attach_postgres` failure-handling decision (corrected from a first draft
+    that would have mirrored `WatchSettings`'s 503-on-error contract).
   - _Bug_Condition: no way exists to ask "which watches belong to this anonymous visitor"_
   - _Expected_Behavior: a request with a client id gets only that id's watches from the scoped
     endpoint; a request with none still succeeds exactly as today via the existing endpoints_

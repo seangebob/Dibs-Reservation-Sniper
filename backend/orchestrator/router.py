@@ -26,13 +26,25 @@ class PromptRouter:
         self._booking_service = booking_service
         self._watch_service = watch_service
 
-    async def execute(self, intent: ReservationIntent) -> PromptExecutionResult:
+    async def execute(
+        self,
+        intent: ReservationIntent,
+        *,
+        owner_client_id: str | None = None,
+    ) -> PromptExecutionResult:
         if intent.is_ready and intent.route is OrchestratorRoute.WATCH_SERVICE:
-            return await self._create_watch(intent)
+            return await self._create_watch(intent, owner_client_id=owner_client_id)
         return await self._booking_service.execute(intent)
 
-    async def _create_watch(self, intent: ReservationIntent) -> PromptExecutionResult:
-        watch = await self._watch_service.create_from_intent(intent)
+    async def _create_watch(
+        self,
+        intent: ReservationIntent,
+        *,
+        owner_client_id: str | None,
+    ) -> PromptExecutionResult:
+        watch = await self._watch_service.create_from_intent(
+            intent, owner_client_id=owner_client_id
+        )
         policy = self._watch_service.describe_policy(watch)
         return PromptExecutionResult(
             status=ExecutionStatus.WATCH_CREATED,

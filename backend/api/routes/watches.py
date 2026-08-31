@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from fastapi import (
     APIRouter,
     Depends,
+    Header,
     HTTPException,
     Query,
     Request,
@@ -14,6 +15,7 @@ from fastapi import (
     status,
 )
 
+from backend.api.client_identity import extract_client_id
 from backend.api.dependencies import get_watch_service
 from backend.models.reservation import AvailabilityQuery
 from backend.models.watch import Watch
@@ -41,6 +43,13 @@ async def create_watch(
         bool,
         Query(description="Book the first matching slot instead of only notifying"),
     ] = False,
+    x_dibs_client_id: Annotated[
+        str | None,
+        Header(
+            description="Opaque anonymous client id; scopes 'my watches' "
+            "listing only, not a real access boundary"
+        ),
+    ] = None,
 ) -> Watch:
     # get_watch_service has already established that settings exist; a missing
     # value is an invariant failure there rather than a UTC fallback here.
@@ -52,7 +61,10 @@ async def create_watch(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Cannot watch a reservation date in the past: {query.date}",
         )
-    watch = await service.create(query, auto_book=auto_book)
+    owner_client_id = extract_client_id(x_dibs_client_id)
+    watch = await service.create(
+        query, auto_book=auto_book, owner_client_id=owner_client_id
+    )
     _apply_policy_headers(response, service.describe_policy(watch))
     return watch
 
@@ -88,6 +100,35 @@ async def list_watches(
     ] = False,
 ) -> list[Watch]:
     return await service.list(active_only=active_only)
+
+
+@router.get(
+    "/mine",
+    response_model=list[Watch],
+    summary="List the calling client's own watches",
+)
+async def list_my_watches(
+    request: Request,
+    x_dibs_client_id: Annotated[
+        str | None,
+        Header(description="Opaque anonymous client id from watch creation"),
+    ] = None,
+) -> list[Watch]:
+    """Durable, owner-scoped listing backed by the history projection.
+
+    Returns an empty list -- never an error -- when no client id is present or
+    when the history projection is disabled (PostgreSQL not configured).
+    Neither is a caller mistake, and this endpoint makes no access-control
+    claim (Requirement 2.5): it is a convenience listing, not a security
+    boundary. Declared before `/{watch_id}` so "mine" is never matched as a
+    watch id.
+    """
+
+    owner_client_id = extract_client_id(x_dibs_client_id)
+    history = getattr(request.app.state, "watch_history", None)
+    if owner_client_id is None or history is None:
+        return []
+    return await history.list_for_owner(owner_client_id)
 
 
 @router.get("/{watch_id}", response_model=Watch, summary="Read one watch")

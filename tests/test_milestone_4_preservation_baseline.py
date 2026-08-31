@@ -20,7 +20,6 @@ from fastapi.testclient import TestClient
 
 from backend.api.routes.watches import (
     cancel_watch,
-    create_watch,
     list_watches,
     read_watch,
 )
@@ -69,14 +68,13 @@ def client():
 
 # ---------------------------------------------------------------------------
 # Requirement 6.2: WatchService signatures have no owner concept today.
+#
+# `create`'s equivalent baseline was retired in Task 5, which deliberately
+# added an additive `owner_client_id` parameter to it -- exactly the planned
+# change this baseline suite exists to distinguish from an unintended one. See
+# `tests/test_watch_owner_scoping.py` for the characterization of the current,
+# intentional contract.
 # ---------------------------------------------------------------------------
-
-
-def test_watch_service_create_signature_has_no_owner_parameter() -> None:
-    parameters = inspect.signature(WatchService.create).parameters
-
-    assert set(parameters) == {"self", "query", "auto_book"}
-    assert parameters["auto_book"].default is False
 
 
 def test_watch_service_cancel_signature_has_no_owner_parameter() -> None:
@@ -95,11 +93,19 @@ def test_watch_service_poll_signatures_have_no_owner_parameter() -> None:
 
 # ---------------------------------------------------------------------------
 # Requirement 6.2: watch route signatures have no owner/client-id parameter.
+#
+# `create_watch` was deliberately excluded from this loop in Task 5, which
+# added its `X-Dibs-Client-Id` header parameter (see
+# `tests/test_watch_owner_scoping.py`). Requirement 2.5 keeps ownership
+# scoping out of `read_watch`/`cancel_watch` -- a watch's own id remains
+# sufficient to read or cancel it regardless of who created it -- and
+# `list_watches` stays globally unscoped by design (Task 5 added a separate,
+# dedicated endpoint for "my watches" instead of overloading this one).
 # ---------------------------------------------------------------------------
 
 
 def test_watch_route_signatures_have_no_owner_or_client_id_parameter() -> None:
-    for endpoint in (create_watch, list_watches, read_watch, cancel_watch):
+    for endpoint in (list_watches, read_watch, cancel_watch):
         parameters = inspect.signature(endpoint).parameters
         forbidden = {"owner", "owner_client_id", "client_id", "x_dibs_client_id"}
         assert not (forbidden & set(parameters)), (

@@ -166,9 +166,13 @@ class TrackingService(WatchService):
         super().__init__(InMemoryWatchRepository(), EmptyAdapter(), queue)
         self.creates: list[object] = []
 
-    async def create(self, query, *, auto_book: bool = False):  # noqa: ANN001, ANN201
+    async def create(  # noqa: ANN001, ANN201
+        self, query, *, auto_book: bool = False, owner_client_id: str | None = None
+    ):
         self.creates.append(query)
-        return await super().create(query, auto_book=auto_book)
+        return await super().create(
+            query, auto_book=auto_book, owner_client_id=owner_client_id
+        )
 
 
 def _request_scope(app):  # noqa: ANN001, ANN202

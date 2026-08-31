@@ -145,18 +145,24 @@ class WatchService:
         intent: ReservationIntent,
         *,
         auto_book: bool = False,
+        owner_client_id: str | None = None,
     ) -> Watch:
         """Open a watch for a validated intent that asked to be monitored."""
 
         if not intent.is_ready:
             raise ValueError("cannot watch an intent that still needs clarification")
-        return await self.create(self._query_from(intent), auto_book=auto_book)
+        return await self.create(
+            self._query_from(intent),
+            auto_book=auto_book,
+            owner_client_id=owner_client_id,
+        )
 
     async def create(
         self,
         query: AvailabilityQuery,
         *,
         auto_book: bool = False,
+        owner_client_id: str | None = None,
     ) -> Watch:
         """Persist a new watch and dispatch its first check immediately.
 
@@ -164,6 +170,13 @@ class WatchService:
         commit together; the immediate queue publication is best-effort on top
         of that durable marker, so a broker outage still returns the created
         watch and leaves the marker for recovery to dispatch.
+
+        ``owner_client_id`` is Milestone 4's anonymous ownership signal
+        (Requirement 2.3/2.4): it never touches the public `Watch` model, only
+        the durable history projection. A caller that omits it -- every
+        pre-Milestone-4 script, test, and direct API call -- gets the exact
+        prior behavior: an unowned watch, invisible to owner-scoped listing but
+        otherwise identical.
         """
 
         now = self._clock()
@@ -197,7 +210,7 @@ class WatchService:
         )
         result = await self._repository.create_with_schedule(watch, runtime)
         stored = result.watch or watch
-        await self._record_history(stored)
+        await self._record_history(stored, owner_client_id)
 
         # The first check runs without jitter: the user just asked, so the
         # latency they see is the one that matters. Jitter starts on retries.
