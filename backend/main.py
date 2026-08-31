@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.api.client_identity import extract_client_id
@@ -27,6 +28,7 @@ from backend.config import (
     DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS,
     DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS,
     ConfigurationError,
+    CorsSettings,
     PostgresSettings,
     Settings,
     WatchSettings,
@@ -436,6 +438,53 @@ def _build_watch_service(
     )
 
 
+#: Only the headers Requirement 1/2's browser flow actually sends or must
+#: read. `Content-Type` is required because JSON POST bodies are not a
+#: CORS-safelisted content type; the policy/limit headers are exposed so a
+#: browser client can read them via `fetch()`, since custom response headers
+#: are invisible to JS unless explicitly exposed.
+_CORS_ALLOWED_METHODS = ["GET", "POST", "DELETE"]
+_CORS_ALLOWED_HEADERS = ["Content-Type", "X-Dibs-Client-Id"]
+_CORS_EXPOSED_HEADERS = [
+    "X-Watch-Monitoring-Policy",
+    "X-Watch-Max-Availability-Checks",
+    "Warning",
+]
+
+
+def _configure_cors(app: FastAPI) -> CorsSettings:
+    """Attach `CORSMiddleware` if `FRONTEND_ORIGINS` is set, or stay disabled.
+
+    Evaluated here rather than in `lifespan()`: Starlette forbids adding
+    middleware once the ASGI app has been built, which happens on its first
+    call, well before `lifespan()` runs. Every failure here -- a malformed
+    origin -- degrades to CORS-disabled with a logged error rather than
+    crashing startup, matching every other optional-feature failure mode in
+    this module (`_attach_postgres`): a browser-CORS misconfiguration must
+    never take down request-serving for non-browser callers.
+    """
+
+    try:
+        settings = CorsSettings.from_environment()
+    except ConfigurationError as exc:
+        logger.error(
+            "FRONTEND_ORIGINS configuration is invalid; CORS stays disabled: %s",
+            str(exc),
+        )
+        return CorsSettings()
+
+    if settings.enabled:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(settings.origins),
+            allow_methods=_CORS_ALLOWED_METHODS,
+            allow_headers=_CORS_ALLOWED_HEADERS,
+            allow_credentials=False,
+            expose_headers=_CORS_EXPOSED_HEADERS,
+        )
+    return settings
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Dibs MVP",
@@ -448,6 +497,7 @@ def create_app() -> FastAPI:
         ),
         lifespan=lifespan,
     )
+    app.state.cors_settings = _configure_cors(app)
     app.state.orchestrator = None
     app.state.orchestrator_lock = asyncio.Lock()
     app.state.settings = None

@@ -365,6 +365,53 @@ class PostgresSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class CorsSettings:
+    """Which browser origins may call this API cross-origin (Milestone 4).
+
+    Disabled by default: an unset ``FRONTEND_ORIGINS`` means zero CORS
+    response headers on any route, byte-identical to every pre-Milestone-4
+    behavior (Requirement 5.2) -- there is no hardcoded ``localhost`` default
+    to silently fall back to. Once set, every origin must be well-formed;
+    getting it wrong is a deploy-time mistake worth catching explicitly rather
+    than silently dropping one bad entry.
+    """
+
+    origins: tuple[str, ...] = ()
+
+    @property
+    def enabled(self) -> bool:
+        return len(self.origins) > 0
+
+    @classmethod
+    def from_environment(cls) -> "CorsSettings":
+        raw = os.environ.get("FRONTEND_ORIGINS")
+        if raw is None:
+            return cls()
+
+        candidates = [origin.strip() for origin in raw.split(",")]
+        origins = tuple(origin for origin in candidates if origin)
+        if not origins:
+            raise ConfigurationError(
+                "FRONTEND_ORIGINS was set but contains no origins. Unset it "
+                "entirely to disable CORS."
+            )
+        for origin in origins:
+            parsed = urlparse(origin)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ConfigurationError(
+                    f"Invalid origin in FRONTEND_ORIGINS: {origin!r}. Expected "
+                    "a full http:// or https:// origin, e.g. "
+                    "'https://app.example.com'."
+                )
+            if parsed.path not in ("", "/"):
+                raise ConfigurationError(
+                    f"Invalid origin in FRONTEND_ORIGINS: {origin!r}. An "
+                    "origin must not include a path."
+                )
+        return cls(origins=origins)
+
+
+@dataclass(frozen=True, slots=True)
 class Settings:
     openai_api_key: str
     openai_model: str = DEFAULT_MODEL

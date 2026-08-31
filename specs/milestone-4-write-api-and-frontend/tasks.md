@@ -61,11 +61,19 @@
     shapes unchanged; `owner_client_id` absent/`None` never appears in the public `Watch` model_
   - _Requirements: 2.2, 2.3, 2.4, 6.2_
 
-- [ ] 6. Add CORS middleware and `FRONTEND_ORIGINS` configuration
+- [x] 6. Add CORS middleware and `FRONTEND_ORIGINS` configuration
   - Add `CORSMiddleware` configured from a new required-when-set setting; allow the
     `X-Dibs-Client-Id` header and the methods the frontend needs; `allow_credentials=False`.
   - Assert via `TestClient` that a configured origin gets the right headers and an unconfigured one
     does not.
+  - **Implementation note:** evaluated in `create_app()`, not `lifespan()`, because Starlette
+    forbids adding middleware after the ASGI app has been built (its first call, which precedes
+    `lifespan()`). A malformed `FRONTEND_ORIGINS` degrades to CORS-disabled with a logged error
+    rather than crashing startup, matching `_attach_postgres`'s established failure philosophy for
+    optional features. Also exposes the existing `X-Watch-Monitoring-Policy`/
+    `X-Watch-Max-Availability-Checks`/`Warning` response headers via `expose_headers`, since a
+    browser's `fetch()` cannot read a custom header unless the server explicitly exposes it — without
+    this, Requirement 1's UI could never show the monitoring-policy disclosure it already receives.
   - _Bug_Condition: a browser-based frontend on a different origin cannot call the API at all_
   - _Expected_Behavior: configured origins can call the API from a browser; the API's non-browser
     behavior (scripts, tests, curl) is unaffected, since CORS headers are additive response headers_
