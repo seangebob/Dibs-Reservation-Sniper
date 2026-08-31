@@ -64,6 +64,8 @@ class ReadinessTracker:
         #: Whether this process has ever held the recovery leader lease, so a
         #: later `is_leader=False` can be told apart from "never contended".
         self._was_leader = False
+        self._history_state = Readiness.UNKNOWN
+        self._history_observed_at: datetime | None = None
 
     def record_dispatch_outcome(self, *, dispatched: int, failed: int) -> None:
         """Record what one broker-dispatch attempt actually did.
@@ -105,6 +107,19 @@ class ReadinessTracker:
             dispatched=outcome.dispatched, failed=outcome.dispatch_failed
         )
 
+    def record_history_outcome(self, *, ok: bool) -> None:
+        """Record what one history-projection write actually did.
+
+        Ready on any successful `WatchHistoryRepository.record(...)`;
+        degraded on any failure. Unlike queue/recovery, "no attempt made" is
+        NOT a real state to preserve here -- writes are triggered directly by
+        watch outcomes, and a period with no watch outcomes correctly leaves
+        the last observation standing rather than being manufactured evidence.
+        """
+
+        self._history_state = Readiness.READY if ok else Readiness.DEGRADED
+        self._history_observed_at = self._clock()
+
     @property
     def queue_readiness(self) -> Readiness:
         return self._queue_state
@@ -112,3 +127,7 @@ class ReadinessTracker:
     @property
     def recovery_readiness(self) -> Readiness:
         return self._recovery_state
+
+    @property
+    def history_readiness(self) -> Readiness:
+        return self._history_state

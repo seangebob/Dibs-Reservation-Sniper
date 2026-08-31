@@ -250,6 +250,7 @@ def test_health_route_identifies_mvp() -> None:
         "watch_queue": "asyncio",
         "queue_readiness": "ready",
         "recovery_readiness": "unknown",
+        "history_readiness": "unknown",
     }
 
 
@@ -805,6 +806,7 @@ def test_invalid_watch_settings_preserve_startup_dependency_and_api_behavior(
             "watch_queue": "asyncio",
             "queue_readiness": "ready",
             "recovery_readiness": "unknown",
+            "history_readiness": "unknown",
         }
 
 
@@ -848,6 +850,7 @@ def test_valid_watch_settings_preserve_service_state_without_validation_error(
                 "watch_queue": "asyncio",
                 "queue_readiness": "ready",
                 "recovery_readiness": "ready",
+                "history_readiness": "unknown",
             }
             final_queue = fresh.state.watch_queue
 
@@ -935,6 +938,7 @@ def test_redis_available_preserves_repository_queue_and_client_lifecycle(
             "watch_queue": expected_mode,
             "queue_readiness": "ready" if expected_mode == "asyncio" else "unknown",
             "recovery_readiness": "degraded",
+            "history_readiness": "unknown",
         }
 
     assert redis_client.close_calls == 1
@@ -992,6 +996,7 @@ def test_non_watch_settings_errors_do_not_become_watch_validation_errors(
                 "watch_queue": "asyncio",
                 "queue_readiness": "ready",
                 "recovery_readiness": "ready",
+                "history_readiness": "unknown",
             }
 
     assert redis_client.ping_calls == 1

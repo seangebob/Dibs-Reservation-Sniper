@@ -19,7 +19,22 @@ from backend.db.postgres import PoolLike
 from backend.models.watch import Watch
 
 
-__all__ = ["WatchHistoryRecorder", "WatchHistoryRepository"]
+__all__ = [
+    "TrackingHistoryRecorder",
+    "WatchHistoryRecorder",
+    "WatchHistoryRepository",
+]
+
+
+class _HistoryReadinessTracker(Protocol):
+    """The one method `TrackingHistoryRecorder` needs on a readiness tracker.
+
+    Structural so `backend.services.readiness.ReadinessTracker` satisfies it
+    without this module importing that one -- keeping the dependency arrow
+    from services -> db, not the other way around.
+    """
+
+    def record_history_outcome(self, *, ok: bool) -> None: ...
 
 
 class WatchHistoryRecorder(Protocol):
@@ -113,3 +128,32 @@ class WatchHistoryRepository:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(_SELECT_FOR_OWNER_SQL, owner_client_id, limit)
         return [Watch.model_validate_json(row["watch_json"]) for row in rows]
+
+
+class TrackingHistoryRecorder:
+    """Reports every underlying `record(...)` outcome to a readiness tracker.
+
+    Passes the call through unchanged (re-raising any exception exactly as the
+    real repository would) after recording whether it succeeded, so the
+    projection's readiness on `/health` reflects the actual write path rather
+    than any inferred component state. `WatchService`'s own `_record_history`
+    catches the re-raised exception and never propagates it to the caller
+    (Task 4 wiring), so this decorator does not change any user-visible
+    outcome or timing -- only the readiness signal.
+    """
+
+    def __init__(
+        self,
+        inner: WatchHistoryRecorder,
+        tracker: _HistoryReadinessTracker,
+    ) -> None:
+        self._inner = inner
+        self._tracker = tracker
+
+    async def record(self, watch: Watch, owner_client_id: str | None = None) -> None:
+        try:
+            await self._inner.record(watch, owner_client_id)
+        except Exception:
+            self._tracker.record_history_outcome(ok=False)
+            raise
+        self._tracker.record_history_outcome(ok=True)

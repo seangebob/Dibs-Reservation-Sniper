@@ -79,9 +79,18 @@
     behavior (scripts, tests, curl) is unaffected, since CORS headers are additive response headers_
   - _Requirements: 5.1, 5.4_
 
-- [ ] 7. Additive `history_readiness` health field
+- [x] 7. Additive `history_readiness` health field
   - Track the last `WatchHistoryRepository.record(...)` outcome using Milestone 3's existing
     `Readiness`/`ReadinessTracker` vocabulary; expose it additively on `/health`.
+  - **Implementation:** `ReadinessTracker` gained a symmetric `history_state`/
+    `record_history_outcome(*, ok: bool)`/`history_readiness` triple. A new
+    `TrackingHistoryRecorder` decorator (in `watch_history.py`, next to the existing
+    `WatchHistoryRecorder` Protocol) wraps the real repository so every write updates the tracker
+    and passes through unchanged (re-raising exceptions so `WatchService`'s existing try/except sees
+    the same shape). `_attach_postgres` splits its wiring in two: `app.state.watch_history` stays
+    the raw `WatchHistoryRepository` for `/api/watches/mine` reads, `app.state.watch_history_recorder`
+    is the decorated writer handed to `WatchService`. `/health` gains one additive
+    `history_readiness` field.
   - _Preservation: every existing `/health` field and the top-level `status` meaning unchanged_
   - _Requirements: 6.4_
 

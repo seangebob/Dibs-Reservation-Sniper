@@ -39,7 +39,10 @@ from backend.db.repositories.mock_booking import (
     RedisMockBookingStateRepository,
     in_memory_mock_state,
 )
-from backend.db.repositories.watch_history import WatchHistoryRepository
+from backend.db.repositories.watch_history import (
+    TrackingHistoryRecorder,
+    WatchHistoryRepository,
+)
 from backend.db.repositories.watches import (
     InMemoryWatchRepository,
     RedisWatchRepository,
@@ -176,7 +179,14 @@ async def _attach_postgres(app: FastAPI) -> None:
     if applied:
         logger.info("Applied PostgreSQL migrations: %s", ", ".join(applied))
     app.state.postgres_pool = pool
+    # The raw repository serves `/api/watches/mine` reads; a tracking
+    # decorator wraps only the writer path handed to `WatchService`, so every
+    # projection write updates `history_readiness` on `/health` without
+    # bloating the read path or making the raw repository harder to test.
     app.state.watch_history = WatchHistoryRepository(pool)
+    app.state.watch_history_recorder = TrackingHistoryRecorder(
+        app.state.watch_history, app.state.readiness
+    )
 
 
 async def _attach_redis(app: FastAPI) -> None:
@@ -428,7 +438,7 @@ def _build_watch_service(
         app.state.booking_adapter,
         queue,
         schedule=schedule,
-        history=app.state.watch_history,
+        history=app.state.watch_history_recorder,
         timezone_name=timezone_name,
         max_attempts=(
             max_attempts if max_attempts is not None else DEFAULT_MAX_POLL_ATTEMPTS
@@ -507,6 +517,7 @@ def create_app() -> FastAPI:
     app.state.redis = None
     app.state.postgres_pool = None
     app.state.watch_history = None
+    app.state.watch_history_recorder = None
     app.state.watch_queue = None
     app.state.watch_queue_mode = "asyncio"
     app.state.recovery_owner_id = uuid.uuid4().hex
@@ -592,6 +603,7 @@ def create_app() -> FastAPI:
             "watch_queue": queue_mode,
             "queue_readiness": _queue_readiness(request.app.state).value,
             "recovery_readiness": request.app.state.readiness.recovery_readiness.value,
+            "history_readiness": request.app.state.readiness.history_readiness.value,
         }
 
     async def parse_prompt(

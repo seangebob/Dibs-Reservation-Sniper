@@ -156,19 +156,25 @@ def test_list_watches_ignores_an_owner_query_parameter_today(
 
 # ---------------------------------------------------------------------------
 # Requirement 6.4: /health has no history_readiness field today.
+#
+# Task 7 deliberately added `history_readiness` (Requirement 6.4 explicitly
+# allows it as additive), so this baseline's forbidden-key list dropped it in
+# favor of `test_health_payload_top_level_keys_are_exactly_the_milestone_4_set`
+# below. The remaining forbidden keys are ones no task in this milestone
+# should ever introduce; they still guard against accidental drift.
 # ---------------------------------------------------------------------------
 
 
-def test_health_payload_has_no_history_field(client: TestClient) -> None:
+def test_health_payload_has_no_forbidden_extra_field(client: TestClient) -> None:
     body = client.get("/health").json()
 
-    for forbidden in ("history_readiness", "postgres", "watch_history", "history"):
+    for forbidden in ("postgres", "watch_history", "history"):
         assert forbidden not in body, (
-            f"pre-Milestone-4 /health unexpectedly reports {forbidden!r}"
+            f"/health unexpectedly reports {forbidden!r}"
         )
 
 
-def test_health_payload_top_level_keys_are_exactly_the_milestone_3_set(
+def test_health_payload_top_level_keys_are_exactly_the_milestone_4_set(
     client: TestClient,
 ) -> None:
     body = client.get("/health").json()
@@ -181,6 +187,7 @@ def test_health_payload_top_level_keys_are_exactly_the_milestone_3_set(
         "watch_queue",
         "queue_readiness",
         "recovery_readiness",
+        "history_readiness",
     }
 
 
