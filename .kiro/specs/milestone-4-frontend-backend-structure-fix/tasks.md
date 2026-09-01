@@ -2,284 +2,475 @@
 
 ## Overview
 
-This plan repairs only the frontend-facing backend seams introduced by completed tasks 1–7 of `specs/milestone-4-write-api-and-frontend/tasks.md`. It does not implement `apps/web` or redesign the future frontend. Work proceeds test-first: reproduce every bug-condition family on the unfixed code, capture Milestone 1–3 and completed Milestone 4 preservation baselines, implement the application/storage/composition boundaries in dependency order, re-run the same properties, and finish with the full deterministic suite.
+This plan implements the expanded complete-backend repair described by `bugfix.md` Requirements 1.1–1.33, Expected Behavior 2.1–2.33, Preservation 3.1–3.21, and design Properties 1–23. It retains the original Milestone 4 frontend/backend boundary work while adding the recovery, lifecycle, topology, validation, delivery, boundedness, migration, health, and deployment work now required by the design.
 
-The repository's existing property-testing convention is bounded finite-domain parameterization and fixed-seed generated traces under pytest. Reuse that convention; do not add a property-testing dependency. No task may contact live PostgreSQL, Redis, Celery, a broker, a browser, OpenAI, or an external provider, and no task starts a development server or watcher.
+Execution remains test-first. Task 1 is the standalone pre-fix bug-condition property task; task 2 is the standalone observation-first preservation property task. No production implementation begins until both baselines are recorded. Task 3 is one ordered parent implementation task whose reviewable subtasks leave the repository testable after each step. Tasks 3.26 and 3.27 re-run the exact tests from tasks 1 and 2. Task 4 is the final deterministic checkpoint.
+
+Use the repository's existing pytest convention for property testing: bounded finite-domain parameterization, fixed-seed generated traces, exact production Lua through the already pinned in-process fake, fake clocks, and controlled barriers. Do not add a property-testing dependency. No task may contact live PostgreSQL, Redis, Celery, a broker, OpenAI, a browser, or a provider; start a development server, worker, watcher, or interactive process; or implement frontend code. The only frontend-facing artifact in scope is a language-neutral HTTP/OpenAPI contract.
+
+## Imported Sibling Guarantees
+
+These are dependencies, not work to rewrite in this spec:
+
+- `.kiro/specs/app-logging-startup-error-visibility`: keep `configure_application_logging()` as the first lifecycle action, preserve host-owned logging topology, and preserve the one visible retained `WatchSettings` error and its identity.
+- `.kiro/specs/watch-route-worker-retry-hardening`: preserve retained-settings precedence, the missing-settings invariant, the exact aliased Redis/Kombu retry tuple, `countdown=60`, `max_retries=3`, traceback behavior, runner serialization, optional worker imports, success result shape, and lazy/idempotent cleanup. This plan may add independently owned resources but must not redefine those guarantees.
+- `.kiro/specs/milestone-3-production-path-hardening`: preserve live repository authority, deadline policy, claims/fences, cadence windows, durable markers, dispatch generations, shared mock state, outage backoff, recovery baseline, readiness vocabulary, and terminal retention. This plan extends their atomic metadata, page, effect, and cleanup extension points; PostgreSQL and notification delivery never enter those live decisions.
+- `specs/milestone-4-write-api-and-frontend/tasks.md` completed tasks 1–7: preserve the established public `Watch`, parse-and-book, CORS, standalone, and history intent contracts except where the expanded requirements explicitly add owner pages and stable error/readiness interfaces.
 
 ## Task Dependency Graph
 
 ```json
 {
   "waves": [
-    {
-      "wave": 1,
-      "tasks": ["1"]
-    },
-    {
-      "wave": 2,
-      "tasks": ["2"]
-    },
-    {
-      "wave": 3,
-      "tasks": ["3.1"]
-    },
-    {
-      "wave": 4,
-      "tasks": ["3.2"]
-    },
-    {
-      "wave": 5,
-      "tasks": ["3.3"]
-    },
-    {
-      "wave": 6,
-      "tasks": ["3.4"]
-    },
-    {
-      "wave": 7,
-      "tasks": ["3.5"]
-    },
-    {
-      "wave": 8,
-      "tasks": ["3.6"]
-    },
-    {
-      "wave": 9,
-      "tasks": ["3.7"]
-    },
-    {
-      "wave": 10,
-      "tasks": ["3.8"]
-    },
-    {
-      "wave": 11,
-      "tasks": ["3.9"]
-    },
-    {
-      "wave": 12,
-      "tasks": ["3.10"]
-    },
-    {
-      "wave": 13,
-      "tasks": ["3.11"]
-    },
-    {
-      "wave": 14,
-      "tasks": ["3.12"]
-    },
-    {
-      "wave": 15,
-      "tasks": ["3.13"]
-    },
-    {
-      "wave": 16,
-      "tasks": ["4"]
-    }
+    {"wave": 1, "tasks": ["1"]},
+    {"wave": 2, "tasks": ["2"]},
+    {"wave": 3, "tasks": ["3.1"]},
+    {"wave": 4, "tasks": ["3.2"]},
+    {"wave": 5, "tasks": ["3.3"]},
+    {"wave": 6, "tasks": ["3.4"]},
+    {"wave": 7, "tasks": ["3.5"]},
+    {"wave": 8, "tasks": ["3.6"]},
+    {"wave": 9, "tasks": ["3.7"]},
+    {"wave": 10, "tasks": ["3.8"]},
+    {"wave": 11, "tasks": ["3.9"]},
+    {"wave": 12, "tasks": ["3.10"]},
+    {"wave": 13, "tasks": ["3.11"]},
+    {"wave": 14, "tasks": ["3.12"]},
+    {"wave": 15, "tasks": ["3.13"]},
+    {"wave": 16, "tasks": ["3.14"]},
+    {"wave": 17, "tasks": ["3.15"]},
+    {"wave": 18, "tasks": ["3.16"]},
+    {"wave": 19, "tasks": ["3.17"]},
+    {"wave": 20, "tasks": ["3.18"]},
+    {"wave": 21, "tasks": ["3.19"]},
+    {"wave": 22, "tasks": ["3.20"]},
+    {"wave": 23, "tasks": ["3.21"]},
+    {"wave": 24, "tasks": ["3.22"]},
+    {"wave": 25, "tasks": ["3.23"]},
+    {"wave": 26, "tasks": ["3.24"]},
+    {"wave": 27, "tasks": ["3.25"]},
+    {"wave": 28, "tasks": ["3.26"]},
+    {"wave": 29, "tasks": ["3.27"]},
+    {"wave": 30, "tasks": ["4"]}
   ]
 }
 ```
 
-Tasks 1 and 2 are standalone pre-fix evidence and must complete in order. Each implementation subtask depends on the preceding subtask because later layers consume the contracts, metadata, storage, and runtime assembled earlier. Tasks 3.12 and 3.13 re-run the same properties from tasks 1 and 2; task 4 depends on every prior task.
+Every graph node is a leaf checklist task; parent task 3 is intentionally not a graph node. Waves are strict prerequisites: complete each wave, including its focused one-shot validation, before starting the next. Tasks 1 and 2 establish the required pre-fix evidence; tasks 3.1–3.25 implement and integrate the design; tasks 3.26 and 3.27 re-run the same properties; task 4 depends on all previous waves.
 
-## Notes
+## Design Property Coverage
 
-- Follow the test-first discipline: establish failing bug-condition evidence and passing preservation baselines before the fix, then re-run the same tests as fix and preservation checks.
-- Use deterministic fakes only; do not require live services, development servers, or watchers.
-- This bugfix does not implement frontend code or add `apps/web`; its scope is limited to frontend-facing backend structure and contracts.
-- Keep every implementation and validation task traceable to the cited requirement clauses and design specifications.
+| Design properties | Primary tasks |
+|---|---|
+| 1, 2 | 1, 2, 3.26, 3.27 |
+| 3, 4, 5 | 3.1–3.2, 3.4–3.12, 3.21–3.22 |
+| 6, 11, 23 | 3.16–3.18 |
+| 7, 8, 9 | 3.11, 3.13–3.15, 3.21–3.23 |
+| 10, 22 | 3.3 |
+| 12 | 3.5–3.7, 3.19–3.20 |
+| 13 | 3.12 |
+| 14 | 3.23 |
+| 15 | 3.25 |
+| 16 | 3.24 |
+| 17–21 | 2, the relevant implementation regression tests, and 3.27 |
 
 ## Tasks
 
-- [ ] 1. Write the frontend/backend boundary bug-condition exploration tests
-  - **Property 1: Bug Condition** - Milestone 4 Frontend-Facing Boundary Defects
-  - **CRITICAL**: Write and run these tests against the unfixed code before changing any production module. They encode `expectedBehavior(input)` from the design and therefore MUST FAIL on the current implementation; do not weaken assertions or fix production code in this task.
-  - Add `tests/test_milestone_4_structure_bug_exploration.py` for stable cross-component scenarios and extend the existing focused files named below where their fakes already model the relevant boundary. Use fixed seeds, bounded generated domains, fake clocks/pools/connections, `asyncio.Event` barriers, fakeredis, direct Celery task invocation, `TestClient`, and generated OpenAPI only.
-  - In `tests/test_watch_service_history_wiring.py`, block the current history recorder behind an event and assert creation plus zero-delay dispatch, committed poll results, cancellation, and legacy transitions complete before the writer is released. Generate bursts larger than a small capacity and assert the future handoff never blocks or grows beyond that capacity while failures remain contained.
-  - In `tests/test_monitor_watch.py`, exercise production-shaped `build_watch_service()` composition with cached factories replaced by deterministic doubles; assert a worker commit offers the same projection contract as API-local execution without changing the worker result dictionary or retry classification. Record the current counterexample that worker construction has no history collaborator.
-  - In `tests/test_watch_owner_scoping.py` and repository tests, fail the first owner projection, permit a later poll/cancel projection, and assert the accepted owner is recovered from private live metadata. Exercise both `InMemoryWatchRepository` and `RedisWatchRepository`; record that the current runtime/result paths lose the owner.
-  - In `tests/test_watch_history.py`, generate source revisions, duplicates, and completion permutations for one watch. Assert persisted public state is the greatest revision, equal revisions are idempotent, a null owner may be filled, and a conflicting non-null owner cannot reassign the row. Record the current last-completion-wins and owner-reassignment counterexamples.
-  - Through `GET /api/watches/mine`, seed stale history plus newer retained live state, live-only state, history-only terminal state, two owners, divergent creation/update order, equal creation timestamps, and 235 watches. Assert live wins by `watch_id`, isolation holds, traversal is `(created_at DESC, watch_id DESC)`, and bounded cursor pages reach every stable item exactly once; record the current stale, `updated_at`-ordered, bare-list, and 100-row truncation behavior.
-  - Parameterize omitted, trimmed-valid, and present-malformed `X-Dibs-Client-Id` values across `POST /api/watches`, `POST /api/parse-and-book`, and `/mine`. Assert malformed input returns the stable 422 error before parsing, creating, dispatching, or reading history, while omission remains distinct. Record the current successful unowned-creation counterexample.
-  - Compare valid-owner `/mine` calls for available-empty history, omitted PostgreSQL, startup-disabled history, and a read exception. Assert only a successful available read returns an empty page, unavailable reads return the sanitized 503 contract, and the observed failure degrades history readiness; record the current `200 []`/uncontrolled-error ambiguity.
-  - Poison `app.state.watch_history` while supplying a substitutable owned-watch query fake and assert the route uses only the application dependency. Generate OpenAPI and assert the documented request, 200 page, 422 errors, 503 error, unchanged `Watch`, and unchanged legacy endpoint schemas; record the current concrete app-state coupling and missing contract check.
-  - In `tests/test_cors.py`, `tests/test_postgres_config.py`, `tests/test_main_postgres_wiring.py`, and `tests/test_postgres_migrations.py`, cover the omitted/valid/invalid capability matrix; user information, query, fragment, wildcard, non-root path, missing host, malformed/out-of-range port, and root-slash origins; unreachable PostgreSQL; every migration/schema verification failure phase; empty/missing packaged migrations; and failures after pool creation. Assert configured defects abort startup, resources close exactly once, and omission remains standalone.
-  - Force PostgreSQL failures with unique sentinel username, password, and query values. Search exception text, captured logs, health JSON, and HTTP bodies and assert no sentinel appears while safe host/port/database context remains. Record the current raw-DSN leak.
-  - Add a deterministic contract-drift probe that mutates an in-memory copy of the expected public schema and asserts the comparator rejects it; record that no current backend/future-frontend contract artifact detects the mutation.
-  - Run the focused exploration files only. **EXPECTED PRE-FIX OUTCOME**: every defect-reproducing expected-behavior assertion fails for a concrete counterexample while unrelated test setup remains green. Record failing case IDs, minimal generated traces, observed statuses/shapes, occupancy, close counts, and leaked sentinels; if a hypothesized counterexample does not reproduce, reconcile the design before implementation.
-  - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, 1.14, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.10, 2.11, 2.12, 2.13, 2.14_
+- [ ] 1. Write the complete-backend bug-condition exploration property tests
+  - **Property 1: Bug Condition** - Complete Backend Correctness
+  - **CRITICAL**: Write and run all exploration tests against the unfixed code before changing any production module. Confirmed expected-behavior assertions MUST FAIL on concrete counterexamples; do not weaken them, fix production code, or reinterpret a failure as a test defect without reconciling the design evidence.
+  - Create `tests/test_milestone_4_structure_bug_exploration.py` as the deterministic manifest for every confirmed intentionally failing case and `tests/test_backend_exploration_gates.py` for Requirement 1.33. Keep all red pre-fix assertions in these two dedicated modules; shared repository/service/API test files and the task 2 command must remain green. Reuse existing fakes through helpers or direct production-boundary calls, not by adding red tests to shared files. Use fixed seeds, bounded traces, fake clocks/pools/connections, `asyncio.Event` or thread barriers, direct task `.run`, FastAPI `TestClient`, exact production Lua through fakeredis, static package/container parsing, and socket denial.
+  - Reproduce the original boundary defects in 1.1–1.14: API/worker projection divergence, blocked or saturated history latency, failed-first-write ownership loss, revision regression, stale history precedence, malformed identity collapse, unavailable-as-empty history, truncation/order, persistence coupling, configured CORS/PostgreSQL fail-open behavior, migration cleanup/package gaps, secret-bearing PostgreSQL diagnostics, and missing HTTP/OpenAPI drift evidence.
+  - Reproduce 1.15–1.20 with focused recovery, startup, lifecycle, topology, worker cleanup, and redaction tests: recovery expiry omits terminal effects; environment mutation changes request dependencies; each acquisition/close failure leaks or skips work; throwing/unsupported topology is accepted or differs by role; Redis initialized without the persistent runner remains open; and generated Redis/PostgreSQL sentinel secrets appear through at least one current representation or diagnostic surface.
+  - Reproduce 1.21–1.25 with direct/orchestrated fake-clock cases, constructor/JSON/update mutations, closed-Sunday/calendar-boundary cases, rendered log sentinel scans, and notifier failure-point/redelivery traces. Record reversed-window, out-of-horizon, elapsed-same-minute, invalid reconstruction, ambiguous closure, privacy, and committed-terminal ambiguity counterexamples.
+  - Reproduce 1.26–1.32 with instrumented large indexes and round-trip counters, legacy index fixtures, authority pauses across lease expiry, horizon-entry clocks, loop exceptions, every retention class, migration-set mutations, wheel/container inspection, role health matrices, and compose parsing. Assert finite per-pass budgets, authority, wake tolerance, backlog visibility, migration identity, semantic readiness, and role wiring; record where current code violates each assertion.
+  - Add the three Requirement 1.33 exploration gates in `tests/test_backend_exploration_gates.py`: bounded admission bursts with fake paid-call counters; forced cancellation compare-and-set contention through every current attempt plus a controlled final read; and notifier failures before/after side effect, lost acknowledgement, lease expiry, and redelivery with and without idempotency. Each gate records seed, minimal trace, observations, and classification. A non-reproduced hypothesis remains unproven and MUST NOT cause authentication, 429, cancellation-status, retry, or delivery-policy changes.
+  - Include production-shaped API/worker role-composition parity in the exploration harness, but do not start Celery or any service. Reset module globals, caches, environment snapshots, logging state, and fake time after every case.
+  - Run this immutable exploration baseline command: `python -m pytest tests/test_milestone_4_structure_bug_exploration.py tests/test_backend_exploration_gates.py`. **EXPECTED PRE-FIX OUTCOME**: every confirmed defect family has at least one failing expected-behavior assertion and documented counterexample; exploration-only gates complete deterministically with a classification. Record this exact command, failing case IDs, and gate outcomes as the immutable task 3.26 rerun manifest.
+  - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, 1.14, 1.15, 1.16, 1.17, 1.18, 1.19, 1.20, 1.21, 1.22, 1.23, 1.24, 1.25, 1.26, 1.27, 1.28, 1.29, 1.30, 1.31, 1.32, 1.33, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.10, 2.11, 2.12, 2.13, 2.14, 2.15, 2.16, 2.17, 2.18, 2.19, 2.20, 2.21, 2.22, 2.23, 2.24, 2.25, 2.26, 2.27, 2.28, 2.29, 2.30, 2.31, 2.32, 2.33_
 
-- [ ] 2. Write preservation property tests before implementing the fix
-  - **Property 2: Preservation** - Milestone 1–3 and Completed Milestone 4 Behavior
-  - **IMPORTANT**: Follow observation-first methodology. Run non-bug-condition cases on the unfixed code, record actual public results, state transitions, schedules, retries, readiness, and cleanup, then encode those observations and confirm this suite PASSES before changing production code.
-  - Extend `tests/test_milestone_4_preservation_baseline.py` with bounded generated cases for headerless `POST /api/watches` and `POST /api/parse-and-book`; preserve status codes, complete response fields, all `PromptExecutionResult` statuses, `WATCH_CREATED.watch_id`, immediate first dispatch, and unowned visibility through the unscoped API.
-  - Snapshot the exact public `Watch` field set, `WatchStatus` values, and `WatchPollOutcome` values. Assert owner, source revision, cursor, queue, and projection metadata never enter public `Watch` JSON, notification payloads, worker arguments, or logs.
-  - Preserve unscoped `GET /api/watches`, `active_only`, by-id GET/DELETE status and body contracts, existing 404 details, and the fact that anonymous owner metadata is not an authorization boundary.
-  - Extend `tests/test_watch_repository_oracle.py` and `tests/test_watch_repository_state_machine.py` so fixed-seed traces compare repository decisions, claims, fences, revisions, schedules, events, cleanup, and public state before/after a no-op or immediately failing projection collaborator. Assert PostgreSQL never participates in claim, lease, commit, dispatch, retry, or booking decisions.
-  - Preserve successful live create/poll/cancel/expiry results after immediate projection exceptions, including notifications and successor scheduling, while excluding only newly backgrounded projection timing/log/readiness observations from differential equality.
-  - Preserve omitted-PostgreSQL and omitted-CORS startup, all existing `/api/*` and `/health` behavior, non-browser requests, exact configured CORS methods/headers/exposed headers, no wildcard origins, and `allow_credentials=False`.
-  - Preserve owner isolation and history-only terminal visibility after live retention cleanup for available history; test two or more opaque identifiers without treating them as authentication.
-  - Preserve the exact `/health` key set and top-level `status` meaning; generated readiness transitions must remain within `ready`, `degraded`, and `unknown` and must not bleed across queue, recovery, and history signals.
-  - Extend `tests/test_monitor_watch.py` with history-neutral variants of successful polls, the aliased Redis/Kombu recoverable tuple, non-recoverable failures, serialized runner access, retry limit/countdown, result keys, lazy resource construction, and repeated cleanup. All observations other than the new projection offer must equal the unfixed baseline.
-  - Add static checks that the FastAPI backend has no import from `apps.web`/`apps/web`, remains independently packageable, and that tests use only deterministic fakes/fakeredis. Keep every existing Milestone 1–3 and completed Milestone 4 test enabled and unweakened.
-  - Run the preservation files on the unfixed code. **EXPECTED PRE-FIX OUTCOME**: all preservation assertions PASS and establish the baseline rerun in task 3.13.
-  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.10, 3.11, 3.12, 3.13_
+- [ ] 2. Write observation-first preservation property tests before implementing the fix
+  - **Property 2: Preservation** - Existing Public, Coordination, and Provider Behavior
+  - **IMPORTANT**: Run non-bug-condition cases on the unfixed code first, record actual HTTP, state-machine, queue, notification, lifecycle, diagnostic, package, and deployment observations, then encode those observations. This standalone suite MUST PASS before production changes begin.
+  - Extend `tests/test_milestone_4_preservation_baseline.py` with bounded generated cases for headerless/unowned creation, every parse-and-book status and field, exact public `Watch`/status/outcome schemas, unscoped and by-ID routes, malformed-ID exclusions only where explicitly corrected, and the current no-authentication/opaque-scope contract.
+  - Import, do not duplicate, Milestone 3 repository/worker oracles. Compare valid in-memory and Redis traces for claims, fences, revisions, schedules, terminal events, cleanup, cancellation, dispatch, retries, and successful live results when projection immediately fails. PostgreSQL/notifiers must remain passive and never decide a live result.
+  - Preserve standalone startup, exact CORS behavior, owner isolation and history-only terminal visibility, every legacy `/health` field/top-level meaning/vocabulary, worker result/retry/runner/optional-import behavior, retained startup error identity/logging topology, and independently deployable HTTP-only backend behavior.
+  - Generate valid temporal/model/calendar/provider cases and preserve acceptance, serialized names/meanings, deterministic slots/capacity/idempotency, existing holiday outputs, provider error normalization, prompt separation, and injected-double behavior.
+  - Preserve successful terminal delivery deduplication for repeated physical delivery of the same event. Keep owner/watch identity, source revision, projection state, reservation payload, claim token, mutable delivery state, credentials, and raw errors absent from public JSON, worker arguments, and logs. The only terminal-delivery log fields permitted are the approved opaque event correlation, event type, and controlled outcome category; sentinel tests freeze that allowlist.
+  - Add a socket-denial fixture and static import checks proving the suite neither contacts external services nor imports backend Python from a future frontend. Keep all existing Milestone 1–4 and sibling tests enabled and unweakened.
+  - Run this immutable preservation baseline command on unfixed code: `python -m pytest tests/test_milestone_4_preservation_baseline.py tests/test_api.py tests/test_watch_api.py tests/test_watch_service.py tests/test_watch_repository_state_machine.py tests/test_watch_repository_oracle.py tests/test_watch_policy.py tests/test_watch_runtime.py tests/test_watch_dispatcher.py tests/test_watch_recovery.py tests/test_watch_recovery_wiring.py tests/test_scheduler.py tests/test_monitor_watch.py tests/test_task_queue.py tests/test_config.py tests/test_cors.py tests/test_readiness.py tests/test_history_readiness.py tests/test_mock_booking.py tests/test_mock_booking_state.py tests/test_booking_service.py tests/test_providers.py tests/test_venues.py tests/test_logging_config.py tests/test_container_assets.py`. **EXPECTED PRE-FIX OUTCOME**: every assertion PASSES. Record this exact command and results as the immutable task 3.27 rerun manifest.
+  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.10, 3.11, 3.12, 3.13, 3.14, 3.15, 3.16, 3.17, 3.18, 3.19, 3.20, 3.21_
 
-- [ ] 3. Fix the Milestone 4 frontend/backend structure
+- [ ] 3. Implement the expanded complete-backend repair
 
-  - [ ] 3.1 Introduce application-level history ports and public HTTP contracts
-    - Create `backend/services/watch_history.py` as the application-owned boundary. Define immutable `ProjectionEnvelope(watch, owner_client_id, source_revision)`, `ProjectionOffer` (`ACCEPTED`, `COALESCED`, `REJECTED_FULL`, `REJECTED_CLOSED`), `WriteDisposition`, `ProjectionPublisher`, `HistoryWriter`, `HistoryReader`, `OwnedLiveWatchReader`, `OwnedWatchQuery`, sorted page/key types, and typed `HistoryUnavailable`/`InvalidCursor` errors.
-    - Keep this module free of imports from `backend.db`, FastAPI, asyncpg, Redis, Celery, or process-local `app.state`. Supply an exception-contained `NoopProjectionPublisher` for standalone live operations and an explicit unavailable history reader/query; do not represent unavailable history as `None` or an empty result.
-    - Create `backend/api/contracts.py` with `PublicError`, `PublicErrorBody`, `OwnedWatchItem`, `OwnedWatchPage`, page metadata, and `LIVE`/`HISTORY_ONLY` tracking state. Keep the embedded `Watch` unchanged and add stable OpenAPI examples for `INVALID_CLIENT_ID`, `INVALID_PAGINATION`, and `HISTORY_UNAVAILABLE`.
-    - Add `tests/test_watch_history_application.py` and focused schema tests proving structural substitution with fakes, dependency direction, immutable/internal metadata, error sanitization, and unchanged `Watch` serialization before connecting adapters.
-    - Focused validation: `python -m pytest tests/test_watch_history_application.py tests/test_watch_api.py tests/test_api.py` and `python -m mypy backend/services/watch_history.py backend/api/contracts.py`.
-    - _Bug_Condition: `isBugCondition(input)` where lifecycle or HTTP code depends on PostgreSQL-shaped protocols, concrete process state, unavailable-as-empty behavior, or an undocumented frontend contract_
-    - _Expected_Behavior: `expectedBehavior(input, result)` routes projection and owner queries through substitutable application contracts and exposes stable request/success/page/error schemas_
-    - _Preservation: Public `Watch`, legacy route bodies, live repository authority, standalone live operations, and independent backend deployment remain unchanged_
-    - _Requirements: 2.1, 2.2, 2.7, 2.9, 2.14, 3.3, 3.5, 3.7, 3.12, 3.13_
+  - [ ] 3.1 Introduce application-owned ports and explicit public DTO foundations
+    - Affected files/components: new `backend/services/watch_history.py`, new focused application contract types under `backend/services/`, new `backend/api/contracts.py`, `backend/services/watch_service.py`, and contract tests.
+    - Define immutable `CommittedFacts`, `ProjectionEnvelope`, offer/write dispositions, stable page/key types, `ProjectionPublisher`, history/live readers, `OwnedWatchQuery`, and typed unavailable/cursor errors in the application layer. Keep these modules free of imports from FastAPI, asyncpg, Redis, Celery, and concrete repositories.
+    - Provide explicit no-op/unavailable implementations for supported standalone mode; never encode unavailable history as `None` or an empty collection.
+    - Define `PublicError`, `OwnedWatchItem`, `PageInfo`, and `OwnedWatchPage` without changing embedded `Watch` fields or enums. Reserve controlled codes from the design and prohibit raw headers, cursors, URLs, driver messages, or reservation payloads in errors.
+    - Add dependency-direction, immutability, substitution, serialization, and sanitized-error tests before connecting adapters. Import the sibling live-authority guarantees rather than moving repository decisions into these ports.
+    - Design properties: 3, 4, 5, 17, 21.
+    - Focused one-shot validation: `python -m pytest tests/test_watch_history_application.py tests/test_schemas.py tests/test_api.py`.
+    - _Bug_Condition: `isBugCondition(input)` where application/HTTP code depends on PostgreSQL-shaped protocols, concrete process state, or undocumented repository output_
+    - _Expected_Behavior: `expectedBehavior(input, result)` routes effects and owner reads through substitutable application contracts with stable public DTOs and explicit unavailable states_
+    - _Preservation: Public `Watch`, legacy route bodies, live repository authority, standalone live operation, and HTTP-only frontend independence remain unchanged_
+    - _Requirements: 2.1, 2.2, 2.7, 2.9, 3.3, 3.5, 3.7, 3.12, 3.13_
 
-  - [ ] 3.2 Make client identity validation explicit and side-effect free
-    - Refactor `backend/api/client_identity.py` so omission returns the anonymous state, a trimmed value matching `[A-Za-z0-9_-]{1,200}` returns the validated identifier, and any present malformed value raises a typed boundary error. Never log or echo the rejected token.
-    - In `backend/api/routes/watches.py` and the `POST /api/parse-and-book` route in `backend/main.py`, validate the header before date/orchestrator/service/history side effects. Map malformed values to the exact 422 `PublicError` contract; omission must still execute the existing unowned creation flow.
-    - Keep `WatchService.create(..., owner_client_id=None)` source-compatible for scripts/direct callers. Do not add identity parameters to list/read/cancel-by-id or treat the owner as authorization.
-    - Replace the existing defect-expecting identity assertions in `tests/test_watch_owner_scoping.py` with task 1's unchanged expected-behavior assertions; cover valid boundaries, trimming, malformed partitions, both creation paths, `/mine`, and zero downstream calls.
-    - Focused validation: `python -m pytest tests/test_watch_owner_scoping.py tests/test_watch_api.py tests/test_api.py tests/test_milestone_4_preservation_baseline.py`.
-    - _Bug_Condition: `isBugCondition(input)` where `X-Dibs-Client-Id` is present and malformed but collapses to anonymous_
-    - _Expected_Behavior: `expectedBehavior(input, result)` returns sanitized `INVALID_CLIENT_ID` with no parse/create/dispatch/history side effect while preserving omission as valid anonymous input_
-    - _Preservation: Headerless creation, valid trimming/grammar, parse-and-book statuses, unscoped/by-id routes, and non-authorizing ownership semantics remain unchanged_
-    - _Requirements: 2.3, 2.6, 2.9, 3.1, 3.2, 3.3, 3.4_
+  - [ ] 3.2 Make client identity a three-state, side-effect-free boundary
+    - Affected files/components: `backend/api/client_identity.py`, `backend/api/dependencies.py`, `backend/api/routes/watches.py`, the parse-and-book route in `backend/main.py`, and `tests/test_watch_owner_scoping.py`.
+    - Distinguish omitted, trimmed-valid `[A-Za-z0-9_-]{1,200}`, and present-malformed identifiers. Raise a typed sanitized boundary error for malformed values without logging or echoing the token.
+    - Resolve identity before parsing, temporal validation, service creation, dispatch, or history reads on creation, parse-and-book, and `/mine`. Map malformed input to the documented 422 error; keep omission as valid anonymous input.
+    - Keep direct `WatchService.create(..., owner_client_id=None)` source-compatible and do not add ownership authorization to unscoped/by-ID operations.
+    - Cover grammar boundaries, zero downstream calls, both creation paths, `/mine`, and exact omission behavior.
+    - Design properties: 4, 17.
+    - Focused one-shot validation: `python -m pytest tests/test_watch_owner_scoping.py tests/test_watch_api.py tests/test_api.py tests/test_milestone_4_preservation_baseline.py`.
+    - _Bug_Condition: `isBugCondition(input)` where a present malformed client identifier collapses to anonymous and permits side effects_
+    - _Expected_Behavior: `expectedBehavior(input, result)` returns a stable sanitized validation response before side effects while preserving omission as anonymous_
+    - _Preservation: Headerless creation, valid identifiers, parse-and-book statuses, unscoped/by-ID routes, and non-authorizing opaque scope remain unchanged_
+    - _Requirements: 2.3, 2.6, 2.9, 3.1, 3.2, 3.3, 3.4, 3.20_
 
-  - [ ] 3.3 Retain owner and revision metadata in the in-memory live path
-    - Add bounded optional `owner_client_id` to the private `WatchRuntime` schema in `backend/models/watch_runtime.py`; initialize it atomically with revision 0, preserve it through `model_copy` transitions, and default legacy/pre-owner runtimes to `None` without reopening terminal state or changing policy fields.
-    - Add an immutable private projection metadata value to successful `CreateResult`, `CommitResult`, and `TransitionResult` in `backend/db/repositories/watch_decisions.py`. Populate it only from the committed runtime's retained owner and authoritative revision; no-op/fenced/unknown operations must not manufacture newer projection facts.
-    - Extend `WatchRepository`/`InMemoryWatchRepository` with the `OwnedLiveWatchReader` page contract and a private owner index maintained under the existing lock during create, transition retention, delete, and cleanup. Sort exclusively by `(created_at DESC, watch_id DESC)` and apply an exclusive keyset boundary.
-    - Update legacy `save`/sidecar migration paths so later projected transitions retain an owner when one exists and old records remain unowned. Keep owner and revision out of `Watch`, notification text, scheduling arguments, logs, and public repository list methods.
-    - Extend `tests/test_watch_repository_state_machine.py` for create/poll/cancel/expire/cleanup metadata, failed-first-projection owner recovery, legacy defaults, and exact public JSON; validate owner page ordering and isolation with equal timestamps and bounded pages.
-    - Focused validation: `python -m pytest tests/test_watch_repository_state_machine.py tests/test_watch_service.py tests/test_watch_api.py`.
-    - _Bug_Condition: `isBugCondition(input)` where the first owner projection fails or a later transition lacks the owner/revision committed with live state_
-    - _Expected_Behavior: `expectedBehavior(input, result)` retains owner privately and exposes the exact committed source revision for every successful live transition_
-    - _Preservation: Existing in-memory claims, fences, statuses, schedules, cleanup, public list/read/delete behavior, and legacy records remain unchanged_
-    - _Requirements: 2.3, 2.4, 2.5, 2.8, 3.3, 3.4, 3.5, 3.6, 3.9_
+  - [ ] 3.3 Share temporal/calendar policy and validate every model reconstruction/update path
+    - Affected files/components: `backend/models/reservation.py`, `backend/models/watch.py`, `backend/models/watch_runtime.py`, orchestrator result schemas, `backend/orchestrator/validator.py`, `backend/orchestrator/router.py`, `backend/api/routes/watches.py`, `backend/data/venues.py`, `backend/integrations/mock_booking.py`, and focused policy/model/catalog tests.
+    - Add one fakeable, zoned, second-precise reservation/calendar policy used by direct routes and orchestrated validation. Reject reversed windows, elapsed same-day instants, and dates beyond the rolling horizon through boundary-appropriate stable contracts while preserving orchestrator clarification semantics.
+    - Replace ambiguous Sunday `None` behavior with distinct inherit and closed values. Generate complete holiday/sellout data for every accepted rolling-horizon year and preserve existing supported-year snapshots.
+    - Enforce aware UTC/order/version/counter/transition/status-slot-booking invariants on constructors, JSON deserialization, persisted reconstruction, and updates. Replace unchecked transition-time `model_copy(update=...)` calls with validated evolvers that preserve immutable identity and monotonic revision.
+    - Invalid persisted values fail closed for the bounded scanner to quarantine/prune and degrade readiness; valid existing values retain names, enums, and serialization.
+    - Import the Milestone 3 deadline/outage policy rather than replacing it; this task only unifies validation and closes reconstruction gaps.
+    - Design properties: 10, 17, 22.
+    - Focused one-shot validation: `python -m pytest tests/test_validator.py tests/test_watch_policy.py tests/test_watch_runtime.py tests/test_invariants.py tests/test_schemas.py tests/test_venues.py tests/test_mock_booking.py`.
+    - _Bug_Condition: `isBugCondition(input)` where direct/orchestrated policy differs, timestamps/state are invalid on reconstruction/update, or closure/calendar support is ambiguous_
+    - _Expected_Behavior: `expectedBehavior(input, result)` applies one complete temporal/calendar decision and validates the fully merged model on every path_
+    - _Preservation: Valid temporal/model values, public fields/enums, Milestone 3 deadline behavior, deterministic catalog slots, capacity, holidays, and provider contracts remain unchanged_
+    - _Requirements: 2.21, 2.22, 2.23, 3.2, 3.3, 3.15, 3.16, 3.17, 3.21_
 
-  - [ ] 3.4 Implement equivalent owner/revision behavior in Redis and Lua
-    - Update `backend/db/repositories/watches.py` and the exact production scripts in `backend/db/repositories/watch_scripts.py` so create stores owner metadata inside the runtime, successful create/commit/cancel/expire responses carry the committed runtime/revision facts, and every existing compare-and-set decision remains unchanged.
-    - Add a private Redis owner index keyed by validated owner. Update it atomically with watch/runtime creation and terminal cleanup; never put owner values in Celery arguments, public watch JSON, notification payloads, or log fields. Legacy records without owner metadata remain readable and unowned.
-    - Implement Redis `OwnedLiveWatchReader` keyset pages using the immutable creation key and a stable watch-id tie-breaker. Bound reads, self-heal stale owner-index members consistently with existing all/active index behavior, and leave existing all/active/schedule/terminal key contracts intact.
-    - Extend `tests/test_watch_repository_oracle.py` fixed-seed traces to compare owner, revision, page results, cleanup, and all existing decisions between memory and fakeredis/Lua. Add true concurrent barriers for owner-index creation/cleanup and stale transition attempts, with seed/trace output on divergence.
-    - Focused validation: `python -m pytest tests/test_watch_repository_oracle.py tests/test_watch_repository_state_machine.py tests/test_watch_repository.py`.
-    - _Bug_Condition: `isBugCondition(input)` where Redis-backed worker transitions omit owner/revision facts or owner-page indexes diverge from authoritative live state_
-    - _Expected_Behavior: `expectedBehavior(input, result)` makes Redis and memory expose equivalent private metadata and deterministic owner pages without changing live decisions_
-    - _Preservation: Lua claim/fence/commit/dispatch/recovery semantics, key compatibility, public models, retryable redis-py exceptions, and bounded cleanup remain unchanged_
-    - _Requirements: 2.1, 2.3, 2.4, 2.5, 2.8, 3.3, 3.5, 3.9, 3.11, 3.13_
+  - [ ] 3.4 Add runtime v3 owner/revision metadata, committed facts, and the terminal-event foundation
+    - Affected files/components: `backend/models/watch_runtime.py`, a new focused private terminal-delivery model/contract module, `backend/db/repositories/watch_decisions.py`, `backend/db/repositories/watches.py`, `backend/db/repositories/watch_scripts.py`, and repository/delivery state-machine tests.
+    - Migrate supported runtime v2 values explicitly to v3 with private bounded `owner_client_id`; legacy public-only records become v3 with `owner_client_id=None`; unknown future versions fail closed without reopening terminal state.
+    - Define the private `TerminalEventRecord` and delivery-state vocabulary (`PENDING`, `IN_FLIGHT`, `RETRYABLE`, `DELIVERED`, `UNCERTAIN`, `EXHAUSTED`, and migration-only `LEGACY_SUPPRESSED`) with deterministic event identity, bounded payload, revision, attempts, claim/outcome fields, and finite retention deadlines. This task establishes the value/storage contract; task 3.16 adds claim and outcome transitions.
+    - Return immutable `CommittedFacts` from successful create/commit/transition/eligible-expiry operations with the exact committed `Watch`, runtime, source revision, retained owner, and terminal event identity. Atomically create exactly one initial terminal-event record for `FOUND`, `BOOKED`, or `EXPIRED`; cancellation remains event-free; fenced/no-op/missing results must not invent facts or events.
+    - Preserve the owner once non-null and validate every transition through task 3.3 evolvers. Keep owner/watch identity, revision, payload, claim token, and mutable delivery state out of public JSON, schedule arguments, worker results, and logs; logging may use only the approved opaque event correlation, event type, and controlled outcome category frozen by tasks 2 and 3.18.
+    - Extend in-memory and exact-Lua state-machine/oracle tests before page/index tasks consume these records; do not alter sibling-owned claim/fence/decision enums.
+    - Design properties: 3, 4, 6, 10, 11, 18, 23.
+    - Focused one-shot validation: `python -m pytest tests/test_watch_runtime.py tests/test_terminal_delivery.py tests/test_watch_repository_state_machine.py tests/test_watch_repository_oracle.py tests/test_watch_service.py`.
+    - _Bug_Condition: `isBugCondition(input)` where owner/revision/terminal identity is detached from the authoritative transition, a terminal event lacks a typed durable record, or invalid updates bypass validation_
+    - _Expected_Behavior: `expectedBehavior(input, result)` exposes private facts and one initial terminal-event record from the same committed state while retaining owner and monotonic revision_
+    - _Preservation: Public watch/outcome types and all Milestone 3 claims, fences, markers, dispatch generations, retries, successful-delivery deduplication, and terminal decisions remain unchanged_
+    - _Requirements: 2.1, 2.3, 2.4, 2.15, 2.22, 2.25, 3.3, 3.5, 3.15, 3.18, 3.19_
 
-  - [ ] 3.5 Add the bounded non-blocking projection runtime and migrate `WatchService`
-    - Implement a finite-capacity projector in `backend/services/watch_history.py` with a deque of watch IDs and map of newest pending envelopes. `offer` must be synchronous, constant-time, non-awaiting, exception-contained, and safe across the API/worker calling contexts.
-    - Accept a new watch below capacity; replace one watch's pending envelope only for a newer revision; treat stale/equal offers as coalesced without increasing occupancy; return `REJECTED_FULL` for a new watch at capacity and `REJECTED_CLOSED` after close. Record structured non-secret readiness/log evidence for rejection.
-    - Implement one consumer per process that removes one ID at a time, awaits `HistoryWriter.record`, records `APPLIED`/stale/duplicate/failure evidence, continues after write exceptions, stops acceptance on close, and drains only to a finite deadline. Prove occupancy never exceeds capacity with a blocked writer and generated bursts; use events/barriers rather than sleeps.
-    - Remove `WatchHistoryRecorder` and all `backend.db` imports from `backend/services/watch_service.py`. Inject only `ProjectionPublisher`; construct envelopes from successful repository result metadata and call `offer` without `await` after preserving the existing live commit, notification, and dispatch ordering.
-    - On creation, commit live state and the durable marker, perform the existing zero-delay dispatch, then offer revision 0 without waiting for PostgreSQL. On committed poll/cancel/expiry and legacy transitions, offer exactly the authoritative committed revision; fenced/no-op/unknown operations must not invent one. Offer rejection/failure cannot change returned `Watch`/`WatchPollResult`, dispatch, notification, or retry behavior.
-    - Replace synchronous recorder assertions in `tests/test_watch_service_history_wiring.py` with envelope/offer assertions while retaining task 1's blocked-writer tests unchanged. Cover accepted, coalesced, full, closed, failed writer, duplicate delivery, outer cancellation, and legacy paths.
-    - Focused validation: `python -m pytest tests/test_watch_history_application.py tests/test_watch_service_history_wiring.py tests/test_watch_service.py tests/test_invariants.py`.
-    - _Bug_Condition: `isBugCondition(input)` where slow, blocked, failed, saturated, or distributed history I/O delays or alters a committed live operation_
-    - _Expected_Behavior: `expectedBehavior(input, result)` offers owner-aware revisioned envelopes through a bounded non-blocking handoff and contains eventual failures to logs/readiness_
-    - _Preservation: Live result/status/body, claim/fence/commit, first and successor dispatch, notification, projection-exception success, and worker retry decisions remain unchanged_
-    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.14, 3.5, 3.6, 3.11, 3.13_
+  - [ ] 3.5 Add stable bounded live, owner, recovery, projection, and event pages in memory
+    - Affected files/components: `backend/db/repositories/watches.py`, `backend/db/repositories/watch_decisions.py`, `backend/services/watch_recovery.py`, and new `tests/test_repository_bounded_scans.py`.
+    - Define bounded `scan_watches_page`, owner-page, recovery-page, projection-page, terminal-event-page, and cleanup-page contracts with opaque exclusive continuations, immutable ordering keys, finite limits, and explicit `has_more`/backlog evidence.
+    - Maintain ordered in-memory indexes under the repository lock for all/live owner/recovery/projection/event and due-cleanup classes. Do not construct whole due lists or copy whole dictionaries before slicing.
+    - Keep legacy unscoped list semantics and JSON array shape, but make later HTTP encoding able to consume bounded pages. Self-heal stale index members only within the page budget.
+    - Instrument calls, retained object counts, and continuation behavior over large generated datasets; every eligible stable item must remain reachable exactly once.
+    - Design properties: 4, 12, 18.
+    - Focused one-shot validation: `python -m pytest tests/test_repository_bounded_scans.py tests/test_watch_repository_state_machine.py tests/test_watch_recovery.py tests/test_watch_api.py`.
+    - _Bug_Condition: `isBugCondition(input)` where live/owner/recovery/projection/event discovery reads or retains an entire growing collection before applying a nominal batch size_
+    - _Expected_Behavior: `expectedBehavior(input, result)` bounds each page's reads/memory and preserves stable complete continuation_
+    - _Preservation: Legacy unscoped ordering/body, owner isolation, state-machine decisions, and normal recovery outcomes remain unchanged_
+    - _Requirements: 2.5, 2.8, 2.26, 3.4, 3.5, 3.9, 3.15, 3.18_
 
-  - [ ] 3.6 Add revision-guarded history storage, keyset reads, and packaged migrations
-    - Add an ordered `0002_*.sql` migration without editing the applied `0001_watch_history.sql`. Backfill/add `source_revision BIGINT NOT NULL`, replace/add the owner-list index on `(owner_client_id, created_at DESC, watch_id DESC)`, and retain immutable `watch_id`/`created_at`.
-    - Refactor `backend/db/repositories/watch_history.py` to implement the application `HistoryWriter`/`HistoryReader` ports and accept `ProjectionEnvelope`. Insert missing rows; update public state only for a greater source revision; make equal revisions idempotent with null-owner fill only; preserve the first non-null owner; report conflicting non-null owners as a sanitized invariant failure; and return a disposition for applied/stale/duplicate writes.
-    - Replace `updated_at` ordering and repository-default truncation with bounded exclusive keyset reads ordered by creation time and watch ID. Return sorted page data needed by the application merge, not HTTP DTOs.
-    - Turn `backend/db/migrations` into a package, discover SQL with `importlib.resources`, declare `*.sql` package data in `pyproject.toml`, require the known ordered migration set, reject empty/missing resources, and verify the required table, columns, and owner-created index before publishing history services. Do not depend on a source-tree `Path`.
-    - Rewrite the fake SQL model in `tests/test_watch_history.py` to exercise revision permutations, duplicates, owner fill/conflict, exact full `Watch` round trips, created-at tie ordering, exclusive boundaries, and bounded limits. Extend `tests/test_postgres_migrations.py` and `tests/test_container_assets.py` to inspect a locally built wheel in a temporary directory with no dependency download and assert both migrations are discoverable from the artifact.
-    - Focused validation: `python -m pytest tests/test_watch_history.py tests/test_postgres_migrations.py tests/test_container_assets.py`.
-    - _Bug_Condition: `isBugCondition(input)` where projection writes complete out of order, owner history exceeds one page, migrations are missing, or installed artifacts omit SQL resources_
-    - _Expected_Behavior: `expectedBehavior(input, result)` keeps the greatest authoritative revision, preserves ownership, provides deterministic keyset chunks, and refuses an unverified schema/resource set_
-    - _Preservation: PostgreSQL remains a passive current-state projection; complete public Watch JSON, owner isolation, history-only terminal durability, migration ordering/locking, and already-applied `0001` remain intact_
-    - _Requirements: 2.3, 2.4, 2.5, 2.8, 2.12, 2.14, 3.3, 3.5, 3.9, 3.13_
+  - [ ] 3.6 Implement Redis ordered indexes, bounded bulk pages, and resumable legacy backfill
+    - Affected files/components: `backend/db/repositories/watches.py`, `backend/db/repositories/watch_scripts.py`, `backend/db/repositories/watch_decisions.py`, configuration for finite page/backfill budgets, and Redis oracle/bounded-scan tests.
+    - Add immutable-key sorted owner/recovery/projection/event/cleanup indexes and update them atomically with existing watch/runtime/schedule/terminal keys. Read at most one page with a fixed number of bounded pipeline calls; prohibit `SMEMBERS`, `KEYS`, and sequential unbounded per-record reads on these paths.
+    - Dual-write additions/removals to legacy and ordered indexes after old-worker drain. Implement a leader-owned resumable `SSCAN COUNT` backfill with persisted epoch/cursor/examined/added/remaining state; normal scanners combine bounded ordered and legacy pages until completion and report migration backlog.
+    - Convert legacy terminal IDs lacking payload/delivery evidence to finite-retention `LEGACY_SUPPRESSED` records without replay, preserving successful-delivery deduplication.
+    - Extend fixed-seed in-memory/Redis equivalence traces, concurrent barriers, large-index round-trip budgets, interrupted/resumed backfill, mixed-index deduplication, and exact-script tests.
+    - Design properties: 4, 6, 12, 18, 23.
+    - Focused one-shot validation: `python -m pytest tests/test_watch_repository_oracle.py tests/test_watch_repository.py tests/test_repository_bounded_scans.py tests/test_watch_repository_state_machine.py`.
+    - _Bug_Condition: `isBugCondition(input)` where Redis performs whole-set/sequential scans, lacks stable owner/effect indexes, or cannot upgrade legacy index state without gaps or replay_
+    - _Expected_Behavior: `expectedBehavior(input, result)` provides bounded ordered pages and an idempotent resumable dual-write/backfill epoch with honest backlog_
+    - _Preservation: Exact Milestone 3 Lua decisions/key compatibility, retryable redis-py errors, public models, old records, and memory/Redis behavioral equivalence remain unchanged_
+    - _Requirements: 2.3, 2.4, 2.5, 2.8, 2.15, 2.26, 2.28, 3.3, 3.5, 3.9, 3.11, 3.15, 3.18, 3.19_
 
-  - [ ] 3.7 Implement live/history reconciliation and complete keyset pagination
-    - Implement the versioned URL-safe cursor codec and `OwnedWatchQuery` in `backend/services/watch_history.py`. Encode only the last emitted `(created_at, watch_id)` key, reject malformed/unsupported/out-of-bounds cursors as `InvalidCursor`, and enforce default limit 50 with maximum 100.
-    - Require available history for any valid-owner query; a live-only subset must never masquerade as a complete dashboard. Read bounded sorted chunks from `OwnedLiveWatchReader` and `HistoryReader`, merge by watch ID, choose the live snapshot on every collision, label live-only/overlap items `LIVE`, and preserve history-only terminal items as `HISTORY_ONLY`.
-    - Fetch until `limit + 1` unique IDs or both sources end, then derive `has_more` and `next_cursor`. On a stable dataset, traversal must return every owned watch exactly once in `(created_at DESC, watch_id DESC)` order; never use `updated_at` as a cursor or sort key.
-    - Record successful reads as ready and unavailable/read failures as degraded through the existing last-observation readiness model. Translate all adapter exceptions to sanitized `HistoryUnavailable` at the application boundary without leaking owner tokens, cursor text, SQL, or driver messages.
-    - Add `tests/test_owned_watch_query.py` with fixed-seed generated owner-partitioned live/history sets, overlaps, stale revisions, tie keys, history-only cleanup, page sizes, cursor traversals, source chunk boundaries, empty available history, unavailable/failing history, and two-owner isolation. Print the seed and source datasets on failure.
-    - Focused validation: `python -m pytest tests/test_owned_watch_query.py tests/test_watch_history.py tests/test_watch_repository_state_machine.py tests/test_history_readiness.py`.
-    - _Bug_Condition: `isBugCondition(input)` where live and history disagree, history is unavailable, ordering differs, or an owner has more than one bounded response_
-    - _Expected_Behavior: `expectedBehavior(input, result)` returns live-authoritative, complete, isolated, deterministic pages and distinguishes unavailable history from empty history_
-    - _Preservation: History-only terminal visibility, opaque owner isolation, immutable public Watch values, and the ready/degraded/unknown vocabulary remain unchanged_
-    - _Requirements: 2.5, 2.7, 2.8, 2.9, 2.14, 3.3, 3.9, 3.10, 3.13_
+  - [ ] 3.7 Implement bounded non-blocking projection and live-state reconciliation
+    - Affected files/components: `backend/services/watch_history.py`, `backend/services/watch_service.py`, readiness tracking, a shared history runtime factory, and projection tests.
+    - Implement a finite map/deque publisher whose synchronous constant-time `offer` accepts, coalesces to the newest revision per watch, rejects a new watch at capacity, and rejects after close without awaiting or throwing into live operations.
+    - Add one exception-isolated consumer per process with finite shutdown drain and controlled readiness/backlog evidence. Writer failure, overflow, closure, or cancellation must not alter committed live results, dispatch, or worker retry classification.
+    - Add a bounded projection reconciler over task 3.5/3.6 pages so retained live snapshots repair dropped/failed envelopes. Track remaining backlog, oldest age, and loss beyond live retention instead of retaining live state forever.
+    - Replace awaited DB-shaped history calls in `WatchService` with post-commit offers built only from `CommittedFacts`; preserve existing live operation ordering and terminal wake integration points.
+    - Prove bounds with blocked writers and bursts larger than capacity, plus stale/equal/newer revisions, write failures, finite close, and API/worker thread-safe offers.
+    - Design properties: 3, 12, 18.
+    - Focused one-shot validation: `python -m pytest tests/test_watch_history_application.py tests/test_watch_service_history_wiring.py tests/test_repository_bounded_scans.py tests/test_watch_service.py tests/test_readiness.py`.
+    - _Bug_Condition: `isBugCondition(input)` where projection can block, grow without bound, be omitted, or be lost without bounded repair_
+    - _Expected_Behavior: `expectedBehavior(input, result)` offers newest owner-aware revisions without waiting and reconciles retained live state in finite pages_
+    - _Preservation: Live status/result, claims/fences, first/successor dispatch, projection-failure success, and worker retry semantics remain unchanged_
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.26, 3.5, 3.6, 3.11, 3.13, 3.15_
 
-  - [ ] 3.8 Route public HTTP through application dependencies and pin contract drift
-    - Add `get_owned_watch_query` to `backend/api/dependencies.py`; it must return only the application use case and be overrideable in tests. Remove direct `request.app.state.watch_history` access and concrete repository knowledge from `backend/api/routes/watches.py`.
-    - Change only `/api/watches/mine` to `OwnedWatchPage`, with validated `limit`/`cursor`, omitted-header empty page without a history read, valid-owner query execution, 422 `INVALID_CLIENT_ID`/`INVALID_PAGINATION`, and 503 `HISTORY_UNAVAILABLE`. Keep every other watch route's status, body, path, validation, and error details unchanged.
-    - Extend `ReadinessTracker` to record read, write, and handoff-overflow evidence without changing queue/recovery state. Keep `/health` exactly at the existing eight keys, preserve top-level `status`, and constrain `history_readiness` to the existing vocabulary.
-    - Add `tests/test_public_api_contract.py` to override only `get_owned_watch_query`, poison concrete app state, and assert route substitution, no persistence imports, every documented response/status/schema, complete `Watch` fields/enums, all parse-and-book result variants, and exact legacy endpoints.
-    - Generate deterministic FastAPI OpenAPI into a committed language-neutral artifact at `contracts/milestone-4-openapi.json`; add a one-shot export/check script and tests that fail when generated paths, statuses, headers, DTOs, examples, enums, or the future frontend-consumed artifact drift. Prove the comparator rejects a mutated in-memory artifact and statically forbid backend source imports from `apps/web` when that application is later added.
-    - Focused validation: `python -m pytest tests/test_public_api_contract.py tests/test_watch_owner_scoping.py tests/test_history_readiness.py tests/test_api.py tests/test_watch_api.py` followed by the contract check command added by this task.
-    - _Bug_Condition: `isBugCondition(input)` where HTTP reaches persistence/process state directly, errors/pages are inferred from repository behavior, readiness stays stale, or the public contract drifts_
-    - _Expected_Behavior: `expectedBehavior(input, result)` uses an overrideable application dependency, stable public schemas, evidence-based readiness, and a deterministic frontend-consumable contract check_
-    - _Preservation: Existing parse-and-book/unscoped/by-id contracts, exact Watch/enums, health keys/top-level meaning, and HTTP-only frontend/backend independence remain unchanged_
-    - _Requirements: 2.6, 2.7, 2.8, 2.9, 2.14, 3.1, 3.2, 3.3, 3.4, 3.10, 3.12, 3.13_
+  - [ ] 3.8 Make PostgreSQL history revision-monotonic and keyset-paged
+    - Affected files/components: `backend/db/repositories/watch_history.py`, append-only `backend/db/migrations/0002_*.sql`, `backend/db/postgres.py`, and history/migration tests. Do not edit `0001_watch_history.sql`.
+    - Add `source_revision`, immutable creation ordering, and `(owner_client_id, created_at DESC, watch_id DESC)` index support. Implement conditional writes: insert missing, update only a greater revision, equal revision idempotency with null-owner fill, first non-null owner preservation, and sanitized conflict rejection.
+    - Replace `updated_at` ordering/default truncation with bounded exclusive keyset reads returning application page values rather than HTTP DTOs.
+    - Preserve full public `Watch` round trips and history-only terminal rows; PostgreSQL remains a passive projection and never enters a live claim/commit transaction.
+    - Cover completion permutations, duplicates, owner fill/conflict, equal timestamps, cursor boundaries, limits, and fake SQL failures without a live database.
+    - Design properties: 4, 5, 13, 19.
+    - Focused one-shot validation: `python -m pytest tests/test_watch_history.py tests/test_postgres_migrations.py tests/test_history_readiness.py`.
+    - _Bug_Condition: `isBugCondition(input)` where history applies arrival order, can reassign owners, or silently truncates/update-sorts reads_
+    - _Expected_Behavior: `expectedBehavior(input, result)` stores the greatest authoritative revision and exposes bounded deterministic creation-order pages_
+    - _Preservation: Passive projection, public Watch values, owner isolation, history-only terminal durability, and applied `0001` remain unchanged_
+    - _Requirements: 2.3, 2.4, 2.5, 2.8, 2.12, 3.3, 3.5, 3.9, 3.13_
 
-  - [ ] 3.9 Make configured CORS/PostgreSQL startup fail fast and secret safe
-    - Harden `CorsSettings.from_environment()` in `backend/config.py`: accept only HTTP(S), non-empty host, valid optional port 1–65535, no username/password, wildcard, query, fragment, or non-root path; normalize an optional root slash away. Preserve comma-separated exact origins and omission as disabled.
-    - Stop swallowing `ConfigurationError` in `_configure_cors`; an explicitly malformed `FRONTEND_ORIGINS` must abort `create_app()` before middleware construction. Keep valid methods `GET`/`POST`/`DELETE`, headers `Content-Type`/`X-Dibs-Client-Id`, current exposed monitoring headers, and `allow_credentials=False`.
-    - Make `PostgresSettings` exclude the raw DSN from `repr` and diagnostics. Parse enough structure to derive a safe target containing only scheme class, host, valid port, and database name; reject explicitly malformed settings without echoing raw input.
-    - In `backend/db/postgres.py`, normalize connection, package discovery, migration, and schema-verification failures into controlled sanitized `ConfigurationError` categories. Never embed raw driver text or retain a secret-bearing exception cause. Hold a local pool until all verification succeeds; close it exactly once on every failure after creation and publish nothing.
-    - Add deterministic failure-phase tests for parse, pool creation, migration lock/DDL/SQL, resource discovery, schema verification, projector construction, and normal shutdown. Use close-count fakes and sentinel secrets; inspect exceptions, `repr`, logs, health, and HTTP output. Retain successful concurrent migration locking and standalone omission.
-    - Replace defect-expecting tests in `tests/test_cors.py` and `tests/test_main_postgres_wiring.py`; extend `tests/test_postgres_config.py` and `tests/test_postgres_migrations.py` with total generated URL/DSN partitions and secret scans.
-    - Focused validation: `python -m pytest tests/test_cors.py tests/test_postgres_config.py tests/test_postgres_migrations.py tests/test_main_postgres_wiring.py`.
-    - _Bug_Condition: `isBugCondition(input)` where configured origins/PostgreSQL are invalid or unreachable, migration/schema/package initialization fails, a pool leaks, or a DSN secret reaches an observable surface_
-    - _Expected_Behavior: `expectedBehavior(input, result)` fails configured startup with a sanitized error, closes owned resources exactly once, and exposes no credentials/sensitive query values_
-    - _Preservation: Omitted capabilities remain supported standalone; valid exact-origin CORS, migration lock/order, core routes, and non-browser behavior remain unchanged_
-    - _Requirements: 2.10, 2.11, 2.12, 2.13, 2.14, 3.7, 3.8, 3.10, 3.13_
+  - [ ] 3.9 Implement live-authoritative owner reconciliation and complete pagination
+    - Affected files/components: `backend/services/watch_history.py`, readiness integration, and new `tests/test_owned_watch_query.py`.
+    - Implement a versioned integrity-checked URL-safe cursor over only `(created_at, watch_id)`, default limit 50, maximum 100, and stable sanitized invalid-cursor errors.
+    - Require available history for valid-owner queries; bounded-merge live and history pages, deduplicate by watch ID, choose retained live state on overlap, and keep history-only terminal state. Fetch only finite overlap/lookahead and return every stable item exactly once.
+    - Record successful reads as ready and disabled/failing reads as degraded without leaking owner, cursor, SQL, or exception text. Never return a live-only subset as a complete dashboard.
+    - Generate owner partitions, overlaps, stale revisions, ties, cleanup, page sizes, source boundaries, insertion newer than a cursor, unavailable/empty/failing states, and complete traversal traces.
+    - Design properties: 4, 19.
+    - Focused one-shot validation: `python -m pytest tests/test_owned_watch_query.py tests/test_watch_history.py tests/test_watch_repository_state_machine.py tests/test_history_readiness.py`.
+    - _Bug_Condition: `isBugCondition(input)` where stale history overrides live state, unavailable equals empty, or bounded responses cannot reach every owner record_
+    - _Expected_Behavior: `expectedBehavior(input, result)` returns isolated live-authoritative, duplicate-free, complete keyset pages with explicit availability_
+    - _Preservation: Opaque owner isolation, history-only terminal visibility, immutable public Watch values, and readiness vocabulary remain unchanged_
+    - _Requirements: 2.5, 2.7, 2.8, 2.9, 3.3, 3.9, 3.10, 3.13_
 
-  - [ ] 3.10 Compose one verified history runtime in the API process
-    - Add a shared infrastructure composition factory (for example `backend/db/history_runtime.py`) that consumes validated PostgreSQL settings/readiness and returns one owned runtime containing application publisher/query ports plus private writer/pool/projector resources. Both API and worker must call this factory rather than rebuilding partial variants.
-    - In standalone mode, return `NoopProjectionPublisher` for live writes and an explicit unavailable owner query. In configured mode, create the pool locally, discover/apply/verify migrations, construct the revisioned repository and bounded projector, then publish the application ports only after every step succeeds.
-    - Refactor `backend/main.py` lifespan/`_attach_postgres` and `_build_watch_service` so in-memory and Redis service rebuilds always receive the same application publisher, routes obtain the composed query through dependencies, and no concrete history repository is exposed as a route contract.
-    - Start the API projector before request serving. On shutdown, stop acceptance, perform only the bounded drain, close projector resources, then close the verified pool exactly once. Make startup rollback idempotent and leave no partially published `app.state` history service.
-    - Preserve existing Redis fallback/selection, recovery startup, queue selection, OpenAI/settings behavior, and health top-level status. A configured PostgreSQL failure now aborts lifespan; omission still starts all core routes.
-    - Extend `tests/test_main_postgres_wiring.py` with standalone, configured-success, each configured-failure phase, service-rebuild publisher identity, bounded shutdown, and exactly-once close assertions using fakes only.
-    - Focused validation: `python -m pytest tests/test_main_postgres_wiring.py tests/test_watch_recovery_wiring.py tests/test_api.py tests/test_watch_api.py tests/test_history_readiness.py`.
-    - _Bug_Condition: `isBugCondition(input)` where API startup publishes partial persistence state, silently disables configured history, or lifecycle service instances receive inconsistent projection collaborators_
-    - _Expected_Behavior: `expectedBehavior(input, result)` publishes one verified application runtime, fails configured initialization, and keeps live operation paths independent of PostgreSQL waits_
-    - _Preservation: Standalone startup, Redis/memory and Celery/asyncio selection, recovery, all core routes, health meaning, and idempotent shutdown remain unchanged_
-    - _Requirements: 2.1, 2.2, 2.7, 2.9, 2.10, 2.12, 2.13, 3.5, 3.7, 3.10, 3.13_
+  - [ ] 3.10 Route HTTP through application dependencies and pin the OpenAPI boundary
+    - Affected files/components: `backend/api/dependencies.py`, `backend/api/routes/watches.py`, `backend/main.py`, `backend/api/contracts.py`, new `contracts/milestone-4-openapi.json`, a one-shot export/check script, and public contract tests.
+    - Add overrideable application dependencies for lifecycle, owner query, and startup snapshot; remove concrete history/process-state access from routes.
+    - Make only `/api/watches/mine` return the explicit page DTO with validated limit/cursor and stable 422/503 errors. Keep omitted identity as an empty page without a storage call and keep all legacy unscoped/by-ID shapes.
+    - Route legacy `GET /api/watches` through `scan_watches_page` with a bounded page iterator and streaming JSON-array encoder; never materialize the complete repository result or all encoded items in server memory. Preserve the exact array body, status, order, `active_only` behavior, and established headers. Add an instrumented large-result test that bounds page size, repository reads, and peak retained server objects while decoding to the same client-visible JSON.
+    - Map task 3.3 direct temporal violations to stable client-safe 422 codes while preserving orchestrator result meanings.
+    - Generate/check deterministic OpenAPI for request, success, page, error, health, `Watch`, and parse-and-book schemas. Prove an in-memory mutation is rejected and statically forbid frontend imports of backend Python; do not create `apps/web`.
+    - Design properties: 4, 5, 17, 19, 21.
+    - Focused one-shot validation: `python -m pytest tests/test_public_api_contract.py tests/test_watch_owner_scoping.py tests/test_watch_api.py tests/test_repository_bounded_scans.py tests/test_api.py tests/test_schemas.py`.
+    - _Bug_Condition: `isBugCondition(input)` where routes reach persistence/process state, repository shapes become HTTP, the legacy list accumulates an unbounded repository/encoded result, temporal errors differ, or the frontend contract can drift_
+    - _Expected_Behavior: `expectedBehavior(input, result)` uses substitutable use cases, streams the legacy array from bounded pages, and exposes documented request/success/page/error schemas with deterministic drift detection_
+    - _Preservation: Existing parse-and-book/unscoped/by-ID statuses, order, filters, headers, and body contracts; exact Watch/enums; no-auth semantics; and HTTP-only backend/frontend separation remain unchanged_
+    - _Requirements: 2.6, 2.7, 2.8, 2.9, 2.14, 2.21, 2.26, 3.1, 3.2, 3.3, 3.4, 3.12, 3.20_
 
-  - [ ] 3.11 Compose the same projection contract in each distributed worker process
-    - Refactor `backend/workers/tasks/monitor_watch.py` so worker-process initialization calls the shared history-runtime factory and injects its `ProjectionPublisher` into `build_watch_service()`. Explicit configured-history initialization failures must fail worker-process startup rather than silently constructing an unprojected service.
-    - Give the worker projector its own lifecycle/event loop thread so asynchronous PostgreSQL consumption continues after the serialized task runner returns; `monitor_watch` itself performs only the constant-time `offer` through `WatchService` and never awaits history or opens a pool per task.
-    - Keep projection offer/write failures outside `_RECOVERABLE_INFRASTRUCTURE_ERRORS`; they are logged/readiness evidence only and cannot request a Celery retry. Preserve the exact success dictionary, aliased Redis/Kombu retry tuple, original exception identity, countdown 60, maximum retries, non-recoverable propagation, runner lock, and old one-argument/window-aware paths.
-    - Extend worker cleanup to stop history acceptance, drain to a finite deadline, close history writer/pool, close Redis through the existing runner, and close the runner. Celery shutdown plus `atexit` must remain idempotent and construct no unused resources.
-    - Extend `tests/test_monitor_watch.py` with production-shaped factory injection, API/worker envelope equivalence, blocked/failed writer, startup failure, consumer liveness after `Runner.run`, shutdown ordering/deadline, repeated signals, and all existing retry/result variants. Do not start Celery, Redis, PostgreSQL, or a broker.
-    - Keep deployment changes scoped to this bugfix: do not add `apps/web` or the original plan's web compose service. Ensure the existing API and worker roles can receive the same optional PostgreSQL settings when deployment task 11 later wires environment values.
-    - Focused validation: `python -m pytest tests/test_monitor_watch.py tests/test_task_queue.py tests/test_watch_runtime.py tests/test_container_assets.py`.
-    - _Bug_Condition: `isBugCondition(input)` where a poll runs in the distributed worker but that process omits or cannot continue the shared history projection lifecycle_
-    - _Expected_Behavior: `expectedBehavior(input, result)` offers the same revisioned projection in API and worker processes while preserving task results/retries and bounded idempotent cleanup_
-    - _Preservation: Worker result shape, retry classification/limits, serialized runner access, Redis lifecycle, optional worker isolation, and backend deployability remain unchanged_
-    - _Requirements: 2.1, 2.2, 2.10, 2.12, 2.13, 2.14, 3.5, 3.6, 3.11, 3.12, 3.13_
+  - [ ] 3.11 Add secret-safe Redis/PostgreSQL values, diagnostics, and strict origin parsing
+    - Affected files/components: `backend/config.py`, `backend/db/postgres.py`, Redis connection/composition helpers in `backend/main.py`, worker settings paths, `backend/logging_config.py` call sites only, and config/CORS/redaction tests.
+    - Parse Redis/PostgreSQL URLs into secret-bearing value objects with `repr=False` and separate `SafeEndpoint` context containing only approved scheme class, host/socket class, valid port, and database name. `str`/`repr` of settings and snapshots must expose only safe context or `<configured>`.
+    - Classify low-level parse/connect/migrate/cleanup errors into controlled codes, raise public/startup failures without raw causes, and construct logs/health/worker diagnostics only from safe fields. Preserve sibling-owned handlers, formatters, levels, and retained-error behavior.
+    - Enforce complete HTTP(S) browser-origin grammar: host and valid optional port only, optional root slash normalization, no user info, wildcard, query, fragment, malformed port, or non-root path; omission remains disabled.
+    - Search generated plain/encoded username, password, token, query, fragment, nested exception, and representation sentinels across exceptions, causes, logs, health, HTTP, and worker output.
+    - Design properties: 5, 9, 19, 20.
+    - Focused one-shot validation: `python -m pytest tests/test_config.py tests/test_postgres_config.py tests/test_cors.py tests/test_logging_config.py tests/test_main_postgres_wiring.py tests/test_monitor_watch.py`.
+    - _Bug_Condition: `isBugCondition(input)` where connection secrets or invalid origins reach representations/diagnostics or configured origin support is accepted incorrectly_
+    - _Expected_Behavior: `expectedBehavior(input, result)` retains only safe endpoint/category context and rejects every non-origin component with a sanitized startup error_
+    - _Preservation: Valid exact-origin CORS, omitted capabilities, non-browser behavior, logging topology, and retained settings-error identity remain unchanged_
+    - _Requirements: 2.10, 2.11, 2.13, 2.20, 3.7, 3.8, 3.10, 3.11, 3.14_
 
-  - [ ] 3.12 Verify the bug-condition exploration tests now pass
-    - **Property 1: Expected Behavior** - Milestone 4 Frontend-Facing Boundary Defects
-    - **IMPORTANT**: Re-run the SAME assertions and generated scenarios from task 1; do not replace them with post-fix tests, relax bounds, remove counterexamples, or hide failures behind retries/skips.
-    - Confirm API-local and worker transitions offer equivalent owner-aware revisions; blocked/full/failed projection cannot delay or alter live results; failed-first-write owner recovery works in memory and Redis; out-of-order writes never regress; live wins reconciliation; all pages are complete and stable; malformed identity has zero side effects; unavailable is distinct from empty; routes use application dependencies; configured startup fails safely; migrations/resources verify; secrets remain absent; and deliberate contract mutations fail the drift check.
-    - Run focused suites in dependency order and preserve fixed seeds/counterexample output. **EXPECTED OUTCOME**: every task 1 test PASSES and each documented pre-fix counterexample is now a fix check.
-    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.10, 2.11, 2.12, 2.13, 2.14_
+  - [ ] 3.12 Verify checksummed migration-set, applied-prefix, schema, and package identity
+    - Affected files/components: `backend/db/postgres.py`, `backend/db/migrations/__init__.py`, append-only SQL resources, `pyproject.toml`, package metadata helpers, and migration/container tests.
+    - Discover migrations with `importlib.resources`; require a non-empty known set of strictly increasing unique numeric versions and canonical names. Compute each SHA-256 and a canonical set identity including expected application schema version.
+    - Upgrade version-only tracking under the migration lock only after known schema verification. Store immutable name/checksum/first-package provenance and singleton prefix/set/schema state; accept only a checksum-valid applied prefix plus append-only suffix.
+    - Reject empty/missing/malformed/duplicate/reordered/changed/unknown/non-prefix sets, running-package metadata mismatch, rollback, and schema fingerprint mismatch with sanitized errors. Verify required tables, columns/types/nullability, constraints, and indexes before publishing history.
+    - Explicitly package `*.sql`; inspect a locally built wheel/container context with no dependency downloads and verify resources, distribution version, checksums, and schema identity. Preserve concurrent migration locking and close ownership for task 3.14.
+    - Design properties: 5, 9, 13, 21.
+    - Focused one-shot validation: `python -m pytest tests/test_postgres_migrations.py tests/test_migration_identity.py tests/test_container_assets.py tests/test_watch_history.py`.
+    - _Bug_Condition: `isBugCondition(input)` where migration discovery/history/schema/package identity is empty, duplicate, changed, unknown, or unverifiable_
+    - _Expected_Behavior: `expectedBehavior(input, result)` accepts only a packaged non-empty ordered checksummed set whose applied history is a valid prefix and whose final schema matches_
+    - _Preservation: Append-only `0001` history, valid suffix upgrades, migration locking, passive history semantics, and package version changes with identical bytes remain supported_
+    - _Requirements: 2.12, 2.13, 2.29, 3.5, 3.7, 3.12, 3.13_
 
-  - [ ] 3.13 Verify all preservation property tests still pass
-    - **Property 2: Preservation** - Milestone 1–3 and Completed Milestone 4 Behavior
-    - **IMPORTANT**: Re-run the SAME observation-first tests from task 2 without weakening exact statuses, bodies, fields, enums, decisions, schedules, retries, health keys, CORS policy, owner isolation, cleanup, or external-service prohibitions.
-    - Confirm header omission, all parse-and-book outcomes, unscoped/by-id routes, exact public Watch/status/outcome schemas, live state-machine authority, successful live results after projection failure, standalone startup, exact CORS, history-only terminal visibility, health semantics, worker retries/results/cleanup, and independent HTTP-only backend deployment remain equal to the unfixed baseline.
-    - Re-run the existing repository oracle/state-machine suites and every existing Milestone 1–3/completed Milestone 4 test without rewriting assertions to accommodate this fix. **EXPECTED OUTCOME**: all task 2 and pre-existing tests PASS.
-    - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.10, 3.11, 3.12, 3.13_
+  - [ ] 3.13 Capture one immutable startup snapshot and make dependencies consistent
+    - Affected files/components: `backend/config.py`, new `backend/services/startup.py`, `backend/main.py`, `backend/api/dependencies.py`, `backend/workers/celery_app.py`, `backend/workers/tasks/monitor_watch.py`, and snapshot tests.
+    - Capture an immutable environment mapping once per app/worker bootstrap and retain one ready value or exact sanitized error for watch, application, PostgreSQL, CORS, role, and topology-related settings.
+    - Make every request dependency, health path, composition factory, Celery configuration, and worker child use only the snapshot/serialized safe generation. Remove all request/task fallbacks to `from_environment()` or `os.getenv`.
+    - Preserve the sibling first-call logging initializer and exact retained `WatchSettings` error object/log visibility. Celery object construction remains connection-free and optional worker imports remain lazy.
+    - Mutate the process environment after capture and test ready/error identity, API/worker parity, concurrent reads, child generation mismatch, and no reparsing.
+    - Design properties: 7, 20.
+    - Focused one-shot validation: `python -m pytest tests/test_startup_snapshot.py tests/test_api.py tests/test_watch_api.py tests/test_monitor_watch.py tests/test_logging_config.py`.
+    - _Bug_Condition: `isBugCondition(input)` where a request or worker reparses ambient environment and disagrees with startup composition/health or changes retained error identity_
+    - _Expected_Behavior: `expectedBehavior(input, result)` resolves every consumer from one immutable value/error snapshot and generation_
+    - _Preservation: Retained settings precedence/identity, startup logging topology, valid request behavior, worker optional imports, and Celery command/config meanings remain unchanged_
+    - _Requirements: 2.16, 3.7, 3.10, 3.11, 3.14_
 
-- [ ] 4. Checkpoint - complete deterministic validation and review the scope
-  - Run the two workflow properties first: `python -m pytest tests/test_milestone_4_structure_bug_exploration.py tests/test_milestone_4_preservation_baseline.py`.
-  - Run the application/live/history group: `python -m pytest tests/test_watch_history_application.py tests/test_watch_service_history_wiring.py tests/test_watch_repository_state_machine.py tests/test_watch_repository_oracle.py tests/test_watch_history.py tests/test_owned_watch_query.py tests/test_watch_owner_scoping.py tests/test_history_readiness.py`.
-  - Run the HTTP/composition/infrastructure group: `python -m pytest tests/test_public_api_contract.py tests/test_watch_api.py tests/test_api.py tests/test_monitor_watch.py tests/test_main_postgres_wiring.py tests/test_postgres_config.py tests/test_postgres_migrations.py tests/test_cors.py tests/test_container_assets.py`.
-  - Run the deterministic OpenAPI export/check command introduced in task 3.8 and locally inspect/build the backend wheel without dependency downloads; assert required SQL resources are present and no backend module imports frontend source.
-  - Run the full suite once, without watch mode or external services: `python -m pytest`. Fix any regression caused by this bugfix, re-run the smallest failing group, then repeat the full suite.
-  - Run `python -m mypy backend`, `python -m compileall backend tests`, and `git diff --check`. Resolve every diagnostic; do not suppress it or broaden ignores to make validation pass.
-  - Review `git status --short` and the focused diff. Confirm no `apps/web` implementation was added, `Watch`/enums and Milestone 1–3 assertions were not weakened, `0001_watch_history.sql` was not rewritten, PostgreSQL never entered live correctness decisions, no raw secret or driver text is observable, and no test requires a live service.
-  - Mark this checkpoint complete only when every exploration counterexample passes, every preservation baseline and existing test remains green, package/contract drift checks pass, all resources close within their bounds exactly once, and requirements 2.1–2.14 and 3.1–3.13 have direct test evidence. Ask the user if questions arise.
-  - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.10, 2.11, 2.12, 2.13, 2.14, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.10, 3.11, 3.12, 3.13_
+  - [ ] 3.14 Add transactional lifecycle ledger, startup rollback, and isolated exactly-once shutdown
+    - Affected files/components: new `backend/services/lifecycle.py`, `backend/main.py`, shared history/effect runtimes, worker cleanup hooks, and lifecycle tests.
+    - Register each acquired resource immediately with dependency phase and internal once guard before the next fallible step; publish one verified process runtime only after the complete graph succeeds.
+    - On startup failure, close all acquired resources in safe reverse phase/LIFO order and re-raise the primary sanitized failure. On normal/repeated/concurrent shutdown, attempt every close exactly once even when individual callbacks throw.
+    - Use phases to stop ingress/producers, recovery/dispatch, projection/delivery acceptance and finite drains, queues/notifiers/orchestrator, then PostgreSQL/Redis/loops. Cleanup diagnostics expose only resource kind, phase, and exception class.
+    - Generate every acquisition subset, every primary failure position, one/many throwing closes, cancellation, repeated signals, concurrent close, publication visibility, and exact close counts.
+    - Import sibling lazy cleanup semantics; empty caches must still construct nothing.
+    - Design properties: 5, 7, 9, 20.
+    - Focused one-shot validation: `python -m pytest tests/test_lifecycle_ledger.py tests/test_main_postgres_wiring.py tests/test_monitor_watch.py tests/test_api.py`.
+    - _Bug_Condition: `isBugCondition(input)` where partial startup leaks resources or one cleanup failure skips later closes/replaces the primary failure_
+    - _Expected_Behavior: `expectedBehavior(input, result)` rolls back or shuts down every acquired resource in safe order exactly once with isolated sanitized cleanup failures_
+    - _Preservation: First logging action, successful startup order, lazy resource construction, retained primary error identity, and repeated shutdown idempotence remain unchanged_
+    - _Requirements: 2.12, 2.17, 2.19, 2.20, 3.7, 3.11, 3.14_
+
+  - [ ] 3.15 Apply one fail-closed Redis topology policy to API and worker roles
+    - Affected files/components: new shared topology module, `backend/main.py`, `backend/workers/celery_app.py`, `backend/workers/tasks/monitor_watch.py`, Redis factories, readiness, and topology tests.
+    - Return only `SUPPORTED_PRIMARY`, `UNAVAILABLE`, `UNSUPPORTED`, or `UNKNOWN` from a finite probe using safe endpoint context. Probe exceptions and ambiguous/cluster/sentinel topology never become supported.
+    - Apply the design role matrix: API may use documented local fallback with honest degraded readiness; a distributed worker requiring Redis fails startup before consumer/repository binding on every non-supported decision. Publish and validate the topology generation in children.
+    - Keep the exact sibling retry tuple and runtime retry behavior; topology is a startup/readiness decision, not a new Celery task retry.
+    - Test supported/unavailable/unsupported/throwing probes, explicit versus omitted intent, API/worker parity, no atomic script use after failed gate, no raw URL diagnostics, and finite probe cleanup.
+    - Design properties: 8, 9, 20.
+    - Focused one-shot validation: `python -m pytest tests/test_redis_topology.py tests/test_main_watch_wiring.py tests/test_monitor_watch.py tests/test_readiness.py tests/test_postgres_config.py`.
+    - _Bug_Condition: `isBugCondition(input)` where unknown/unsupported topology is treated as standalone or API and worker classify/bind it differently_
+    - _Expected_Behavior: `expectedBehavior(input, result)` permits atomic repositories only under the common supported-primary decision and reports every other role outcome honestly_
+    - _Preservation: API local fallback, exact worker retry/result behavior, optional imports, current Redis schemes intentionally supported, and live state-machine semantics remain unchanged_
+    - _Requirements: 2.18, 2.19, 2.20, 3.5, 3.11, 3.14, 3.15_
+
+  - [ ] 3.16 Implement token-fenced terminal delivery claims and outcomes
+    - Affected files/components: the terminal-delivery contracts established in task 3.4, `backend/db/repositories/watch_decisions.py`, `backend/db/repositories/watches.py`, `backend/db/repositories/watch_scripts.py`, configuration bounds, and delivery state-machine tests.
+    - Build on task 3.4's atomic `TerminalEventRecord` creation and tasks 3.5–3.6's bounded event pages/indexes; do not redefine those models, initial records, or page ownership.
+    - Implement finite token-fenced claims and compare-owner transitions among `PENDING`, `IN_FLIGHT`, `RETRYABLE`, `DELIVERED`, `UNCERTAIN`, and `EXHAUSTED`, including lease recovery, retry ceilings, outcome categories, idempotent duplicate wakes, and immutable handling of `LEGACY_SUPPRESSED`.
+    - Claim only from bounded due-event pages, preserve one event per terminal transition under concurrency/recovery, and keep every delivery field out of public `Watch` and worker results.
+    - Generate claim races, stale tokens, expiry takeover, duplicate task delivery, definite/unknown outcomes, exhaustion, legacy suppression, and memory/Redis equivalence.
+    - Design properties: 6, 11, 12, 18, 23.
+    - Focused one-shot validation: `python -m pytest tests/test_terminal_delivery.py tests/test_watch_repository_state_machine.py tests/test_watch_repository_oracle.py tests/test_repository_bounded_scans.py`.
+    - _Bug_Condition: `isBugCondition(input)` where a durable terminal record cannot represent a finite claim, retry, uncertainty, recovery, or completion outcome_
+    - _Expected_Behavior: `expectedBehavior(input, result)` advances the existing idempotent event only through token-fenced finite transitions over bounded due pages_
+    - _Preservation: Atomic terminal event identity, live terminal status/outcome, cancellation behavior, successful user-visible at-most-once delivery, public schemas, and Milestone 3 terminal authority remain unchanged_
+    - _Requirements: 2.15, 2.25, 2.26, 2.28, 3.3, 3.5, 3.15, 3.18, 3.19_
+
+  - [ ] 3.17 Route normal and recovery expiry through shared committed terminal effects
+    - Affected files/components: new `backend/services/terminal_effects.py`, `backend/services/watch_service.py`, `backend/services/watch_recovery.py`, projection/delivery wake ports, and recovery/effect tests.
+    - Implement a non-throwing `TerminalEffects.observe(CommittedFacts)` that offers projection and wakes an existing durable terminal event without waiting. Call it after successful normal terminal commits and recovery `expire_if_eligible` commits.
+    - Repeated recovery/no-op outcomes must not manufacture facts, revisions, events, projections, or notifications; the bounded pending-event scanner recovers an already-created undelivered event independently.
+    - Return live create/poll/cancel/recovery results truthfully when either effect path fails; record controlled backlog/readiness evidence instead of entering worker retry classification.
+    - Differentially compare normal versus recovery expiry, projection revisions/owners, event identity, repeated recovery, failed/closed effect runtimes, and concurrent expiry attempts.
+    - Design properties: 3, 6, 11, 18.
+    - Focused one-shot validation: `python -m pytest tests/test_terminal_effects.py tests/test_watch_recovery.py tests/test_watch_service.py tests/test_watch_service_history_wiring.py tests/test_monitor_watch.py`.
+    - _Bug_Condition: `isBugCondition(input)` where recovery expiry commits terminal live state without normal projection/delivery effects or post-commit effect failure changes the live result_
+    - _Expected_Behavior: `expectedBehavior(input, result)` feeds normal and recovery terminal commits through the same idempotent non-blocking effect observer_
+    - _Preservation: Live repository decisions, recovery counters, worker result/retry behavior, cancellation's no-notification rule, and projection-failure success remain unchanged_
+    - _Requirements: 2.1, 2.2, 2.15, 2.25, 3.5, 3.6, 3.11, 3.15, 3.19_
+
+  - [ ] 3.18 Make notification logging privacy-safe and notifier uncertainty recoverable
+    - Affected files/components: `backend/services/notification_service.py`, terminal delivery/recovery services, readiness, configuration, and privacy/delivery tests.
+    - Enforce one terminal-log allowlist: the approved opaque event correlation, approved event type, and controlled outcome category. Omit watch/client identity, source revision, claim token, mutable delivery state, venue, date, party size, credentials, query text, slot, booking, payload, and raw exception details from messages and structured extras; no other delivery metadata is permitted.
+    - Replace throwing/no-result notification with `DELIVERED`, `DEFINITELY_NOT_DELIVERED`, or `UNKNOWN`; unclassified throws map to `UNKNOWN` without changing the committed live result.
+    - Require an idempotency-capable transport plus receipt recovery, or an explicit compare-and-set operator resolution path, before enabling automatic replay after uncertainty. While `UNCERTAIN`, prohibit automatic replay, degrade readiness, and retain bounded actionable state; erase payload at finite exhaustion and retain only a finite safe tombstone.
+    - Test pre-side-effect failure, post-side-effect failure, lost acknowledgement, receipt says sent/absent, manual resolution, lease expiry, deadline exhaustion, repeated redelivery, successful deduplication, and exact sensitive-sentinel absence.
+    - Do not select a provider guarantee beyond the approved result of task 1/3.24.
+    - Design properties: 11, 16, 23.
+    - Focused one-shot validation: `python -m pytest tests/test_notification_privacy.py tests/test_terminal_delivery.py tests/test_terminal_effects.py tests/test_readiness.py tests/test_milestone_4_preservation_baseline.py`.
+    - _Bug_Condition: `isBugCondition(input)` where logs expose reservation data or a notifier throw makes a committed terminal result ambiguous and later recovery impossible_
+    - _Expected_Behavior: `expectedBehavior(input, result)` keeps logs sanitized and records explicit delivered/retryable/uncertain/exhausted outcomes with an approved recovery path_
+    - _Preservation: Successful same-event delivery remains user-visible at most once, public Watch/results remain exact, and no unapproved authentication/retry/delivery guarantee is introduced_
+    - _Requirements: 2.24, 2.25, 2.33, 3.3, 3.19, 3.20, 3.21_
+
+  - [ ] 3.19 Add authority-token renewal/loss, deadline-based recovery wakeups, and honest readiness
+    - Affected files/components: `backend/services/watch_recovery.py`, `backend/workers/dispatcher.py`, live repository authority scripts/decisions, `backend/services/readiness.py`, configuration, and authority/scheduler tests.
+    - Add an injected-monotonic-clock `AuthorityGuard` with owner/epoch/token/expiry/renewal margin. Check the token atomically before every leader-only mutation and renew before each page or operation whose hard timeout plus margin cannot fit.
+    - Stop before the next side effect on renewal failure, timeout, cancellation, or authority loss; stale completions cannot mutate. Keep per-window dispatch claims as the final logical duplicate fence and preserve the Milestone 3 uncertain-publication rule.
+    - Compute wake deadlines from next marker horizon entry, renewal deadline, immediate continuation backlog, and finite fallback tolerance; marker commits may signal early but lost signals cannot exceed tolerance.
+    - Degrade recovery readiness immediately on loop exceptions, stale evidence, authority loss, or incomplete required index migration; require a later complete pass to recover.
+    - Pause repository/broker calls across lease expiry and use fake clocks for horizon entry, long pages, lost wake signals, loop failures, renewal, and token rejection.
+    - Design properties: 8, 12, 14, 18, 19.
+    - Focused one-shot validation: `python -m pytest tests/test_recovery_authority.py tests/test_watch_recovery.py tests/test_watch_dispatcher.py tests/test_readiness.py tests/test_repository_bounded_scans.py`.
+    - _Bug_Condition: `isBugCondition(input)` where a pass outlives authority, fixed sleeps dispatch late, or a failed loop still appears ready_
+    - _Expected_Behavior: `expectedBehavior(input, result)` renews or stops before authority loss, wakes by deadline within tolerance, and exposes semantic degradation until recovery succeeds_
+    - _Preservation: Existing claims/fences, dispatch generations, queue publication uncertainty handling, recovery outcomes, and readiness vocabulary remain unchanged_
+    - _Requirements: 2.26, 2.27, 2.31, 3.5, 3.10, 3.15, 3.18_
+
+  - [ ] 3.20 Complete bounded retention, reconciliation-pin cleanup, and backlog accounting
+    - Affected files/components: `backend/db/repositories/watches.py`, `backend/db/repositories/watch_scripts.py`, `backend/db/repositories/mock_booking.py`, `backend/db/repositories/mock_booking_scripts.py`, recovery/cleanup reporting, and retention tests.
+    - Return per-class bounded reports for terminal documents, runtime/fence/claim/dispatch/index state, terminal events/payloads, projection/delivery reconciliation metadata, expired pins and pin-owner indexes, idle slots, booking confirmations, and tombstones.
+    - For each class report `examined`, `removed`, `remaining_due`, and `oldest_due_age`, plus aggregate work consumed. Use ordered due indexes and limits; never fetch all expired pins or derive backlog through an unbounded scan.
+    - Retain unresolved delivery data until its finite resolution/dead-letter deadline, then erase payload and eventually tombstone; remove terminal event IDs and every associated index. Keep native TTL only as a backstop.
+    - Make repeated cleanup idempotent and resumable after partial failures. Generate mixed due/future classes, large pin sets, interrupted passes, stale indexes, exact memory/Redis/mock parity, and eventual drain oracles.
+    - Import Milestone 3 retention durations/semantics rather than redefining ordinary terminal or mock booking behavior.
+    - Design properties: 11, 12, 18, 22, 23.
+    - Focused one-shot validation: `python -m pytest tests/test_retention_accounting.py tests/test_mock_booking_state.py tests/test_mock_booking.py tests/test_watch_repository_oracle.py tests/test_terminal_delivery.py`.
+    - _Bug_Condition: `isBugCondition(input)` where event/pin/tombstone/booking/index state accumulates or cleanup/backlog calculation itself is unbounded_
+    - _Expected_Behavior: `expectedBehavior(input, result)` removes every due associated class in finite idempotent pages and reports exact remaining backlog/age_
+    - _Preservation: Existing retention boundaries, booking idempotency/atomic winner/capacity, terminal history visibility, and repository equivalence remain unchanged_
+    - _Requirements: 2.26, 2.28, 3.5, 3.9, 3.15, 3.17, 3.18, 3.19_
+
+  - [ ] 3.21 Compose one verified runtime transaction in the API role
+    - Affected files/components: `backend/main.py`, shared process/history/effect runtime factories, `backend/api/dependencies.py`, startup snapshot, lifecycle ledger, topology policy, migrations, projection/delivery pumps, and API composition tests.
+    - Build resources locally from the immutable snapshot; classify topology, open/register PostgreSQL, verify migration/schema/package identity, construct repositories/ports/pumps/recovery/queues/providers, start finite loops, then atomically publish one `ProcessRuntime`.
+    - In omitted standalone mode publish no-op projection and explicit unavailable owner query. Explicitly configured PostgreSQL/history, migration, schema, and dependent runtime failures abort startup and ledger-roll back. Redis topology outcomes follow task 3.15's role matrix instead: the API uses the documented local fallback with degraded readiness for `UNAVAILABLE`, `UNSUPPORTED`, or `UNKNOWN`, while workers fail startup. Never publish partial `app.state` services.
+    - Ensure rebuilt in-memory/Redis watch services receive identical application ports and terminal effects. Start pumps before serving; shutdown stops producers, performs finite drains, and closes every resource exactly once.
+    - Preserve API queue/store fallback policy, core routes, parse/provider behavior, legacy `/health` meaning, and first logging action. Do not add frontend code.
+    - Test the capability matrix and every failure position with close-count fakes, environment mutation, safe diagnostics, publisher/effect identity, bounded shutdown, and no live services.
+    - Design properties: 3, 5, 7, 8, 9, 14, 19, 20.
+    - Focused one-shot validation: `python -m pytest tests/test_main_postgres_wiring.py tests/test_main_watch_wiring.py tests/test_watch_recovery_wiring.py tests/test_api.py tests/test_watch_api.py tests/test_lifecycle_ledger.py`.
+    - _Bug_Condition: `isBugCondition(input)` where API composition silently disables configured capabilities, publishes a partial graph, reparses settings, or wires inconsistent effect collaborators_
+    - _Expected_Behavior: `expectedBehavior(input, result)` atomically publishes one snapshot-consistent verified runtime and rolls back every configured failure_
+    - _Preservation: Supported standalone startup, Redis/memory and Celery/asyncio selection, core routes, live authority, legacy health, and independent backend deployment remain unchanged_
+    - _Requirements: 2.1, 2.2, 2.7, 2.9, 2.10, 2.12, 2.13, 2.16, 2.17, 2.18, 2.20, 3.5, 3.7, 3.10, 3.12, 3.13, 3.14_
+
+  - [ ] 3.22 Compose the same verified effects in workers and close Redis without runner dependence
+    - Affected files/components: `backend/workers/celery_app.py`, `backend/workers/tasks/monitor_watch.py`, shared process/history/effect runtime factories, lifecycle ledger, and worker tests.
+    - Create one import-time `WorkerBootstrap` from a frozen environment without connecting. Gate topology in the parent before consumer start; pass only a safe snapshot/topology generation to children and reject generation mismatch.
+    - In each child use the shared projection, delivery, migration, and repository factories. A task performs only synchronous effect offers/wakes around the existing serialized runner path; projection/notification failures never enter the recoverable retry tuple.
+    - Register projection runtime, notification runtime, Redis client, service, and runner independently. If Redis exists without the persistent runner, use a temporary finite cleanup runner solely to `aclose` Redis, then close it. Empty caches construct nothing; Celery and `atexit` signals remain repeated/concurrent no-ops after first close.
+    - Preserve exact result keys, original recoverable exception identity, `countdown=60`, `max_retries=3`, non-recoverable propagation, runner lock, optional imports, old one-argument jobs, and no per-task pool construction.
+    - Test every initialization subset, startup failure, task success/retry matrix, API/worker envelope/event parity, background consumer liveness, finite drain order, Redis-without-runner cleanup, and repeated signals.
+    - Design properties: 3, 7, 8, 9, 20.
+    - Focused one-shot validation: `python -m pytest tests/test_monitor_watch.py tests/test_task_queue.py tests/test_startup_snapshot.py tests/test_redis_topology.py tests/test_lifecycle_ledger.py`.
+    - _Bug_Condition: `isBugCondition(input)` where worker composition omits common effects/topology/snapshot guarantees or Redis cleanup incorrectly depends on runner initialization_
+    - _Expected_Behavior: `expectedBehavior(input, result)` composes the same verified ports in each worker child and independently closes every initialized resource exactly once_
+    - _Preservation: Exact sibling worker results/retries/tracebacks/runner serialization/optional imports, live decisions, and backend deployability remain unchanged_
+    - _Requirements: 2.1, 2.2, 2.10, 2.12, 2.16, 2.17, 2.18, 2.19, 2.20, 3.5, 3.6, 3.11, 3.12, 3.13, 3.14_
+
+  - [ ] 3.23 Add role-specific liveness/readiness and PostgreSQL deployment wiring
+    - Affected files/components: `backend/services/readiness.py`, API health routes in `backend/main.py`, new worker health evidence/probe module, `Dockerfile`, `infra/docker-compose.yml`, package metadata, and role-health/container tests.
+    - Preserve exact legacy `GET /health` keys, HTTP 200, top-level meaning, and vocabulary. Add API `/health/live` for process responsiveness and `/health/ready` returning 503 when a capability required by the startup snapshot is unknown/degraded/stale.
+    - Publish worker parent/child generation-bound health evidence atomically through owner-only directory/files with finite heartbeat age, safe fields, PID/start identity, broker/topology/history verification, child counts, and backlog state. Add a finite one-shot local probe with distinct live/ready modes; it must not contact API or dependencies.
+    - Keep the image API default if desired, but override compose healthchecks per role. Pass the same sanitized `POSTGRES_URL`/history settings to API and worker and depend on healthy PostgreSQL when the app profile configures durable history; preserve default infra-only Redis/PostgreSQL services, ports, volumes, and worker command.
+    - Test capability truth tables, exact legacy health snapshot, endpoint status matrix, fake evidence files/clocks/PIDs/generations/permissions, stale/malformed states, package commands, and static Docker/compose semantics without starting containers.
+    - Design properties: 9, 14, 19, 20, 21.
+    - Focused one-shot validation: `python -m pytest tests/test_role_health.py tests/test_readiness.py tests/test_history_readiness.py tests/test_container_assets.py tests/test_api.py`.
+    - _Bug_Condition: `isBugCondition(input)` where liveness implies readiness, workers use API-only HTTP health, or configured history roles lack PostgreSQL settings/dependency_
+    - _Expected_Behavior: `expectedBehavior(input, result)` exposes role-appropriate finite liveness/readiness and wires every configured history user to verified PostgreSQL_
+    - _Preservation: Exact legacy `/health`, same API/worker image and Celery command, default infra-only profile, existing service definitions, and standalone mode remain unchanged_
+    - _Requirements: 2.30, 2.31, 3.7, 3.10, 3.11, 3.12, 3.13_
+
+  - [ ] 3.24 Enforce deterministic exploration gates before any policy change
+    - Affected files/components: `tests/test_backend_exploration_gates.py`, deterministic admission/contention/notifier doubles, and gate result records only unless a separately approved requirement changes scope.
+    - Re-run task 1's bounded admission burst and record admitted concurrency/work, fake paid-call count, queue occupancy, and current responses. No authentication, rate limit, or 429 behavior may change without a reproducible counterexample and separately approved public outcome.
+    - Re-run forced cancellation contention through all bounded attempts, then perform a controlled authoritative read and classify missing, terminal, active contention, or corrupt. Keep 404 only for truly missing state; do not add 409/503 or change retry bounds without evidence and approval.
+    - Re-run notifier failure-point/idempotency matrices and record the transport guarantee selected by evidence. Generic throws remain `UNCERTAIN`; no automatic replay guarantee is inferred.
+    - If a gate contradicts the current design or requires a new public outcome, stop implementation and request requirements/design approval instead of changing production behavior. If no counterexample reproduces, retain current behavior and the regression gate.
+    - Include API/worker role-composition ordering, finite budgets, cache/global reset, and socket denial in every gate.
+    - Design properties: 16, 17, 20, 23.
+    - Focused one-shot validation: `python -m pytest tests/test_backend_exploration_gates.py tests/test_watch_owner_scoping.py tests/test_watch_api.py tests/test_monitor_watch.py tests/test_terminal_delivery.py`.
+    - _Bug_Condition: `isBugCondition(input)` where admission, CAS contention, or notifier guarantee remains an unclassified hypothesis_
+    - _Expected_Behavior: `expectedBehavior(input, result)` records deterministic evidence and permits behavior change only after a reproducible counterexample plus approved outcome_
+    - _Preservation: No-auth endpoints, opaque client scope, cancellation status mapping, worker retry bounds/classes, and successful delivery deduplication remain unchanged unless separately approved_
+    - _Requirements: 2.33, 3.11, 3.19, 3.20, 3.21_
+
+  - [ ] 3.25 Complete deterministic cross-module evidence and network denial
+    - Affected files/components: all focused `tests/test_*` files added above, `tests/conftest.py`, OpenAPI/package/container contract checks, and no production behavior beyond fixes already specified.
+    - Add an autouse opt-in socket/process denial fixture for this bugfix's focused suites; explicitly fail attempts to contact PostgreSQL, Redis, broker, API server, OpenAI, browser, or providers.
+    - Cover every traceability row for confirmed Requirements 1.1–1.32 using deterministic fakes, fake wall/monotonic clocks, barriers, bounded generated traces, direct API/model/task calls, exact Lua, and static artifacts. Emit seed/trace/failure phase/page cursor/lease/delivery sequence on failure.
+    - Run imported sibling suites unchanged and add assertions that no test is skipped merely because the new behavior is difficult to fake. Keep optional-worker skips only for environments intentionally lacking the worker extra.
+    - Check deterministic OpenAPI mutation rejection, wheel migration resources/identity, Docker/compose role wiring, no frontend Python import, and no `apps/web` implementation.
+    - Design properties: 5, 15, 20, 21.
+    - Focused one-shot validation: `python -m pytest tests/test_milestone_4_structure_bug_exploration.py tests/test_milestone_4_preservation_baseline.py tests/test_backend_exploration_gates.py tests/test_public_api_contract.py tests/test_container_assets.py`.
+    - _Bug_Condition: `isBugCondition(input)` where cross-module correctness is inferred only from line coverage or sequential happy paths_
+    - _Expected_Behavior: `expectedBehavior(input, result)` supplies deterministic failure-point, concurrency, boundedness, package, contract, and role evidence for every confirmed scenario_
+    - _Preservation: Existing tests remain enabled/unweakened, deterministic doubles stay injectable, and no live service or frontend implementation enters validation_
+    - _Requirements: 2.14, 2.32, 3.11, 3.12, 3.13, 3.14, 3.15, 3.21_
+
+  - [ ] 3.26 Verify the same complete-backend bug-condition property now passes
+    - **Property 1: Expected Behavior** - Complete Backend Correctness
+    - **IMPORTANT**: Re-run the SAME confirmed-scenario assertions, fixed seeds, bounds, and gate harnesses from task 1. Do not replace them with post-fix tests, remove counterexamples, relax budgets/timing, hide failures behind retries/skips, or reinterpret a non-reproduced hypothesis as approval.
+    - Confirm Properties 3–16: common non-blocking projection; owner/revision/reconciliation/pages; configured startup/migrations; recovery terminal effects; immutable snapshots/lifecycle; fail-closed topology; secret/privacy redaction; temporal/model/calendar parity; durable delivery; bounded scans/authority/wake/retention; migration identity; role health; complete evidence; and exploration-before-policy-change.
+    - Re-run task 1's immutable command verbatim: `python -m pytest tests/test_milestone_4_structure_bug_exploration.py tests/test_backend_exploration_gates.py`. **EXPECTED OUTCOME**: every confirmed task 1 assertion now PASSES; each exploration-only gate remains deterministic and preserves unapproved behavior.
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.10, 2.11, 2.12, 2.13, 2.14, 2.15, 2.16, 2.17, 2.18, 2.19, 2.20, 2.21, 2.22, 2.23, 2.24, 2.25, 2.26, 2.27, 2.28, 2.29, 2.30, 2.31, 2.32, 2.33_
+
+  - [ ] 3.27 Verify the same observation-first preservation property still passes
+    - **Property 2: Preservation** - Existing Public, Coordination, and Provider Behavior
+    - **IMPORTANT**: Re-run the SAME task 2 baselines without rewriting expectations after the fix. Only explicitly specified additive private metadata, owner-page/error contracts, and dedicated role health interfaces may differ.
+    - Confirm Properties 17–23: exact public/no-auth behavior; Milestone 3 authority and memory/Redis equivalence; standalone/CORS/owner/legacy health; worker and sibling hardening; independent HTTP-only frontend boundary; valid model/catalog/provider behavior; and successful terminal delivery deduplication.
+    - Re-run task 2's immutable command verbatim: `python -m pytest tests/test_milestone_4_preservation_baseline.py tests/test_api.py tests/test_watch_api.py tests/test_watch_service.py tests/test_watch_repository_state_machine.py tests/test_watch_repository_oracle.py tests/test_watch_policy.py tests/test_watch_runtime.py tests/test_watch_dispatcher.py tests/test_watch_recovery.py tests/test_watch_recovery_wiring.py tests/test_scheduler.py tests/test_monitor_watch.py tests/test_task_queue.py tests/test_config.py tests/test_cors.py tests/test_readiness.py tests/test_history_readiness.py tests/test_mock_booking.py tests/test_mock_booking_state.py tests/test_booking_service.py tests/test_providers.py tests/test_venues.py tests/test_logging_config.py tests/test_container_assets.py`. Then run every remaining existing Milestone 1–4 test without weakening assertions. **EXPECTED OUTCOME**: all task 2 and pre-existing preservation tests PASS.
+    - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.10, 3.11, 3.12, 3.13, 3.14, 3.15, 3.16, 3.17, 3.18, 3.19, 3.20, 3.21_
+
+- [ ] 4. Checkpoint - validate the complete expanded bugfix and review scope
+  - Re-run task 1's immutable exploration command verbatim: `python -m pytest tests/test_milestone_4_structure_bug_exploration.py tests/test_backend_exploration_gates.py`.
+  - Re-run task 2's immutable preservation command verbatim: `python -m pytest tests/test_milestone_4_preservation_baseline.py tests/test_api.py tests/test_watch_api.py tests/test_watch_service.py tests/test_watch_repository_state_machine.py tests/test_watch_repository_oracle.py tests/test_watch_policy.py tests/test_watch_runtime.py tests/test_watch_dispatcher.py tests/test_watch_recovery.py tests/test_watch_recovery_wiring.py tests/test_scheduler.py tests/test_monitor_watch.py tests/test_task_queue.py tests/test_config.py tests/test_cors.py tests/test_readiness.py tests/test_history_readiness.py tests/test_mock_booking.py tests/test_mock_booking_state.py tests/test_booking_service.py tests/test_providers.py tests/test_venues.py tests/test_logging_config.py tests/test_container_assets.py`.
+  - Run the application/model/history group in one shot: `python -m pytest tests/test_watch_history_application.py tests/test_watch_service_history_wiring.py tests/test_watch_history.py tests/test_owned_watch_query.py tests/test_watch_owner_scoping.py tests/test_public_api_contract.py tests/test_validator.py tests/test_watch_runtime.py tests/test_invariants.py tests/test_venues.py`.
+  - Run the authority/effects/boundedness group in one shot: `python -m pytest tests/test_watch_repository_state_machine.py tests/test_watch_repository_oracle.py tests/test_repository_bounded_scans.py tests/test_terminal_delivery.py tests/test_terminal_effects.py tests/test_notification_privacy.py tests/test_watch_recovery.py tests/test_recovery_authority.py tests/test_watch_dispatcher.py tests/test_retention_accounting.py tests/test_mock_booking_state.py`.
+  - Run the startup/role/package group in one shot: `python -m pytest tests/test_startup_snapshot.py tests/test_lifecycle_ledger.py tests/test_redis_topology.py tests/test_main_postgres_wiring.py tests/test_main_watch_wiring.py tests/test_monitor_watch.py tests/test_postgres_config.py tests/test_postgres_migrations.py tests/test_migration_identity.py tests/test_cors.py tests/test_role_health.py tests/test_container_assets.py tests/test_readiness.py tests/test_history_readiness.py`.
+  - Run the deterministic OpenAPI export/check and build/inspect the backend wheel without dependency downloads. Assert migration resources/checksums/schema/package identity and worker probe modules are present; no backend module imports frontend source; no `apps/web` implementation exists.
+  - Run the full suite once without watch mode or external services: `python -m pytest`. Fix any regression caused by this bugfix, re-run the smallest affected group, then repeat the full suite.
+  - Run `python -m mypy backend`, `python -m compileall backend tests`, and `git diff --check`. Resolve diagnostics rather than suppressing them or broadening ignores.
+  - Review `git status --short` and the focused diff. Confirm sibling specs were imported rather than reimplemented; `0001_watch_history.sql` and public `Watch`/enums were not rewritten; PostgreSQL/notifiers never entered live decisions; no secret/reservation sentinel is observable; every scan/drain/cleanup has a finite bound; no live service/watcher/frontend was added; and exploration-only hypotheses caused no unapproved behavior change.
+  - Mark this checkpoint complete only when tasks 3.26 and 3.27 pass unchanged, every design Property 1–23 and requirement 2.1–2.33/3.1–3.21 has direct deterministic evidence, role/package/contract checks pass, and every initialized resource closes exactly once within its deadline. Ask the user if questions arise.
+  - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.10, 2.11, 2.12, 2.13, 2.14, 2.15, 2.16, 2.17, 2.18, 2.19, 2.20, 2.21, 2.22, 2.23, 2.24, 2.25, 2.26, 2.27, 2.28, 2.29, 2.30, 2.31, 2.32, 2.33, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.10, 3.11, 3.12, 3.13, 3.14, 3.15, 3.16, 3.17, 3.18, 3.19, 3.20, 3.21_
+
+## Notes
+
+- Preserve the test-first red/fix-check discipline: record pre-fix bug-condition failures, then rerun the same exploration tests unchanged as the fix check.
+- Keep the observation-first preservation baseline immutable and rerun it unchanged after the fix.
+- Use deterministic validation only; do not contact or start live services.
+- Import sibling-spec guarantees from their owning specs rather than duplicating or redefining them.
+- Do not implement frontend code.
+- Exploration gates must not change public behavior unless reproducible evidence supports the change and the resulting outcome is separately approved.
