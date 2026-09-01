@@ -1,0 +1,30 @@
+# dependencies
+/node_modules
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# testing
+/coverage
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files
+.env*.local
+# ...but keep the committable template (the repo-root .gitignore's broad
+# `.env.*` would otherwise swallow it; a deeper .gitignore wins).
+!.env.local.example
+
+# typescript
+*.tsbuildinfo

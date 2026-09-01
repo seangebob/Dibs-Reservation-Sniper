@@ -94,10 +94,21 @@
   - _Preservation: every existing `/health` field and the top-level `status` meaning unchanged_
   - _Requirements: 6.4_
 
-- [ ] 8. Scaffold the Next.js app in `apps/web`
+- [x] 8. Scaffold the Next.js app in `apps/web`
   - Standard Next.js app-router project; `lib/client-id.ts` (generate/persist an opaque id in
     `localStorage` on first load); `lib/api.ts` (typed fetch wrapper that always attaches
     `X-Dibs-Client-Id` and normalizes non-2xx responses into `{ ok: false, message }`).
+  - **Design first:** published a warm-editorial visual direction (prompt page, watch dashboard,
+    result-states sheet) as a design canvas before writing pixels; the visual direction only lands
+    in code at Tasks 9–10, so this task's scaffold presumes no approval.
+  - **Built:** Next.js 15.5.25 (App Router, React 19, TS strict) under `apps/web/`. `lib/client-id.ts`
+    (SSR-safe, `crypto.randomUUID`, session-cached, private-mode fallback), `lib/api.ts`
+    (`apiFetch` → discriminated `ApiResult`, reads the backend's `{detail}` error shape, typed
+    `parseAndBook`/`listMyWatches`/`cancelWatch`/`createWatch` wrappers), `types/api.ts`
+    (hand-mirrored backend contracts). Vitest + jsdom; 14 unit tests. `.env.local.example` for
+    `NEXT_PUBLIC_API_BASE_URL`.
+  - **Local run verified:** `npm install` → `typecheck` → `test` (14 pass) → `build` (4 routes
+    prerender), all green on Node 24. Build artifacts (`node_modules`, `.next`) gitignored.
   - _Requirements: 2.1, 2.2_
 
 - [ ] 9. Build the prompt page
