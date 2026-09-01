@@ -34,8 +34,8 @@ tests
 
 # Spec / planning artifacts not needed at runtime
 .kiro
-semantic-review
-structure + deadlines
+docs
+misc
 README.md
 
 # Local service data (Redis / Postgres) and infra compose state
