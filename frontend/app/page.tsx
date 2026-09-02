@@ -7,8 +7,9 @@
  * console's logic ships to the browser.
  */
 
+import { Masthead } from "./_components/Masthead";
 import { PromptConsole } from "./_components/PromptConsole";
-import { ScopeBackdrop, ScopeMark } from "./_components/Scope";
+import { ScopeBackdrop } from "./_components/Scope";
 
 export default function Home() {
   return (
@@ -16,19 +17,7 @@ export default function Home() {
       <ScopeBackdrop />
 
       <div className="layer">
-        <header className="masthead">
-          <div className="brand">
-            <ScopeMark />
-            <span className="brand-name">DIBS</span>
-            <span className="brand-tag">a reservation sniper</span>
-          </div>
-          <nav className="nav">
-            <a href="/" aria-current="page">
-              NEW WATCH
-            </a>
-            <a href="/watches">YOUR WATCHES</a>
-          </nav>
-        </header>
+        <Masthead current="new" />
 
         <section className="hero">
           <div className="eyebrow">

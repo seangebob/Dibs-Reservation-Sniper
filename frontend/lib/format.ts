@@ -93,3 +93,24 @@ export function formatTimeBand(
   }
   return formatClock(preferred);
 }
+
+/**
+ * A short countdown to an ISO timestamp: "due now", "in 4 min", "in 2 h",
+ * "in 3 d". Returns null for a missing or unparseable value. `now` is
+ * injectable (defaults to the wall clock) so the result is deterministic under
+ * test and can be driven by a ticking state value on the dashboard.
+ */
+export function formatCountdown(
+  iso: string | null,
+  now: number = Date.now(),
+): string | null {
+  if (!iso) return null;
+  const target = new Date(iso).getTime();
+  if (Number.isNaN(target)) return null;
+  const minutes = Math.round((target - now) / 60_000);
+  if (minutes <= 0) return "due now";
+  if (minutes < 60) return `in ${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `in ${hours} h`;
+  return `in ${Math.round(hours / 24)} d`;
+}

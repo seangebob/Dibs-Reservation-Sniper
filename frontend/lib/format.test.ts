@@ -4,6 +4,7 @@ import {
   formatDate,
   formatClock,
   formatTimeBand,
+  formatCountdown,
 } from "./format";
 import type { ReservationIntent } from "@/types/api";
 
@@ -82,5 +83,25 @@ describe("formatTimeBand", () => {
 
   it("is null when neither is present", () => {
     expect(formatTimeBand(null, null)).toBeNull();
+  });
+});
+
+describe("formatCountdown", () => {
+  const now = Date.parse("2026-09-05T18:00:00Z");
+
+  it("counts minutes, then hours, then days", () => {
+    expect(formatCountdown("2026-09-05T18:03:00Z", now)).toBe("in 3 min");
+    expect(formatCountdown("2026-09-05T20:00:00Z", now)).toBe("in 2 h");
+    expect(formatCountdown("2026-09-07T18:00:00Z", now)).toBe("in 2 d");
+  });
+
+  it("says 'due now' for an elapsed or current time", () => {
+    expect(formatCountdown("2026-09-05T18:00:00Z", now)).toBe("due now");
+    expect(formatCountdown("2026-09-05T17:58:00Z", now)).toBe("due now");
+  });
+
+  it("returns null for a missing or unparseable value", () => {
+    expect(formatCountdown(null, now)).toBeNull();
+    expect(formatCountdown("not-a-date", now)).toBeNull();
   });
 });

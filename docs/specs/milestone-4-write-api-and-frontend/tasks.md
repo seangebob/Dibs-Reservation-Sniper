@@ -131,11 +131,28 @@
     where Testing Library is added.
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7_
 
-- [ ] 10. Build the watch dashboard page
+- [x] 10. Build the watch dashboard page
   - List owned watches (most recent first) with venue/party/date/status/attempts; show next-check
     time and a cancel action for `ACTIVE` watches; visually distinguish `FOUND`/`BOOKED` from
     `ACTIVE`; empty state linking back to the prompt page.
   - Cancel action calls `DELETE /api/watches/{watch_id}` and updates local state without a reload.
+  - **Built (Night Scope):** `app/watches/page.tsx` is a server-rendered shell (masthead, heading,
+    scope furniture) wrapping one client island, `_components/WatchDashboard.tsx`, which loads the
+    calling client's own watches via `listMyWatches()` on mount and owns the
+    `loading → error | empty | list` states. It sorts most-recent-first, cancels in place via
+    `cancelWatch()` (replacing the row with the resolved terminal `Watch`, no refetch — Req 4.5),
+    surfaces a cancel failure as a banner, and ticks an injected `now` clock every 30s so the "next
+    check in …" countdowns stay honest. `_components/WatchCard.tsx` is a pure per-watch renderer: a
+    colour rail + status pill make ACTIVE/FOUND/BOOKED/EXPIRED/CANCELLED scannable (Req 4.3), with
+    attempts `n / max`, next-check countdown + `CANCEL WATCH` for ACTIVE only, and a booking id for
+    BOOKED. The masthead was extracted to `_components/Masthead.tsx` (shared with the prompt page)
+    so the nav stays in sync; `/watches` now exists, clearing the prompt page's previously-dead
+    links. `lib/format.ts` gained `formatCountdown()` (injectable `now`, deterministic under test).
+  - **Validation:** `typecheck` clean, `vitest` 26 pass (+3 `formatCountdown` cases), `next build`
+    green (`/watches` prerenders static, 3.14 kB). Live: `/api/watches/mine` → `[]` empty-state
+    path, `DELETE` returns a full renderable `Watch` (200) and a 404 `{detail}` for an unknown id
+    (drives the cancel banner), all with CORS. Full-list + cancel render behind a live Postgres
+    history projection (`POSTGRES_URL`); component-render tests remain deferred to Task 12.
   - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5_
 
 - [ ] 11. Add the optional `web` compose service and document deployment
