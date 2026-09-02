@@ -1,10 +1,12 @@
-# Local infrastructure for Milestone 3.
+# Local infrastructure for Dibs.
 #
-#   docker compose -f infra/docker-compose.yml up -d
+#   docker compose -f infra/docker-compose.yml up -d          # redis + postgres only
+#   docker compose -f infra/docker-compose.yml --profile app up --build   # full stack
 #
-# Redis is both the Celery broker and the watch store. PostgreSQL is here now
-# so Milestone 4 has somewhere to persist user-owned reservations; nothing in
-# the backend connects to it yet.
+# Redis is both the Celery broker and the watch store. PostgreSQL backs the
+# Milestone 4 durable watch-history projection the /watches dashboard reads.
+# The api / worker / web application services live behind the "app" profile, so
+# the default (no-profile) `up` is byte-identical to before Milestone 4.
 
 services:
   redis:
@@ -52,8 +54,21 @@ services:
       - "8000:8000"
     environment:
       REDIS_URL: redis://redis:6379/0
+      # Durable owner-scoped watch-history projection (Milestone 4). Optional in
+      # code; wired to the compose Postgres so the /watches dashboard has data.
+      POSTGRES_URL: postgresql://dibs:dibs@postgres:5432/dibs
+      # Origins allowed to call this API cross-origin from a browser. Defaults to
+      # the web service's published origin; override to add a deployed origin.
+      FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://localhost:3000}
+      # Passed through from the host shell / root .env. Required for prompt
+      # parsing; if unset, parse-and-book returns 503 but the service still boots.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      RESERVATION_TIMEZONE: ${RESERVATION_TIMEZONE:-America/Toronto}
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
 
   worker:
@@ -65,8 +80,31 @@ services:
     command: celery -A backend.workers.celery_app worker --loglevel=info
     environment:
       REDIS_URL: redis://redis:6379/0
+      # Same projection so background poll outcomes are recorded to history too.
+      POSTGRES_URL: postgresql://dibs:dibs@postgres:5432/dibs
+      RESERVATION_TIMEZONE: ${RESERVATION_TIMEZONE:-America/Toronto}
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  # Browser frontend (Milestone 4). Also app-profiled, so the default
+  # `docker compose up` still starts ONLY redis + postgres.
+  web:
+    profiles: ["app"]
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        # Baked into the browser bundle at build time. The browser calls the API
+        # directly, so this is the api's HOST-published URL, not http://api:8000.
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+    container_name: dibs-web
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
         condition: service_healthy
 
 volumes:

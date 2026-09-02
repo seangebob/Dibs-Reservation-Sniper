@@ -506,6 +506,69 @@ this component. Deploy in this order:
 Rollback follows the same order: stop workers first, then roll back the
 image, then let recovery run again before workers resume.
 
+## Milestone 4: Write API + browser frontend
+
+Milestone 4 adds a Next.js frontend (`frontend/`) and the seams it needs: a
+durable, owner-scoped watch-history projection in PostgreSQL, browser CORS, and
+an anonymous client identity. There is **no authentication** — a visitor's
+browser generates an opaque `X-Dibs-Client-Id` token, persists it in
+`localStorage`, and sends it so the API can answer "which watches are mine."
+
+### New configuration
+
+| Variable | Where | Purpose |
+| --- | --- | --- |
+| `POSTGRES_URL` | backend | Enables the durable watch-history projection. **Optional** — unset, the backend runs exactly as before and `/api/watches/mine` returns `[]`. A set-but-malformed value fails startup with `ConfigurationError`. |
+| `FRONTEND_ORIGINS` | backend | Comma-separated browser origins allowed to call the API cross-origin (e.g. `http://localhost:3000`). **Optional** — unset, zero CORS headers are sent (byte-identical to Milestone 3). A browser frontend on another origin cannot call the API until this is set. |
+| `NEXT_PUBLIC_API_BASE_URL` | frontend | Base URL of the backend, **inlined into the client bundle at build time**. The browser calls the API directly, so it must be reachable from the visitor's machine (`http://localhost:8000`), never a docker-internal host. Defaults to `http://localhost:8000`. |
+
+**Migrations run at startup.** When `POSTGRES_URL` is set and reachable, the
+backend applies any pending ordered `.sql` migrations (tracked in a
+`schema_migrations` table) once during startup, before serving requests. A
+PostgreSQL outage never blocks a watch operation — history recording is a
+passive observer, and its last outcome is reported additively on `/health` as
+`history_readiness`.
+
+### Running frontend + backend together (PowerShell)
+
+Each of these is a long-running process — run them in **separate** terminals and
+leave them open.
+
+```powershell
+# 1. Infrastructure (Redis + PostgreSQL), detached:
+docker compose -f infra/docker-compose.yml up -d
+
+# 2. Backend API (leave running):
+$env:OPENAI_API_KEY = "your-api-key"
+$env:POSTGRES_URL = "postgresql://dibs:dibs@localhost:5432/dibs"
+$env:FRONTEND_ORIGINS = "http://localhost:3000"
+.\.venv\Scripts\python.exe -m uvicorn backend.main:app --reload
+
+# 3. Frontend (separate terminal, leave running):
+cd frontend
+npm install            # first run only
+npm run dev            # http://localhost:3000
+```
+
+### Optional: the whole stack in Docker
+
+The `app` compose profile adds `api`, `worker`, and `web` (Next.js) on top of
+Redis and PostgreSQL. The default no-profile `up` still starts **only** Redis +
+PostgreSQL:
+
+```powershell
+# Pass your OpenAI key through to the api container, then bring up all services:
+$env:OPENAI_API_KEY = "your-api-key"
+docker compose -f infra/docker-compose.yml --profile app up --build
+# web → http://localhost:3000   api → http://localhost:8000
+```
+
+The api/worker containers reach PostgreSQL over the compose network; the `web`
+image bakes `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000` so the browser
+reaches the api's host-published port. Set `OPENAI_API_KEY` in the shell before
+`up` (compose passes it through) — without it the service still boots, but
+prompt parsing returns 503.
+
 ---
 
 FULL SYSTEM DESIGN FOR DIBS:

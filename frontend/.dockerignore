@@ -1,0 +1,25 @@
+# Keep the build context small and never overwrite the image's fresh install.
+node_modules
+.next
+out
+
+# Version control / tooling
+.git
+.gitignore
+
+# Local env (secrets); NEXT_PUBLIC_API_BASE_URL is passed as a build arg
+.env
+.env*.local
+
+# Build/test artifacts and logs
+coverage
+*.tsbuildinfo
+npm-debug.log*
+
+# The image builds itself; no need to copy these in
+Dockerfile
+.dockerignore
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db

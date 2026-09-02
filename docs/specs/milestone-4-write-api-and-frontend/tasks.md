@@ -155,17 +155,34 @@
     history projection (`POSTGRES_URL`); component-render tests remain deferred to Task 12.
   - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5_
 
-- [ ] 11. Add the optional `web` compose service and document deployment
+- [x] 11. Add the optional `web` compose service and document deployment
   - Extend `infra/docker-compose.yml`'s `app` profile with a `web` service built from
     `apps/web`, reading the compose-network API URL; existing `redis`/`postgres`/`api`/`worker`
     service definitions, ports, images, and health checks untouched (static test compares them).
   - Update `README.md` with the new `PostgreSQL`/`FRONTEND_ORIGINS` settings, the migration-at-
     startup behavior, and how to run frontend + backend together locally (PowerShell-friendly, both
     commands marked as manual long-running processes).
-  - _Bug_Condition: no documented or optional path exists to run frontend + backend + Postgres
-    together_
-  - _Expected_Behavior: `docker compose --profile app up` optionally brings up all four services;
-    the default (no profile) compose flow is byte-identical to before this milestone_
+  - **Built:** added an app-profiled `web` service to `infra/docker-compose.yml` built from
+    `../frontend` (the source moved from `apps/web` in the repo reorg), a multi-stage
+    `frontend/Dockerfile` (Next.js `output: "standalone"`, non-root, healthcheck) + `.dockerignore`,
+    and `output: "standalone"` in `next.config.mjs`. README gained a **Milestone 4** section:
+    the `POSTGRES_URL` / `FRONTEND_ORIGINS` / `NEXT_PUBLIC_API_BASE_URL` settings table,
+    migration-at-startup behavior, and separate-terminal PowerShell run steps for
+    frontend + backend, plus the full-stack `--profile app up` path.
+  - **Scope corrections found during implementation:** (1) the task's "reading the compose-network
+    API URL" is wrong for a browser bundle — `NEXT_PUBLIC_API_BASE_URL` is inlined at build time and
+    the *browser* calls the API, so `web` bakes the api's **host-published** URL
+    (`http://localhost:8000`), never `http://api:8000`. (2) A `web` frontend that cannot reach `api`
+    would be incoherent, so `FRONTEND_ORIGINS` (CORS), `POSTGRES_URL` (dashboard data), and an
+    `OPENAI_API_KEY`/`OPENAI_MODEL`/`RESERVATION_TIMEZONE` passthrough were added **additively** to
+    the `api`/`worker` `environment` (and `postgres` to their `depends_on`). This does not touch what
+    the static test pins — images, ports, health checks, `profiles: [app]`, and the worker command —
+    all still assert green.
+  - **Validation:** `next build` green with standalone `server.js` emitted; `tests/test_container_
+    assets.py` passes (compose contract preserved); compose YAML parses and the default no-profile
+    `up` still starts only redis + postgres. Docker image build/run not executed here (no Docker
+    daemon on PATH), but the build steps (`npm ci` + `npm run build`) and standalone layout are
+    verified locally.
   - _Requirements: 5.2, 5.3_
 
 - [ ] 12. Full validation
