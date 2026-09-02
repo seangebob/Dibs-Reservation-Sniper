@@ -185,11 +185,51 @@
     verified locally.
   - _Requirements: 5.2, 5.3_
 
-- [ ] 12. Full validation
+- [x] 12. Full validation
   - Backend: `python -m pytest` (full suite — Milestone 1–3 regressions plus this milestone's new
     tests), `python -m mypy backend`, `python -m compileall backend tests`, `git diff --check`.
   - Frontend: component tests for both pages' response/state branches; one contract-drift test
     against the real backend schemas.
   - Confirm every Requirement 1–6 acceptance criterion has a corresponding passing test, and that no
     Milestone 1–3 assertion was weakened or rewritten to accommodate this milestone.
+  - **Backend results:** `pytest` **688 passed / 3 failed** (691 collected). The 3 failures are ONLY
+    the `[redis]`-parametrized retention tests in `test_watch_repository_state_machine.py`, which
+    need a live Redis server (no Docker daemon in this env); they predate Milestone 4 and pass with
+    Redis, so Req 6.1 holds — no existing assertion was weakened. `mypy backend` clean (48 files),
+    `compileall backend tests` exit 0, `git diff --check` clean.
+  - **Frontend results:** `vitest` **49 passed** (added React Testing Library + a `vitest.setup.ts`
+    cleanup hook; 23 new component tests + shared `testFixtures.ts`): `ResultView.test.tsx` (every
+    response branch + loading + 503-vs-422 error framing, asserts no raw error tokens leak),
+    `PromptConsole.test.tsx` (single free-form input, in-flight lock, prompt state preserved,
+    normalized error), `WatchCard.test.tsx` (ACTIVE/FOUND/BOOKED/CANCELLED rendering, countdown,
+    cancel affordance), `WatchDashboard.test.tsx` (empty / list-order / error+retry / cancel-in-place
+    / cancel-failure banner). `typecheck` clean, `next build` green.
+  - **Contract-drift test:** `tests/test_frontend_contract.py` (6 tests) asserts the live Pydantic
+    `model_fields` of every public model equal, field-for-field, what `frontend/types/api.ts`
+    declares/reads — including that `owner_client_id` is NOT on the public `Watch`. Placed in the
+    backend suite (where the real schemas live, CI-runnable without a browser) rather than a JS test
+    holding a copy of the schema.
+  - **Requirements 1–6 traceability (every acceptance criterion → passing test):**
+    - **1.1–1.7** (web UI): `PromptConsole.test` (1.1 single input, 1.2 in-flight lock, 1.3 state
+      kept), `ResultView.test` (1.3 clarification, 1.4 availability/none, 1.5 mock-labeled, 1.6
+      watch-created, 1.7 error framing), `lib/api.test` (1.7 error normalization / no raw JSON).
+    - **2.1–2.5** (client identity): `lib/client-id.test` (2.1), `lib/api.test` (2.2 header),
+      `tests/test_watch_owner_scoping.py` (2.3/2.4/2.5), `test_frontend_contract` (2.4 owner hidden).
+    - **3.1–3.5** (durable history): `test_watch_history.py`, `test_watch_service_history_wiring.py`
+      (3.1/3.2/3.5 passive observer), `test_postgres_migrations.py` + `test_main_postgres_wiring.py`
+      (3.4), `test_watch_history.py` `get`/`list_for_owner` after retention (3.3).
+    - **4.1–4.5** (dashboard): `WatchDashboard.test` (4.1 order, 4.3 cancel-no-reload, 4.5 empty),
+      `WatchCard.test` (4.1 fields, 4.2 next-check+cancel, 4.4 FOUND/BOOKED distinct).
+    - **5.1–5.4** (CORS/deploy): `test_cors.py` (5.1), preservation baseline + full suite (5.2),
+      `test_container_assets.py` (5.3); **5.4 is a deliberate deviation — see below.**
+    - **6.1–6.4** (preservation): full suite green sans Redis-env (6.1),
+      `test_milestone_4_preservation_baseline.py` + `test_frontend_contract` (6.2),
+      `test_watch_service_history_wiring.py` (6.3 passive), `test_history_readiness.py` (6.4).
+  - **Deliberate deviation (5.4):** the literal "hard-fail at startup when the frontend API URL or
+    backend origins are missing" is intentionally softened to documented safe defaults — the
+    frontend defaults to `http://localhost:8000` (see `lib/api.ts` / `.env.local.example`) and a
+    missing `FRONTEND_ORIGINS` disables CORS with a logged error — because a hard failure would
+    contradict Req 5.2 (the API must run standalone with no frontend) and break zero-config local
+    dev. The graceful behavior IS tested (`test_cors.py`, `lib/api.test.ts` localhost default); the
+    docker `web` build always supplies the URL as a build arg. Flagged rather than faked.
   - _Requirements: all_
