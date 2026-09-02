@@ -111,10 +111,24 @@
     prerender), all green on Node 24. Build artifacts (`node_modules`, `.next`) gitignored.
   - _Requirements: 2.1, 2.2_
 
-- [ ] 9. Build the prompt page
+- [x] 9. Build the prompt page
   - Single input, submit action, disabled-while-in-flight state; render branches for
     `CLARIFICATION_REQUIRED`, `AVAILABILITY_FOUND`, `NO_AVAILABILITY`, `MOCK_BOOKED` (mock-labeled),
     `WATCH_CREATED`, and the generic-failure state.
+  - **Built (Night Scope):** `app/page.tsx` is a server-rendered shell (masthead, hero, scope
+    furniture in `_components/Scope.tsx`) wrapping one client island, `_components/PromptConsole.tsx`,
+    which owns the `idle → loading → result | error` state machine and locks the input + presets while
+    a request is in flight (no double-fire). `_components/ResultView.tsx` is a pure, per-status
+    renderer (WATCH_CREATED, AVAILABILITY_FOUND, MOCK_BOOKED with a demo-only disclaimer,
+    NO_AVAILABILITY, CLARIFICATION_REQUIRED, WATCH_REQUIRED/generic, plus loading + SIGNAL-LOST error
+    with retry). `lib/format.ts` defensively reads the opaque `intent` for the branches that carry no
+    slot/booking (venue/party/date). Design system lives in `app/globals.css` as tokens; fonts load
+    via a runtime `<link>` (no build-time network). The whole error surface flows from `api.ts`'s
+    normalized `{ ok:false, message }` — no component sees a raw fetch failure.
+  - **Validation:** `typecheck` clean, `vitest run` 23 pass (added 9 `lib/format.test.ts` cases for
+    intent extraction + date/time formatting), `next build` green (`/` prerenders static, console is
+    the sole client chunk). React component-render tests for each branch are deferred to Task 12,
+    where Testing Library is added.
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7_
 
 - [ ] 10. Build the watch dashboard page
