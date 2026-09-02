@@ -1,11 +1,15 @@
 """LLM provider boundary and OpenAI structured-output implementation."""
 
+import logging
 from datetime import datetime
 from typing import Any, Protocol
 
-from openai import AsyncOpenAI, OpenAIError
+from openai import AsyncOpenAI, OpenAIError, RateLimitError
 
 from backend.orchestrator.schemas import ReservationExtraction
+
+
+logger = logging.getLogger(__name__)
 
 
 SYSTEM_PROMPT = """You are the intent extraction component for Dibs, a reservation service for restaurants, cafes, and recreational venues in the Kitchener-Waterloo-Cambridge area.
@@ -29,6 +33,18 @@ Extraction rules:
 
 class ProviderError(RuntimeError):
     """Raised when a provider cannot return a valid structured extraction."""
+
+
+class ProviderUnavailableError(ProviderError):
+    """Raised when the provider is reachable and authenticated but refusing work.
+
+    Covers HTTP 429 -- both ordinary rate limiting and quota/credit exhaustion.
+    The request was well-formed and the key is valid; the provider simply will
+    not serve it right now. It subclasses `ProviderError` so existing handling
+    still applies, but the API maps it to 503 (a transient, retryable
+    condition) rather than 502, and the caller-facing message stays free of
+    billing detail while the real reason is logged for the operator.
+    """
 
 
 class IntentProvider(Protocol):
@@ -78,6 +94,16 @@ class OpenAIIntentProvider:
                 input=[{"role": "user", "content": prompt}],
                 text_format=ReservationExtraction,
             )
+        except RateLimitError as exc:
+            # 429: rate limited or out of credits. Checked before OpenAIError
+            # (its superclass) so it maps to 503 rather than a generic 502.
+            # Log the specifics for the operator; keep billing detail out of the
+            # caller-facing message.
+            logger.warning("OpenAI request throttled or out of quota (429): %s", exc)
+            raise ProviderUnavailableError(
+                "The reservation assistant is temporarily unavailable. "
+                "Please try again in a little while."
+            ) from exc
         except OpenAIError as exc:
             raise ProviderError("The language model provider request failed") from exc
         except ValueError as exc:

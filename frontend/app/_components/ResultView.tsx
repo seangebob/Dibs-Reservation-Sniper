@@ -21,7 +21,7 @@ export type ConsoleState =
   | { phase: "idle" }
   | { phase: "loading" }
   | { phase: "result"; result: PromptExecutionResult }
-  | { phase: "error"; message: string };
+  | { phase: "error"; message: string; status?: number };
 
 type Tone = "amber" | "green" | "muted" | "red";
 
@@ -49,7 +49,13 @@ export function ResultView({
   }
 
   if (state.phase === "error") {
-    return <ErrorCard message={state.message} onRetry={onRetry} />;
+    return (
+      <ErrorCard
+        message={state.message}
+        status={state.status}
+        onRetry={onRetry}
+      />
+    );
   }
 
   return <ResultCard result={state.result} />;
@@ -271,19 +277,29 @@ function GenericInfo({ result }: { result: PromptExecutionResult }) {
 
 function ErrorCard({
   message,
+  status,
   onRetry,
 }: {
   message: string;
+  status?: number;
   onRetry: () => void;
 }) {
+  // A dropped connection (no status), a 502, or a 503 (the model rate-limited
+  // or out of credits) all mean "the spotter is offline for a moment" —
+  // transient and worth retrying — rather than a rejected request. The backend
+  // already sends the human-readable reason as `message`; this only frames it.
+  const serviceDown =
+    status === undefined || status === 502 || status === 503;
   return (
     <Card tone="red" live>
       <div className="kicker" data-tone="red">
-        SIGNAL LOST
+        {serviceDown ? "SIGNAL LOST" : "NO SHOT"}
       </div>
       <div className="result-title sm">{message}</div>
       <div className="result-text">
-        No watch was created. Give it another shot in a moment.
+        {serviceDown
+          ? "The spotter dropped the feed — no watch was created. Your prompt is still loaded; take the shot again in a moment."
+          : "No watch was created. Adjust the prompt and try again."}
       </div>
       <div style={{ marginTop: 18 }}>
         <button type="button" className="result-link" onClick={onRetry}>

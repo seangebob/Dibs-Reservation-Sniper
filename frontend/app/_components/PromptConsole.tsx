@@ -34,7 +34,7 @@ export function PromptConsole() {
     if (result.ok) {
       setState({ phase: "result", result: result.data });
     } else {
-      setState({ phase: "error", message: result.message });
+      setState({ phase: "error", message: result.message, status: result.status });
     }
   }
 

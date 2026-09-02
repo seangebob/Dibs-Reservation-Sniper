@@ -56,7 +56,7 @@ from backend.integrations.mock_booking import MockBookingAdapter
 from backend.logging_config import configure_application_logging
 from backend.models.reservation import PromptExecutionResult
 from backend.orchestrator.engine import OrchestratorEngine
-from backend.orchestrator.providers import ProviderError
+from backend.orchestrator.providers import ProviderError, ProviderUnavailableError
 from backend.orchestrator.router import PromptRouter
 from backend.orchestrator.schemas import ParseRequest, ReservationIntent
 from backend.services.booking_service import BookingService
@@ -544,6 +544,20 @@ def create_app() -> FastAPI:
         _request: Request,
         exc: ConfigurationError,
     ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"detail": str(exc)},
+        )
+
+    @app.exception_handler(ProviderUnavailableError)
+    async def provider_unavailable_handler(
+        _request: Request,
+        exc: ProviderUnavailableError,
+    ) -> JSONResponse:
+        # A 429 from the model (rate limit or exhausted credits) is transient
+        # and retryable, so it surfaces as 503 -- distinct from the 502 a
+        # genuine provider failure returns. Starlette dispatches to this more
+        # specific handler before the ProviderError one below.
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={"detail": str(exc)},

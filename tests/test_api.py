@@ -20,7 +20,7 @@ from backend.main import (
     get_watch_service,
 )
 from backend.orchestrator.engine import OrchestratorEngine
-from backend.orchestrator.providers import ProviderError
+from backend.orchestrator.providers import ProviderError, ProviderUnavailableError
 from backend.orchestrator.schemas import (
     IntentAction,
     IntentStatus,
@@ -409,6 +409,28 @@ def test_language_model_failure_maps_to_502() -> None:
 
     assert response.status_code == 502
     assert "provider request failed" in response.json()["detail"]
+
+
+def test_language_model_rate_limit_maps_to_503() -> None:
+    class ThrottledEngine:
+        async def parse(self, prompt: str) -> ReservationIntent:
+            raise ProviderUnavailableError(
+                "The reservation assistant is temporarily unavailable. "
+                "Please try again in a little while."
+            )
+
+    override(ThrottledEngine())
+
+    try:
+        response = TestClient(app).post(
+            "/api/parse-and-book",
+            json={"prompt": "Book Cote for four on Saturday at 7 pm"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 503
+    assert "temporarily unavailable" in response.json()["detail"]
 
 
 def test_missing_api_key_is_reported_as_503_with_a_clear_message(

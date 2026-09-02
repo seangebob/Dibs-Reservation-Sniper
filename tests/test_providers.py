@@ -3,12 +3,14 @@ from datetime import datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from openai import OpenAIError
+import httpx
+from openai import OpenAIError, RateLimitError
 import pytest
 
 from backend.orchestrator.providers import (
     OpenAIIntentProvider,
     ProviderError,
+    ProviderUnavailableError,
     SYSTEM_PROMPT,
 )
 from backend.orchestrator.schemas import (
@@ -86,6 +88,30 @@ def test_provider_normalizes_openai_errors() -> None:
     provider = OpenAIIntentProvider(model="test-model", client=FakeClient(responses))
 
     with pytest.raises(ProviderError, match="provider request failed"):
+        asyncio.run(
+            provider.extract(
+                "Cote for four Saturday at 7",
+                datetime(2026, 8, 18, tzinfo=ZoneInfo("America/Toronto")),
+            )
+        )
+
+
+def test_provider_maps_rate_limit_and_quota_to_unavailable() -> None:
+    # A 429 (rate limit or exhausted credits) is reachable-but-refused, so it
+    # raises the ProviderUnavailableError the API maps to 503, not the generic
+    # 502 ProviderError. The caller-facing message carries no billing detail.
+    request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+    rate_limited = RateLimitError(
+        "no credits remaining",
+        response=httpx.Response(429, request=request),
+        body=None,
+    )
+    provider = OpenAIIntentProvider(
+        model="test-model",
+        client=FakeClient(FakeResponses(error=rate_limited)),
+    )
+
+    with pytest.raises(ProviderUnavailableError, match="temporarily unavailable"):
         asyncio.run(
             provider.extract(
                 "Cote for four Saturday at 7",
