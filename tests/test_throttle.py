@@ -16,8 +16,8 @@ from fastapi.testclient import TestClient
 from backend.main import create_app, get_auth_service
 from backend.models.account import User
 from backend.services.auth_service import InvalidCredentialsError
-from backend.services.login_throttle import (
-    LoginThrottle,
+from backend.services.throttle import (
+    SlidingWindowThrottle,
     TooManyLoginAttemptsError,
     throttle_key,
 )
@@ -39,8 +39,11 @@ class _Clock:
 
 
 def _throttle(clock: _Clock, *, max_attempts: int = 3, window: int = 300):
-    return LoginThrottle(
-        max_attempts=max_attempts, window_seconds=window, clock=clock
+    return SlidingWindowThrottle(
+        max_events=max_attempts,
+        window_seconds=window,
+        on_limit=TooManyLoginAttemptsError,
+        clock=clock,
     )
 
 
@@ -52,7 +55,7 @@ def test_failures_below_the_threshold_are_allowed() -> None:
     throttle = _throttle(clock)
 
     for _ in range(2):
-        throttle.record_failure("k")
+        throttle.record("k")
     throttle.check("k")  # 2 of 3: still fine
 
 
@@ -61,7 +64,7 @@ def test_the_threshold_blocks_further_attempts() -> None:
     throttle = _throttle(clock)
 
     for _ in range(3):
-        throttle.record_failure("k")
+        throttle.record("k")
 
     with pytest.raises(TooManyLoginAttemptsError):
         throttle.check("k")
@@ -71,7 +74,7 @@ def test_the_window_slides_so_old_failures_stop_counting() -> None:
     clock = _Clock()
     throttle = _throttle(clock, window=300)
     for _ in range(3):
-        throttle.record_failure("k")
+        throttle.record("k")
 
     clock.advance(301)
 
@@ -81,10 +84,10 @@ def test_the_window_slides_so_old_failures_stop_counting() -> None:
 def test_a_partially_drained_window_still_counts_recent_failures() -> None:
     clock = _Clock()
     throttle = _throttle(clock, window=300)
-    throttle.record_failure("k")
-    throttle.record_failure("k")
+    throttle.record("k")
+    throttle.record("k")
     clock.advance(200)
-    throttle.record_failure("k")  # 3 within the window -> blocked
+    throttle.record("k")  # 3 within the window -> blocked
 
     with pytest.raises(TooManyLoginAttemptsError):
         throttle.check("k")
@@ -97,7 +100,7 @@ def test_a_success_clears_the_window() -> None:
     clock = _Clock()
     throttle = _throttle(clock)
     for _ in range(3):
-        throttle.record_failure("k")
+        throttle.record("k")
 
     throttle.reset("k")
 
@@ -108,7 +111,7 @@ def test_keys_are_independent() -> None:
     clock = _Clock()
     throttle = _throttle(clock)
     for _ in range(3):
-        throttle.record_failure("a@x.com|https://app")
+        throttle.record("a@x.com|https://app")
 
     throttle.check("b@x.com|https://app")  # a different account
     throttle.check("a@x.com|https://other")  # a different origin
@@ -117,7 +120,7 @@ def test_keys_are_independent() -> None:
 def test_a_drained_key_is_forgotten_rather_than_accumulating() -> None:
     clock = _Clock()
     throttle = _throttle(clock, window=300)
-    throttle.record_failure("k")
+    throttle.record("k")
 
     clock.advance(301)
     throttle.check("k")
@@ -149,7 +152,9 @@ class _AlwaysSucceedsAuth:
 @pytest.fixture
 def failing_client():
     app = create_app()
-    app.state.login_throttle = LoginThrottle(max_attempts=3, window_seconds=300)
+    app.state.login_throttle = SlidingWindowThrottle(
+        max_events=3, window_seconds=300, on_limit=TooManyLoginAttemptsError
+    )
     app.dependency_overrides[get_auth_service] = lambda: _AlwaysFailsAuth()
     with TestClient(app) as client:
         yield client
@@ -182,7 +187,9 @@ def test_the_throttle_never_blocks_signup(failing_client) -> None:
 
 def test_a_successful_login_clears_the_throttle() -> None:
     app = create_app()
-    app.state.login_throttle = LoginThrottle(max_attempts=3, window_seconds=300)
+    app.state.login_throttle = SlidingWindowThrottle(
+        max_events=3, window_seconds=300, on_limit=TooManyLoginAttemptsError
+    )
     failing, succeeding = _AlwaysFailsAuth(), _AlwaysSucceedsAuth()
     current = {"service": failing}
     app.dependency_overrides[get_auth_service] = lambda: current["service"]

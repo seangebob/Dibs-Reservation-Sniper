@@ -1,3 +1,7 @@
+> **SUPERSEDED — retired 2026-09-03.** Written before M4 tasks 8–12 and all of M5, so it audits a
+> codebase that no longer exists in this shape. Several clauses below are now decisions, not
+> defects. See [SUPERSEDED.md](SUPERSEDED.md) before acting on anything here.
+
 # Bugfix Requirements Document
 
 ## Introduction

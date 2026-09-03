@@ -1,3 +1,6 @@
+> **SUPERSEDED — retired 2026-09-03.** Kept for its analysis, not as a plan.
+> See [SUPERSEDED.md](SUPERSEDED.md).
+
 # Milestone 4 Frontend Backend Structure Fix Bugfix Design
 
 ## Overview

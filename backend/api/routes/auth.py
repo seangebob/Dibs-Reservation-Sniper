@@ -14,7 +14,7 @@ from backend.services.auth_service import (
     AuthService,
     InvalidCredentialsError,
 )
-from backend.services.login_throttle import LoginThrottle, throttle_key
+from backend.services.throttle import SlidingWindowThrottle, throttle_key
 
 
 logger = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ async def login(
 ) -> AuthResponse:
     # Best-effort brute-force throttle (Req 6.4): only failures count, and a
     # success clears the window, so a fumbled password is never penalized.
-    throttle: LoginThrottle | None = getattr(
+    throttle: SlidingWindowThrottle | None = getattr(
         request.app.state, "login_throttle", None
     )
     key = throttle_key(body.email, request.headers.get("origin"))
@@ -96,7 +96,7 @@ async def login(
         user, token = await service.login(body.email, body.password)
     except InvalidCredentialsError:
         if throttle is not None:
-            throttle.record_failure(key)
+            throttle.record(key)
         raise
     if throttle is not None:
         throttle.reset(key)

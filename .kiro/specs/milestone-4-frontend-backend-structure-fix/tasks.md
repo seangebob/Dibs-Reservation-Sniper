@@ -1,3 +1,7 @@
+> **SUPERSEDED — retired 2026-09-03. The unchecked boxes below are NOT pending work.**
+> See [SUPERSEDED.md](SUPERSEDED.md) for what was verified real (and where it went),
+> what is rejected because it would regress shipped behavior, and what is stale.
+
 # Implementation Plan
 
 ## Overview

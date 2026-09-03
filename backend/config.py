@@ -519,6 +519,47 @@ class AccountSettings:
         )
 
 
+DEFAULT_PROMPT_THROTTLE_MAX_REQUESTS = 20
+DEFAULT_PROMPT_THROTTLE_WINDOW_SECONDS = 300
+
+_MIN_PROMPT_THROTTLE_MAX_REQUESTS = 1
+_MAX_PROMPT_THROTTLE_MAX_REQUESTS = 10_000
+_MIN_PROMPT_THROTTLE_WINDOW_SECONDS = 10
+_MAX_PROMPT_THROTTLE_WINDOW_SECONDS = 3_600
+
+
+@dataclass(frozen=True, slots=True)
+class PromptThrottleSettings:
+    """Admission control for the paid orchestrator endpoints.
+
+    `/api/parse-and-book` and `/api/orchestrator/parse` call OpenAI, so every
+    request costs money whether or not it succeeds, and neither endpoint
+    requires authentication. This is the ceiling on how much an anonymous caller
+    can spend per window -- separate from `AccountSettings`' login throttle,
+    which counts only failures.
+    """
+
+    max_requests: int = DEFAULT_PROMPT_THROTTLE_MAX_REQUESTS
+    window_seconds: int = DEFAULT_PROMPT_THROTTLE_WINDOW_SECONDS
+
+    @classmethod
+    def from_environment(cls) -> "PromptThrottleSettings":
+        return cls(
+            max_requests=_bounded_count(
+                "PROMPT_THROTTLE_MAX_REQUESTS",
+                DEFAULT_PROMPT_THROTTLE_MAX_REQUESTS,
+                minimum=_MIN_PROMPT_THROTTLE_MAX_REQUESTS,
+                maximum=_MAX_PROMPT_THROTTLE_MAX_REQUESTS,
+            ),
+            window_seconds=_bounded_count(
+                "PROMPT_THROTTLE_WINDOW_SECONDS",
+                DEFAULT_PROMPT_THROTTLE_WINDOW_SECONDS,
+                minimum=_MIN_PROMPT_THROTTLE_WINDOW_SECONDS,
+                maximum=_MAX_PROMPT_THROTTLE_WINDOW_SECONDS,
+            ),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     openai_api_key: str
