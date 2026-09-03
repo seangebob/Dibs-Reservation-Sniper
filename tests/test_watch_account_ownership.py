@@ -57,6 +57,12 @@ class _StubAuth:
     async def authenticate(self, raw_token: str | None) -> User | None:
         return {"sess-A": USER_A, "sess-B": USER_B}.get(raw_token or "")
 
+    async def signup(self, email: str, password: str) -> tuple[User, str]:
+        return USER_A, "sess-A"
+
+    async def login(self, email: str, password: str) -> tuple[User, str]:
+        return USER_A, "sess-A"
+
 
 class _FakeHistory:
     """In-memory projection: watch_id -> (watch, owner_client_id, user_id),
@@ -81,6 +87,11 @@ class _FakeHistory:
 
     async def list_for_owner(self, owner_client_id: str, *, limit: int = 100):
         return [r[0] for r in self.rows.values() if r[1] == owner_client_id][:limit]
+
+    async def claim_anonymous(self, owner_client_id: str, user_id: UUID) -> None:
+        for wid, (w, owner, uid) in list(self.rows.items()):
+            if owner == owner_client_id and uid is None:
+                self.rows[wid] = (w, owner, user_id)
 
 
 @pytest.fixture
@@ -171,3 +182,40 @@ def test_an_anonymous_watch_stays_reachable_by_id_for_everyone(client) -> None:
     assert tc.get(f"/api/watches/{watch_id}").status_code == 200
     assert tc.get(f"/api/watches/{watch_id}", headers=BEARER_B).status_code == 200
     assert tc.delete(f"/api/watches/{watch_id}", headers=BEARER_B).status_code == 200
+
+
+# --- claiming anonymous watches on signup/login (Task 8, Req 4) -------------
+
+CREDS = {"email": "a@x.com", "password": "hunter2-secret"}
+CLIENT_1 = {"X-Dibs-Client-Id": "visitor-1"}
+
+
+def test_signup_claims_the_clients_anonymous_watches(client) -> None:
+    tc, _ = client
+    watch_id = _create(tc, CLIENT_1)  # anonymous, under visitor-1
+
+    resp = tc.post("/api/auth/signup", json=CREDS, headers=CLIENT_1)
+    assert resp.status_code == 201  # stub issues sess-A -> USER_A
+
+    # The formerly-anonymous watch now belongs to USER_A.
+    mine = tc.get("/api/watches/mine", headers=BEARER_A).json()
+    assert [w["watch_id"] for w in mine] == [watch_id]
+
+
+def test_login_claims_the_clients_anonymous_watches(client) -> None:
+    tc, _ = client
+    watch_id = _create(tc, CLIENT_1)
+
+    assert tc.post("/api/auth/login", json=CREDS, headers=CLIENT_1).status_code == 200
+
+    mine = tc.get("/api/watches/mine", headers=BEARER_A).json()
+    assert [w["watch_id"] for w in mine] == [watch_id]
+
+
+def test_auth_without_a_client_id_claims_nothing(client) -> None:
+    tc, _ = client
+    _create(tc, CLIENT_1)  # anonymous watch exists...
+
+    tc.post("/api/auth/signup", json=CREDS)  # ...but no client id on signup
+
+    assert tc.get("/api/watches/mine", headers=BEARER_A).json() == []

@@ -92,6 +92,11 @@ ORDER BY updated_at DESC
 LIMIT $2
 """.strip()
 
+_CLAIM_ANONYMOUS_SQL = """
+UPDATE watch_history SET user_id = $2
+WHERE owner_client_id = $1 AND user_id IS NULL
+""".strip()
+
 #: A dashboard listing has no legitimate use for an unbounded result set; this
 #: is a safety ceiling, not a pagination feature.
 _MAX_LIST_LIMIT = 1000
@@ -169,6 +174,18 @@ class WatchHistoryRepository:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(_SELECT_FOR_USER_SQL, user_id, limit)
         return [Watch.model_validate_json(row["watch_json"]) for row in rows]
+
+    async def claim_anonymous(self, owner_client_id: str, user_id: UUID) -> None:
+        """Assign every still-unclaimed watch created under ``owner_client_id``
+        to ``user_id`` (Requirement 4.1).
+
+        Idempotent and non-stealing: the ``user_id IS NULL`` guard means a watch
+        already owned by an account is never re-assigned, so a second signup or
+        login with the same client id claims nothing new and never takes a watch
+        from another account (Requirement 4.4)."""
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(_CLAIM_ANONYMOUS_SQL, owner_client_id, user_id)
 
     async def get_account_owner(self, watch_id: str) -> UUID | None:
         """Return the account that owns ``watch_id``, or None when the watch is

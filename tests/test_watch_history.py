@@ -102,6 +102,12 @@ class _FakeConnection:
 
     async def execute(self, query: str, *args: Any) -> None:
         self.executed.append((query, args))
+        if query.startswith("UPDATE watch_history SET user_id"):
+            owner_client_id, user_id = args
+            for row in self.rows.values():
+                if row["owner_client_id"] == owner_client_id and row["user_id"] is None:
+                    row["user_id"] = user_id
+            return
         assert "INSERT INTO watch_history" in query
         (
             watch_id,
@@ -349,6 +355,43 @@ def test_list_for_user_never_returns_another_accounts_watch() -> None:
     _run(repo.record(watch(watch_id="watch_theirs"), user_id=theirs))
 
     assert [w.watch_id for w in _run(repo.list_for_user(mine))] == ["watch_mine"]
+
+
+def test_claim_anonymous_assigns_the_clients_unclaimed_watches() -> None:
+    repo = WatchHistoryRepository(_FakePool())
+    user_id = uuid4()
+    _run(repo.record(watch(watch_id="w1"), owner_client_id="visitor-1"))
+    _run(repo.record(watch(watch_id="w2"), owner_client_id="visitor-1"))
+    _run(repo.record(watch(watch_id="w3"), owner_client_id="visitor-2"))  # not theirs
+
+    _run(repo.claim_anonymous("visitor-1", user_id))
+
+    owned = {w.watch_id for w in _run(repo.list_for_user(user_id))}
+    assert owned == {"w1", "w2"}
+    assert _run(repo.get_account_owner("w3")) is None
+
+
+def test_claim_anonymous_never_steals_an_already_claimed_watch() -> None:
+    repo = WatchHistoryRepository(_FakePool())
+    first, second = uuid4(), uuid4()
+    _run(repo.record(watch(watch_id="w1"), owner_client_id="visitor-1", user_id=first))
+
+    # A different account logs in from the same reused client id: the guard
+    # (user_id IS NULL) means it claims nothing already owned (Req 4.4).
+    _run(repo.claim_anonymous("visitor-1", second))
+
+    assert _run(repo.get_account_owner("w1")) == first
+
+
+def test_claim_anonymous_is_idempotent() -> None:
+    repo = WatchHistoryRepository(_FakePool())
+    user_id = uuid4()
+    _run(repo.record(watch(watch_id="w1"), owner_client_id="visitor-1"))
+
+    _run(repo.claim_anonymous("visitor-1", user_id))
+    _run(repo.claim_anonymous("visitor-1", user_id))  # second call: no change
+
+    assert _run(repo.get_account_owner("w1")) == user_id
 
 
 def test_round_trip_preserves_a_booked_watchs_full_shape() -> None:
