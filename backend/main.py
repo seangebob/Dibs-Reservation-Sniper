@@ -14,12 +14,14 @@ from fastapi.responses import JSONResponse
 
 from backend.api.client_identity import extract_client_id
 from backend.api.dependencies import (
+    AccountsUnavailableError,
+    get_auth_service,
     get_booking_service,
     get_orchestrator,
     get_prompt_router,
     get_watch_service,
 )
-from backend.api.routes import watches_router
+from backend.api.routes import auth_router, watches_router
 from backend.config import (
     DEFAULT_MAX_POLL_ATTEMPTS,
     DEFAULT_MOCK_BOOKING_RETENTION_SECONDS,
@@ -27,6 +29,7 @@ from backend.config import (
     DEFAULT_MOCK_SLOT_IDLE_TTL_SECONDS,
     DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS,
     DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS,
+    AccountSettings,
     ConfigurationError,
     CorsSettings,
     PostgresSettings,
@@ -34,6 +37,7 @@ from backend.config import (
     WatchSettings,
 )
 from backend.db.postgres import create_pool, run_migrations
+from backend.db.repositories.accounts import AccountRepository, SessionRepository
 from backend.db.repositories.mock_booking import (
     MockBookingStateRepository,
     RedisMockBookingStateRepository,
@@ -59,7 +63,15 @@ from backend.orchestrator.engine import OrchestratorEngine
 from backend.orchestrator.providers import ProviderError, ProviderUnavailableError
 from backend.orchestrator.router import PromptRouter
 from backend.orchestrator.schemas import ParseRequest, ReservationIntent
+from backend.services.auth_service import (
+    AuthValidationError,
+    AuthenticationRequiredError,
+    AuthService,
+    EmailTakenError,
+    InvalidCredentialsError,
+)
 from backend.services.booking_service import BookingService
+from backend.services.password import build_password_hasher
 from backend.services.readiness import Readiness, ReadinessTracker
 from backend.services.watch_recovery import RecoveryCoordinator
 from backend.services.watch_service import WatchService
@@ -73,6 +85,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "app",
     "create_app",
+    "get_auth_service",
     "get_booking_service",
     "get_orchestrator",
     "get_prompt_router",
@@ -187,6 +200,20 @@ async def _attach_postgres(app: FastAPI) -> None:
     app.state.watch_history_recorder = TrackingHistoryRecorder(
         app.state.watch_history, app.state.readiness
     )
+
+    # Accounts live on the same pool. Built here so they exist only when
+    # PostgreSQL does; bad account env degrades to accounts-disabled (503 on
+    # /api/auth/*) rather than failing startup -- auth is an optional lens.
+    try:
+        account_settings = AccountSettings.from_environment()
+        app.state.auth_service = AuthService(
+            accounts=AccountRepository(pool),
+            sessions=SessionRepository(pool),
+            hasher=build_password_hasher(account_settings),
+            settings=account_settings,
+        )
+    except ConfigurationError as exc:
+        logger.error("Account settings invalid; accounts disabled: %s", str(exc))
 
 
 async def _attach_redis(app: FastAPI) -> None:
@@ -518,6 +545,7 @@ def create_app() -> FastAPI:
     app.state.postgres_pool = None
     app.state.watch_history = None
     app.state.watch_history_recorder = None
+    app.state.auth_service = None
     app.state.watch_queue = None
     app.state.watch_queue_mode = "asyncio"
     app.state.recovery_owner_id = uuid.uuid4().hex
@@ -659,6 +687,24 @@ def create_app() -> FastAPI:
         include_in_schema=False,
         deprecated=True,
     )
+    _auth_error_status = {
+        EmailTakenError: status.HTTP_409_CONFLICT,
+        InvalidCredentialsError: status.HTTP_401_UNAUTHORIZED,
+        AuthenticationRequiredError: status.HTTP_401_UNAUTHORIZED,
+        AuthValidationError: status.HTTP_422_UNPROCESSABLE_CONTENT,
+        AccountsUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
+    }
+
+    def _auth_error_handler(status_code: int) -> Any:
+        async def handler(_request: Request, exc: Exception) -> JSONResponse:
+            return JSONResponse(status_code=status_code, content={"detail": str(exc)})
+
+        return handler
+
+    for _exc_cls, _code in _auth_error_status.items():
+        app.add_exception_handler(_exc_cls, _auth_error_handler(_code))
+
+    app.include_router(auth_router)
     app.include_router(watches_router)
 
     return app

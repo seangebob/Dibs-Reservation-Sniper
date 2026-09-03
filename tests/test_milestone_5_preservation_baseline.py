@@ -112,23 +112,18 @@ def test_a_bearer_token_is_inert_on_existing_routes(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Characterization (updated by Task 5): no /api/auth/* routes exist yet.
+# Updated by Task 5: /api/auth/* now exist, but with no PostgreSQL configured
+# (this env) they degrade to 503 accounts-unavailable -- never 404, and never
+# affecting the anonymous flow above (Req 6.2).
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "method,path",
-    [
-        ("post", "/api/auth/signup"),
-        ("post", "/api/auth/login"),
-        ("post", "/api/auth/logout"),
-        ("get", "/api/auth/me"),
-    ],
-)
-def test_no_auth_routes_exist_yet(client: TestClient, method: str, path: str) -> None:
-    # The path does not exist, so the 404 precedes any body parsing.
-    response = getattr(client, method)(path)
-    assert response.status_code == 404
+def test_auth_routes_report_unavailable_without_postgres(client: TestClient) -> None:
+    creds = {"email": "a@x.com", "password": "hunter2-secret"}
+    assert client.post("/api/auth/signup", json=creds).status_code == 503
+    assert client.post("/api/auth/login", json=creds).status_code == 503
+    assert client.post("/api/auth/logout").status_code == 503
+    assert client.get("/api/auth/me").status_code == 503
 
 
 # ---------------------------------------------------------------------------

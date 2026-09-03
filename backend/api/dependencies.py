@@ -13,8 +13,27 @@ from backend.config import ConfigurationError, Settings, WatchSettings
 from backend.orchestrator.engine import OrchestratorEngine
 from backend.orchestrator.providers import OpenAIIntentProvider
 from backend.orchestrator.router import PromptRouter
+from backend.services.auth_service import AuthService
 from backend.services.booking_service import BookingService
 from backend.services.watch_service import WatchService
+
+
+class AccountsUnavailableError(RuntimeError):
+    """Accounts require PostgreSQL, which is not configured (-> 503)."""
+
+
+def get_auth_service(request: Request) -> AuthService:
+    """Return the account service, or 503 when PostgreSQL is not configured.
+
+    Accounts degrade rather than block: with no Postgres the anonymous flow is
+    untouched and only /api/auth/* reports unavailable (Requirement 6.2)."""
+
+    service: AuthService | None = getattr(request.app.state, "auth_service", None)
+    if service is None:
+        raise AccountsUnavailableError(
+            "Accounts are unavailable because PostgreSQL is not configured."
+        )
+    return service
 
 
 async def get_orchestrator(request: Request) -> OrchestratorEngine:

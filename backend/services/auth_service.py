@@ -31,6 +31,8 @@ from backend.services.password import PasswordHasherService
 __all__ = [
     "AuthService",
     "AuthError",
+    "AuthValidationError",
+    "AuthenticationRequiredError",
     "EmailTakenError",
     "InvalidCredentialsError",
     "InvalidEmailError",
@@ -54,11 +56,23 @@ class InvalidCredentialsError(AuthError):
         super().__init__("Invalid email or password.")
 
 
-class InvalidEmailError(AuthError):
+class AuthenticationRequiredError(AuthError):
+    """A route requiring a valid session got none (-> 401)."""
+
+    def __init__(self) -> None:
+        super().__init__("Authentication required.")
+
+
+class AuthValidationError(AuthError):
+    """A malformed signup input (-> 422). One base so the route layer maps every
+    input-validation failure with a single handler."""
+
+
+class InvalidEmailError(AuthValidationError):
     """A malformed email at signup (-> 422)."""
 
 
-class PasswordPolicyError(AuthError):
+class PasswordPolicyError(AuthValidationError):
     """A password failing the length policy at signup (-> 422)."""
 
 
