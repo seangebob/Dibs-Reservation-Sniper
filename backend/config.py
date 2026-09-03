@@ -411,6 +411,114 @@ class CorsSettings:
         return cls(origins=origins)
 
 
+# Account / session settings (Milestone 5): session lifetime, password policy,
+# argon2 cost parameters, and the best-effort login throttle. `argon2_*` defaults
+# match argon2-cffi's own recommendations (time=3, memory=64 MiB, parallelism=4)
+# and are hardcoded here so `config.py` stays free of a third-party import.
+DEFAULT_SESSION_TTL_SECONDS = 2_592_000  # 30 days
+DEFAULT_PASSWORD_MIN_LENGTH = 8
+DEFAULT_PASSWORD_MAX_LENGTH = 128
+DEFAULT_ARGON2_TIME_COST = 3
+DEFAULT_ARGON2_MEMORY_COST_KIB = 65_536
+DEFAULT_ARGON2_PARALLELISM = 4
+DEFAULT_LOGIN_THROTTLE_MAX_ATTEMPTS = 10
+DEFAULT_LOGIN_THROTTLE_WINDOW_SECONDS = 300
+
+_MIN_SESSION_TTL_SECONDS = 3_600
+_MAX_SESSION_TTL_SECONDS = 7_776_000  # 90 days
+_MIN_PASSWORD_MIN_LENGTH = 8
+_MAX_PASSWORD_MIN_LENGTH = 128
+_MIN_PASSWORD_MAX_LENGTH = 8
+_MAX_PASSWORD_MAX_LENGTH = 1_024
+_MIN_ARGON2_TIME_COST = 1
+_MAX_ARGON2_TIME_COST = 100
+_MIN_ARGON2_MEMORY_COST_KIB = 8_192  # 8 MiB floor
+_MAX_ARGON2_MEMORY_COST_KIB = 1_048_576  # 1 GiB ceiling
+_MIN_ARGON2_PARALLELISM = 1
+_MAX_ARGON2_PARALLELISM = 64
+_MIN_LOGIN_THROTTLE_MAX_ATTEMPTS = 1
+_MAX_LOGIN_THROTTLE_MAX_ATTEMPTS = 10_000
+_MIN_LOGIN_THROTTLE_WINDOW_SECONDS = 10
+_MAX_LOGIN_THROTTLE_WINDOW_SECONDS = 3_600
+
+
+@dataclass(frozen=True, slots=True)
+class AccountSettings:
+    """Email/password account + bearer-session configuration (Milestone 5).
+
+    Independent of `Settings`/`WatchSettings` so the account layer can be
+    validated on its own; all bounds are closed ranges validated at startup.
+    """
+
+    session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
+    password_min_length: int = DEFAULT_PASSWORD_MIN_LENGTH
+    password_max_length: int = DEFAULT_PASSWORD_MAX_LENGTH
+    argon2_time_cost: int = DEFAULT_ARGON2_TIME_COST
+    argon2_memory_cost_kib: int = DEFAULT_ARGON2_MEMORY_COST_KIB
+    argon2_parallelism: int = DEFAULT_ARGON2_PARALLELISM
+    login_throttle_max_attempts: int = DEFAULT_LOGIN_THROTTLE_MAX_ATTEMPTS
+    login_throttle_window_seconds: int = DEFAULT_LOGIN_THROTTLE_WINDOW_SECONDS
+
+    @classmethod
+    def from_environment(cls) -> "AccountSettings":
+        password_min = _bounded_count(
+            "PASSWORD_MIN_LENGTH",
+            DEFAULT_PASSWORD_MIN_LENGTH,
+            minimum=_MIN_PASSWORD_MIN_LENGTH,
+            maximum=_MAX_PASSWORD_MIN_LENGTH,
+        )
+        password_max = _bounded_count(
+            "PASSWORD_MAX_LENGTH",
+            DEFAULT_PASSWORD_MAX_LENGTH,
+            minimum=_MIN_PASSWORD_MAX_LENGTH,
+            maximum=_MAX_PASSWORD_MAX_LENGTH,
+        )
+        if password_max < password_min:
+            raise ConfigurationError(
+                "PASSWORD_MAX_LENGTH must be at least PASSWORD_MIN_LENGTH"
+            )
+        return cls(
+            session_ttl_seconds=_bounded_count(
+                "SESSION_TTL_SECONDS",
+                DEFAULT_SESSION_TTL_SECONDS,
+                minimum=_MIN_SESSION_TTL_SECONDS,
+                maximum=_MAX_SESSION_TTL_SECONDS,
+            ),
+            password_min_length=password_min,
+            password_max_length=password_max,
+            argon2_time_cost=_bounded_count(
+                "ARGON2_TIME_COST",
+                DEFAULT_ARGON2_TIME_COST,
+                minimum=_MIN_ARGON2_TIME_COST,
+                maximum=_MAX_ARGON2_TIME_COST,
+            ),
+            argon2_memory_cost_kib=_bounded_count(
+                "ARGON2_MEMORY_COST_KIB",
+                DEFAULT_ARGON2_MEMORY_COST_KIB,
+                minimum=_MIN_ARGON2_MEMORY_COST_KIB,
+                maximum=_MAX_ARGON2_MEMORY_COST_KIB,
+            ),
+            argon2_parallelism=_bounded_count(
+                "ARGON2_PARALLELISM",
+                DEFAULT_ARGON2_PARALLELISM,
+                minimum=_MIN_ARGON2_PARALLELISM,
+                maximum=_MAX_ARGON2_PARALLELISM,
+            ),
+            login_throttle_max_attempts=_bounded_count(
+                "LOGIN_THROTTLE_MAX_ATTEMPTS",
+                DEFAULT_LOGIN_THROTTLE_MAX_ATTEMPTS,
+                minimum=_MIN_LOGIN_THROTTLE_MAX_ATTEMPTS,
+                maximum=_MAX_LOGIN_THROTTLE_MAX_ATTEMPTS,
+            ),
+            login_throttle_window_seconds=_bounded_count(
+                "LOGIN_THROTTLE_WINDOW_SECONDS",
+                DEFAULT_LOGIN_THROTTLE_WINDOW_SECONDS,
+                minimum=_MIN_LOGIN_THROTTLE_WINDOW_SECONDS,
+                maximum=_MAX_LOGIN_THROTTLE_WINDOW_SECONDS,
+            ),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     openai_api_key: str
