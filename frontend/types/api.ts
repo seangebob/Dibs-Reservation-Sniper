@@ -89,3 +89,16 @@ export interface PromptExecutionResult {
   watch_id: string | null;
   message: string;
 }
+
+/** The public account shape — the backend never serializes a password hash. */
+export interface User {
+  id: string;
+  email: string;
+  created_at: string;
+}
+
+/** Signup/login: the raw bearer token, returned exactly once. */
+export interface AuthResponse {
+  token: string;
+  user: User;
+}
