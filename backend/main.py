@@ -73,6 +73,7 @@ from backend.services.auth_service import (
     InvalidCredentialsError,
 )
 from backend.services.booking_service import BookingService
+from backend.services.login_throttle import LoginThrottle, TooManyLoginAttemptsError
 from backend.services.password import build_password_hasher
 from backend.services.readiness import Readiness, ReadinessTracker
 from backend.services.watch_recovery import RecoveryCoordinator
@@ -213,6 +214,12 @@ async def _attach_postgres(app: FastAPI) -> None:
             sessions=SessionRepository(pool),
             hasher=build_password_hasher(account_settings),
             settings=account_settings,
+        )
+        # In-process and best-effort by design (Req 6.4); built here because a
+        # login can only happen when accounts do.
+        app.state.login_throttle = LoginThrottle(
+            max_attempts=account_settings.login_throttle_max_attempts,
+            window_seconds=account_settings.login_throttle_window_seconds,
         )
     except ConfigurationError as exc:
         logger.error("Account settings invalid; accounts disabled: %s", str(exc))
@@ -548,6 +555,7 @@ def create_app() -> FastAPI:
     app.state.watch_history = None
     app.state.watch_history_recorder = None
     app.state.auth_service = None
+    app.state.login_throttle = None
     app.state.watch_queue = None
     app.state.watch_queue_mode = "asyncio"
     app.state.recovery_owner_id = uuid.uuid4().hex
@@ -700,6 +708,7 @@ def create_app() -> FastAPI:
         AuthenticationRequiredError: status.HTTP_401_UNAUTHORIZED,
         AuthValidationError: status.HTTP_422_UNPROCESSABLE_CONTENT,
         AccountsUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
+        TooManyLoginAttemptsError: status.HTTP_429_TOO_MANY_REQUESTS,
     }
 
     def _auth_error_handler(status_code: int) -> Any:
