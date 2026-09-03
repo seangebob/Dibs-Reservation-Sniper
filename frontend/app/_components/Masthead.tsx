@@ -4,9 +4,10 @@
  * page and the watch dashboard stay in sync without duplicating the markup.
  */
 
+import { AccountBadge } from "./AccountBadge";
 import { ScopeMark } from "./Scope";
 
-export function Masthead({ current }: { current: "new" | "watches" }) {
+export function Masthead({ current }: { current: "new" | "watches" | "account" }) {
   return (
     <header className="masthead">
       <div className="brand">
@@ -24,6 +25,7 @@ export function Masthead({ current }: { current: "new" | "watches" }) {
         >
           YOUR WATCHES
         </a>
+        <AccountBadge />
       </nav>
     </header>
   );
