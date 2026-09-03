@@ -6,6 +6,7 @@ about watches and the watch service never learns about prompts.
 """
 
 from typing import Any
+from uuid import UUID
 
 from backend.models.reservation import (
     ExecutionStatus,
@@ -31,9 +32,12 @@ class PromptRouter:
         intent: ReservationIntent,
         *,
         owner_client_id: str | None = None,
+        user_id: UUID | None = None,
     ) -> PromptExecutionResult:
         if intent.is_ready and intent.route is OrchestratorRoute.WATCH_SERVICE:
-            return await self._create_watch(intent, owner_client_id=owner_client_id)
+            return await self._create_watch(
+                intent, owner_client_id=owner_client_id, user_id=user_id
+            )
         return await self._booking_service.execute(intent)
 
     async def _create_watch(
@@ -41,9 +45,10 @@ class PromptRouter:
         intent: ReservationIntent,
         *,
         owner_client_id: str | None,
+        user_id: UUID | None,
     ) -> PromptExecutionResult:
         watch = await self._watch_service.create_from_intent(
-            intent, owner_client_id=owner_client_id
+            intent, owner_client_id=owner_client_id, user_id=user_id
         )
         policy = self._watch_service.describe_policy(watch)
         return PromptExecutionResult(

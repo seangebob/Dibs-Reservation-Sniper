@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -102,11 +103,24 @@ class _FakeConnection:
     async def execute(self, query: str, *args: Any) -> None:
         self.executed.append((query, args))
         assert "INSERT INTO watch_history" in query
-        watch_id, owner_client_id, status, created_at, updated_at, expires_at, watch_json = args
+        (
+            watch_id,
+            owner_client_id,
+            status,
+            created_at,
+            updated_at,
+            expires_at,
+            watch_json,
+            user_id,
+        ) = args
         existing = self.rows.get(watch_id)
-        if existing is not None and owner_client_id is None:
-            # Mirrors ON CONFLICT ... owner_client_id = COALESCE(EXCLUDED, existing)
-            owner_client_id = existing["owner_client_id"]
+        if existing is not None:
+            # Mirrors ON CONFLICT ... col = COALESCE(EXCLUDED.col, existing):
+            # an ownerless later write must not erase a recorded owner.
+            if owner_client_id is None:
+                owner_client_id = existing["owner_client_id"]
+            if user_id is None:
+                user_id = existing["user_id"]
         self.rows[watch_id] = {
             "watch_id": watch_id,
             "owner_client_id": owner_client_id,
@@ -115,6 +129,7 @@ class _FakeConnection:
             "updated_at": updated_at,
             "expires_at": expires_at,
             "watch_json": watch_json,
+            "user_id": user_id,
         }
 
     async def fetchval(self, query: str, *args: Any) -> Any:
@@ -130,6 +145,13 @@ class _FakeConnection:
             matches = [
                 row for row in self.rows.values()
                 if row["owner_client_id"] == owner_client_id
+            ]
+            matches.sort(key=lambda row: row["updated_at"], reverse=True)
+            return matches[:limit]
+        if "WHERE user_id = " in query:
+            user_id, limit = args
+            matches = [
+                row for row in self.rows.values() if row["user_id"] == user_id
             ]
             matches.sort(key=lambda row: row["updated_at"], reverse=True)
             return matches[:limit]
@@ -280,6 +302,53 @@ def test_list_for_owner_rejects_a_limit_above_the_ceiling() -> None:
 
     with pytest.raises(ValueError, match="limit must be between"):
         _run(repo.list_for_owner("visitor-1", limit=1001))
+
+
+# ---------------------------------------------------------------------------
+# Milestone 5: account ownership via user_id (Requirements 3.1-3.3).
+# ---------------------------------------------------------------------------
+
+
+def test_recording_with_a_user_id_makes_the_watch_account_owned() -> None:
+    repo = WatchHistoryRepository(_FakePool())
+    user_id = uuid4()
+
+    _run(repo.record(watch(), owner_client_id="visitor-1", user_id=user_id))
+
+    assert _run(repo.get_account_owner("watch_1")) == user_id
+    assert [w.watch_id for w in _run(repo.list_for_user(user_id))] == ["watch_1"]
+
+
+def test_get_account_owner_is_none_for_anonymous_or_unknown_watches() -> None:
+    repo = WatchHistoryRepository(_FakePool())
+    _run(repo.record(watch(), owner_client_id="visitor-1"))  # anonymous
+
+    assert _run(repo.get_account_owner("watch_1")) is None
+    assert _run(repo.get_account_owner("watch_ghost")) is None
+
+
+def test_a_later_ownerless_record_does_not_erase_the_account_owner() -> None:
+    """A poll outcome carries no user id; it must not unassign the account."""
+
+    repo = WatchHistoryRepository(_FakePool())
+    user_id = uuid4()
+    _run(repo.record(watch(status=WatchStatus.ACTIVE), user_id=user_id))
+    _run(
+        repo.record(
+            watch(status=WatchStatus.ACTIVE, updated_at=NOW + timedelta(minutes=3))
+        )
+    )
+
+    assert _run(repo.get_account_owner("watch_1")) == user_id
+
+
+def test_list_for_user_never_returns_another_accounts_watch() -> None:
+    repo = WatchHistoryRepository(_FakePool())
+    mine, theirs = uuid4(), uuid4()
+    _run(repo.record(watch(watch_id="watch_mine"), user_id=mine))
+    _run(repo.record(watch(watch_id="watch_theirs"), user_id=theirs))
+
+    assert [w.watch_id for w in _run(repo.list_for_user(mine))] == ["watch_mine"]
 
 
 def test_round_trip_preserves_a_booked_watchs_full_shape() -> None:

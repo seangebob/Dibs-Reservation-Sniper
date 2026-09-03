@@ -167,11 +167,19 @@ class TrackingService(WatchService):
         self.creates: list[object] = []
 
     async def create(  # noqa: ANN001, ANN201
-        self, query, *, auto_book: bool = False, owner_client_id: str | None = None
+        self,
+        query,
+        *,
+        auto_book: bool = False,
+        owner_client_id: str | None = None,
+        user_id=None,
     ):
         self.creates.append(query)
         return await super().create(
-            query, auto_book=auto_book, owner_client_id=owner_client_id
+            query,
+            auto_book=auto_book,
+            owner_client_id=owner_client_id,
+            user_id=user_id,
         )
 
 

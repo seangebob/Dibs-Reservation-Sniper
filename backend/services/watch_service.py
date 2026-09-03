@@ -10,7 +10,7 @@ from enum import Enum
 import logging
 import random
 from typing import Any, List
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from backend.config import (
@@ -120,7 +120,10 @@ class WatchService:
         self._policy_factory = AvailabilityPolicyFactory(self._schedule)
 
     async def _record_history(
-        self, watch: Watch, owner_client_id: str | None = None
+        self,
+        watch: Watch,
+        owner_client_id: str | None = None,
+        user_id: UUID | None = None,
     ) -> None:
         """Best-effort mirror of ``watch`` into the durable history projection.
 
@@ -132,7 +135,7 @@ class WatchService:
         if self._history is None:
             return
         try:
-            await self._history.record(watch, owner_client_id)
+            await self._history.record(watch, owner_client_id, user_id)
         except Exception:
             logger.warning(
                 "watch history projection failed",
@@ -146,6 +149,7 @@ class WatchService:
         *,
         auto_book: bool = False,
         owner_client_id: str | None = None,
+        user_id: UUID | None = None,
     ) -> Watch:
         """Open a watch for a validated intent that asked to be monitored."""
 
@@ -155,6 +159,7 @@ class WatchService:
             self._query_from(intent),
             auto_book=auto_book,
             owner_client_id=owner_client_id,
+            user_id=user_id,
         )
 
     async def create(
@@ -163,6 +168,7 @@ class WatchService:
         *,
         auto_book: bool = False,
         owner_client_id: str | None = None,
+        user_id: UUID | None = None,
     ) -> Watch:
         """Persist a new watch and dispatch its first check immediately.
 
@@ -176,7 +182,10 @@ class WatchService:
         the durable history projection. A caller that omits it -- every
         pre-Milestone-4 script, test, and direct API call -- gets the exact
         prior behavior: an unowned watch, invisible to owner-scoped listing but
-        otherwise identical.
+        otherwise identical. ``user_id`` is Milestone 5's authenticated
+        equivalent (Requirement 3.1): set when the creator has a session, it
+        makes the watch account-owned in the projection -- again invisible to
+        the public `Watch` model.
         """
 
         now = self._clock()
@@ -210,7 +219,7 @@ class WatchService:
         )
         result = await self._repository.create_with_schedule(watch, runtime)
         stored = result.watch or watch
-        await self._record_history(stored, owner_client_id)
+        await self._record_history(stored, owner_client_id, user_id)
 
         # The first check runs without jitter: the user just asked, so the
         # latency they see is the one that matters. Jitter starts on retries.

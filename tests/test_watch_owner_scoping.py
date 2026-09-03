@@ -53,7 +53,9 @@ class RecordingHistory:
         self.records: list[tuple[str, str | None]] = []
         self._owners: dict[str, str] = {}
 
-    async def record(self, watch: Watch, owner_client_id: str | None = None) -> None:
+    async def record(
+        self, watch: Watch, owner_client_id: str | None = None, user_id=None
+    ) -> None:
         self.records.append((watch.watch_id, owner_client_id))
         if owner_client_id is not None:
             self._owners[watch.watch_id] = owner_client_id
@@ -71,7 +73,9 @@ class FakeHistory:
     def seed(self, owner_client_id: str, watch: Watch) -> None:
         self._by_owner.setdefault(owner_client_id, []).append(watch)
 
-    async def record(self, watch: Watch, owner_client_id: str | None = None) -> None:
+    async def record(
+        self, watch: Watch, owner_client_id: str | None = None, user_id=None
+    ) -> None:
         if owner_client_id is not None:
             self.seed(owner_client_id, watch)
 

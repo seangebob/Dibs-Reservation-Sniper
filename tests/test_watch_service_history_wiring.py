@@ -62,7 +62,9 @@ class RecordingHistory:
     def __init__(self) -> None:
         self.calls: list[tuple[str, WatchStatus, str | None]] = []
 
-    async def record(self, watch: Watch, owner_client_id: str | None = None) -> None:
+    async def record(
+        self, watch: Watch, owner_client_id: str | None = None, user_id=None
+    ) -> None:
         self.calls.append((watch.watch_id, watch.status, owner_client_id))
 
 
@@ -72,7 +74,9 @@ class RaisingHistory:
     def __init__(self) -> None:
         self.attempts = 0
 
-    async def record(self, watch: Watch, owner_client_id: str | None = None) -> None:
+    async def record(
+        self, watch: Watch, owner_client_id: str | None = None, user_id=None
+    ) -> None:
         self.attempts += 1
         raise RuntimeError("Postgres is unreachable")
 

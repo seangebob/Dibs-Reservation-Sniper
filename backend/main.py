@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from backend.api.client_identity import extract_client_id
 from backend.api.dependencies import (
     AccountsUnavailableError,
+    current_user,
     get_auth_service,
     get_booking_service,
     get_orchestrator,
@@ -58,6 +59,7 @@ from backend.integrations.base import (
 )
 from backend.integrations.mock_booking import MockBookingAdapter
 from backend.logging_config import configure_application_logging
+from backend.models.account import User
 from backend.models.reservation import PromptExecutionResult
 from backend.orchestrator.engine import OrchestratorEngine
 from backend.orchestrator.providers import ProviderError, ProviderUnavailableError
@@ -658,11 +660,16 @@ def create_app() -> FastAPI:
         request: ParseRequest,
         engine: Annotated[OrchestratorEngine, Depends(get_orchestrator)],
         router: Annotated[PromptRouter, Depends(get_prompt_router)],
+        user: Annotated[User | None, Depends(current_user)],
         x_dibs_client_id: Annotated[str | None, Header()] = None,
     ) -> PromptExecutionResult:
         intent = await engine.parse(request.prompt)
         owner_client_id = extract_client_id(x_dibs_client_id)
-        return await router.execute(intent, owner_client_id=owner_client_id)
+        return await router.execute(
+            intent,
+            owner_client_id=owner_client_id,
+            user_id=user.id if user else None,
+        )
 
     app.add_api_route(
         "/api/orchestrator/parse",
