@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.api.dependencies import get_auth_service
+from backend.api.dependencies import bearer_token, get_auth_service
 from backend.models.account import User
 from backend.services.auth_service import AuthenticationRequiredError, AuthService
 
@@ -29,12 +29,6 @@ class AuthResponse(BaseModel):
     user: User
 
 
-def _bearer(authorization: str | None) -> str | None:
-    if authorization and authorization.lower().startswith("bearer "):
-        return authorization[7:].strip() or None
-    return None
-
-
 @router.post("/signup", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 async def signup(body: Credentials, service: AuthServiceDep) -> AuthResponse:
     user, token = await service.signup(body.email, body.password)
@@ -52,7 +46,7 @@ async def logout(
     service: AuthServiceDep,
     authorization: Annotated[str | None, Header()] = None,
 ) -> Response:
-    token = _bearer(authorization)
+    token = bearer_token(authorization)
     if token:
         await service.logout(token)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -63,7 +57,7 @@ async def me(
     service: AuthServiceDep,
     authorization: Annotated[str | None, Header()] = None,
 ) -> User:
-    user = await service.authenticate(_bearer(authorization))
+    user = await service.authenticate(bearer_token(authorization))
     if user is None:
         raise AuthenticationRequiredError()
     return user

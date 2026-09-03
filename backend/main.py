@@ -481,7 +481,7 @@ def _build_watch_service(
 #: browser client can read them via `fetch()`, since custom response headers
 #: are invisible to JS unless explicitly exposed.
 _CORS_ALLOWED_METHODS = ["GET", "POST", "DELETE"]
-_CORS_ALLOWED_HEADERS = ["Content-Type", "X-Dibs-Client-Id"]
+_CORS_ALLOWED_HEADERS = ["Content-Type", "X-Dibs-Client-Id", "Authorization"]
 _CORS_EXPOSED_HEADERS = [
     "X-Watch-Monitoring-Policy",
     "X-Watch-Max-Availability-Checks",

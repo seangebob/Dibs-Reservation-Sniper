@@ -127,12 +127,13 @@ def test_auth_routes_report_unavailable_without_postgres(client: TestClient) -> 
 
 
 # ---------------------------------------------------------------------------
-# Characterization (updated by Task 6): CORS does not yet allow Authorization.
+# Updated by Task 6: CORS now allows Authorization so a browser can send a
+# bearer token -- without disturbing the headers the anonymous flow needs.
 # ---------------------------------------------------------------------------
 
 
-def test_cors_allowed_headers_do_not_include_authorization_yet() -> None:
-    assert "Authorization" not in _CORS_ALLOWED_HEADERS
-    # The headers the anonymous flow already needs are present.
+def test_cors_allows_authorization_alongside_the_anonymous_headers() -> None:
+    assert "Authorization" in _CORS_ALLOWED_HEADERS
+    # The headers the anonymous flow already needs are still present.
     assert "Content-Type" in _CORS_ALLOWED_HEADERS
     assert "X-Dibs-Client-Id" in _CORS_ALLOWED_HEADERS

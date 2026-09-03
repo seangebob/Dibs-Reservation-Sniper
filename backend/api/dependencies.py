@@ -7,19 +7,54 @@ concurrent first requests cannot build two of them.
 
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, Header, Request
 
 from backend.config import ConfigurationError, Settings, WatchSettings
+from backend.models.account import User
 from backend.orchestrator.engine import OrchestratorEngine
 from backend.orchestrator.providers import OpenAIIntentProvider
 from backend.orchestrator.router import PromptRouter
-from backend.services.auth_service import AuthService
+from backend.services.auth_service import AuthenticationRequiredError, AuthService
 from backend.services.booking_service import BookingService
 from backend.services.watch_service import WatchService
 
 
 class AccountsUnavailableError(RuntimeError):
     """Accounts require PostgreSQL, which is not configured (-> 503)."""
+
+
+def bearer_token(authorization: str | None) -> str | None:
+    """Extract the raw token from an ``Authorization: Bearer <token>`` header,
+    or None when absent/malformed. Shared by the auth routes and the optional
+    auth lens below."""
+
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip() or None
+    return None
+
+
+async def current_user(
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+) -> User | None:
+    """Optional auth lens: a valid bearer resolves to its user; a missing, bad,
+    or expired token -- or accounts being unavailable -- is anonymous, never an
+    error (Requirement 2.2). Task 7 attaches this to the watch routes."""
+
+    service: AuthService | None = getattr(request.app.state, "auth_service", None)
+    if service is None:
+        return None
+    return await service.authenticate(bearer_token(authorization))
+
+
+async def require_user(
+    user: Annotated[User | None, Depends(current_user)],
+) -> User:
+    """Like :func:`current_user`, but 401s instead of falling back to anonymous."""
+
+    if user is None:
+        raise AuthenticationRequiredError()
+    return user
 
 
 def get_auth_service(request: Request) -> AuthService:
