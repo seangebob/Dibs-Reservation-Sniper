@@ -112,6 +112,85 @@ def test_a_bearer_token_is_inert_on_existing_routes(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Task 12 / Req 7.2, in its strongest form: not merely "still works" but
+# BYTE-IDENTICAL. Every Milestone 1-4 route must answer exactly the same bytes
+# whether or not an (unusable) Authorization header rides along, so no client
+# can detect that authentication was ever added.
+# ---------------------------------------------------------------------------
+
+
+def test_reading_a_watch_is_byte_identical_with_and_without_a_bearer(
+    client: TestClient,
+) -> None:
+    watch_id = client.post(
+        "/api/watches", json=QUERY, headers={"X-Dibs-Client-Id": "visitor-alpha"}
+    ).json()["watch_id"]
+
+    anonymous = client.get(f"/api/watches/{watch_id}")
+    with_bearer = client.get(f"/api/watches/{watch_id}", headers=A_BEARER)
+
+    assert anonymous.status_code == with_bearer.status_code == 200
+    assert anonymous.content == with_bearer.content
+
+
+@pytest.mark.parametrize("path", ["/health", "/api/watches", "/api/watches/mine"])
+def test_collection_routes_are_byte_identical_with_and_without_a_bearer(
+    client: TestClient, path: str
+) -> None:
+    client.post("/api/watches", json=QUERY, headers={"X-Dibs-Client-Id": "visitor-alpha"})
+
+    assert client.get(path).content == client.get(path, headers=A_BEARER).content
+
+
+def test_an_unknown_watch_is_still_a_plain_404_under_a_bearer(
+    client: TestClient,
+) -> None:
+    """A missing watch must not become a 401/403 just because a token was sent."""
+
+    anonymous = client.get("/api/watches/watch_ghost")
+    with_bearer = client.get("/api/watches/watch_ghost", headers=A_BEARER)
+
+    assert anonymous.status_code == with_bearer.status_code == 404
+    assert anonymous.content == with_bearer.content
+
+
+# ---------------------------------------------------------------------------
+# Req 7.3: Milestone 5's ownership lives entirely in the history projection.
+# The public `Watch` model must not have gained a field.
+# ---------------------------------------------------------------------------
+
+#: Exactly the Milestone 4 `Watch` interface in `frontend/types/api.ts`.
+M4_WATCH_FIELDS = {
+    "watch_id",
+    "status",
+    "query",
+    "auto_book",
+    "created_at",
+    "updated_at",
+    "expires_at",
+    "attempts",
+    "max_attempts",
+    "last_checked_at",
+    "next_check_at",
+    "found_slots",
+    "booking",
+    "last_error",
+}
+
+
+def test_the_public_watch_body_gained_no_field_in_milestone_5(
+    client: TestClient,
+) -> None:
+    body = client.post(
+        "/api/watches", json=QUERY, headers={"X-Dibs-Client-Id": "visitor-alpha"}
+    ).json()
+
+    assert set(body) == M4_WATCH_FIELDS
+    for leaked in ("user_id", "owner_client_id", "owner", "client_id", "email"):
+        assert leaked not in body
+
+
+# ---------------------------------------------------------------------------
 # Updated by Task 5: /api/auth/* now exist, but with no PostgreSQL configured
 # (this env) they degrade to 503 accounts-unavailable -- never 404, and never
 # affecting the anonymous flow above (Req 6.2).

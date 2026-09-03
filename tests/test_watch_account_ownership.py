@@ -219,3 +219,67 @@ def test_auth_without_a_client_id_claims_nothing(client) -> None:
     tc.post("/api/auth/signup", json=CREDS)  # ...but no client id on signup
 
     assert tc.get("/api/watches/mine", headers=BEARER_A).json() == []
+
+
+def test_a_claimed_watch_falls_under_the_access_boundary(client) -> None:
+    """Req 4.2: claiming is not just a listing change -- the watch becomes
+    account-owned, so Requirement 3's 404 boundary now applies to it."""
+
+    tc, _ = client
+    watch_id = _create(tc, CLIENT_1)
+    # Before the claim it is anonymous, so anyone may read it by id.
+    assert tc.get(f"/api/watches/{watch_id}", headers=BEARER_B).status_code == 200
+
+    tc.post("/api/auth/signup", json=CREDS, headers=CLIENT_1)  # -> USER_A
+
+    assert tc.get(f"/api/watches/{watch_id}", headers=BEARER_A).status_code == 200
+    assert tc.get(f"/api/watches/{watch_id}", headers=BEARER_B).status_code == 404
+    assert tc.get(f"/api/watches/{watch_id}").status_code == 404
+
+
+# --- Req 3.5: degrade to the anonymous case when the projection is off ------
+
+
+@pytest.fixture
+def projectionless_client():
+    """Accounts configured, but no history projection (PostgreSQL disabled)."""
+
+    app = create_app()
+    app.state.auth_service = _StubAuth()
+    # app.state.watch_history stays the create_app() default: None.
+    service = WatchService(
+        InMemoryWatchRepository(), _EmptyAdapter(), RecordingTaskQueue()
+    )
+    app.dependency_overrides[get_watch_service] = lambda: service
+    with TestClient(app) as test_client:
+        yield test_client
+    app.dependency_overrides.clear()
+
+
+def test_authentication_still_works_without_the_projection(
+    projectionless_client: TestClient,
+) -> None:
+    resp = projectionless_client.post("/api/auth/login", json=CREDS)
+    assert resp.status_code == 200
+    assert resp.json()["user"]["email"] == USER_A.email
+
+
+def test_ownership_enforcement_degrades_to_the_anonymous_case(
+    projectionless_client: TestClient,
+) -> None:
+    tc = projectionless_client
+    watch_id = _create(tc, BEARER_A)  # created while authenticated...
+
+    # ...but with nothing recording ownership, the watch stays reachable by id
+    # exactly as in Milestones 1-4 rather than the request failing.
+    assert tc.get(f"/api/watches/{watch_id}").status_code == 200
+    assert tc.get(f"/api/watches/{watch_id}", headers=BEARER_B).status_code == 200
+
+
+def test_mine_is_an_empty_list_not_an_error_without_the_projection(
+    projectionless_client: TestClient,
+) -> None:
+    resp = projectionless_client.get("/api/watches/mine", headers=BEARER_A)
+
+    assert resp.status_code == 200
+    assert resp.json() == []

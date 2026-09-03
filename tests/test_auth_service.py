@@ -191,6 +191,22 @@ def test_login_unknown_email_and_wrong_password_fail_identically() -> None:
     assert str(unknown.value) == str(wrong.value) == "Invalid email or password."
 
 
+def test_a_failed_login_locks_or_mutates_nothing() -> None:
+    """Req 1.4: a wrong password must not lock, delete, or otherwise change the
+    account -- the right password still works immediately afterwards."""
+
+    service, _, _ = _service()
+    _run(service.signup("known@x.com", "hunter2-secret"))
+
+    for _ in range(3):
+        with pytest.raises(InvalidCredentialsError):
+            _run(service.login("known@x.com", "wrong-password"))
+
+    user, token = _run(service.login("known@x.com", "hunter2-secret"))
+    assert user.email == "known@x.com"
+    assert _run(service.authenticate(token)) is not None
+
+
 # --- logout + authenticate --------------------------------------------------
 
 
