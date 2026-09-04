@@ -510,9 +510,13 @@ image, then let recovery run again before workers resume.
 
 Milestone 4 adds a Next.js frontend (`frontend/`) and the seams it needs: a
 durable, owner-scoped watch-history projection in PostgreSQL, browser CORS, and
-an anonymous client identity. There is **no authentication** — a visitor's
-browser generates an opaque `X-Dibs-Client-Id` token, persists it in
+an anonymous client identity. At this milestone there was **no authentication** —
+a visitor's browser generates an opaque `X-Dibs-Client-Id` token, persists it in
 `localStorage`, and sends it so the API can answer "which watches are mine."
+
+> Milestone 5 added real accounts on top of this seam. The anonymous identity
+> above still works exactly as described — it is now the logged-out path, and a
+> visitor's anonymous watches are claimed by their account on signup/login.
 
 ### New configuration
 
@@ -697,6 +701,74 @@ dibs/
 ├── .gitignore
 ├── README.md
 └── docker-compose.yml
+
+## Milestone 5: Accounts and authentication
+
+Milestone 5 turns Milestone 4's anonymous `X-Dibs-Client-Id` scoping into a real
+access boundary. Accounts are email + password (argon2id); a session is an opaque
+bearer token whose `sha256` is all the server stores, sent as
+`Authorization: Bearer <token>`.
+
+The guiding rule is that **authentication is an optional lens, never a gate**: a
+request with no `Authorization` header behaves byte-for-byte as it did in
+Milestone 4, and with no PostgreSQL the account endpoints report a clear
+"accounts unavailable" 503 rather than crashing.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/auth/signup` | Create an account, open a session, claim this browser's anonymous watches |
+| `POST /api/auth/login` | Open a session, claim this browser's anonymous watches |
+| `POST /api/auth/logout` | Revoke the presented session (idempotent) |
+| `GET /api/auth/me` | The signed-in account: `id`, `email`, `created_at` |
+
+Ownership lives entirely in the `watch_history` projection (`user_id`), never on
+the public `Watch` model. `GET /api/watches/mine` scopes by account when
+authenticated; `GET`/`DELETE /api/watches/{id}` answer `404` for an account-owned
+watch requested by anyone else — indistinguishable from "not found", so the
+boundary leaks no existence. Anonymous watches stay reachable by id exactly as in
+Milestones 1–4.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SESSION_TTL_SECONDS` | `2592000` | Session lifetime (30 days) |
+| `PASSWORD_MIN_LENGTH` | `8` | Signup password policy |
+| `LOGIN_THROTTLE_MAX_ATTEMPTS` | `10` | Failed logins per window before `429` |
+| `LOGIN_THROTTLE_WINDOW_SECONDS` | `300` | That window |
+
+## Milestone 6: Notification delivery
+
+Until Milestone 6, Dibs could watch, book, and durably record a reservation but
+could not tell anyone: the notifier wrote a log line. A watch that found a table
+at 2am notified nobody. This milestone makes the announcement real, which is the
+payoff of Milestone 5 — before accounts there was no address to send to.
+
+Delivery is **best-effort and never retried**. A failure is logged and abandoned
+rather than queued, so nobody is ever emailed twice about the same event, and the
+dashboard remains the durable record. Notification is isolated from watch state:
+it runs *after* the history write, inside a timeout, and its failures can never
+change a committed transition or fail a poll.
+
+Both the API process and the Celery worker compose the same projection and
+notifier, so a background poll behaves exactly like an in-process one.
+
+Set `SMTP_HOST` to enable email; leave it unset and everything behaves exactly as
+Milestone 5 did, with log-only notifications.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SMTP_HOST` | unset | Relay host. Unset ⇒ email disabled |
+| `SMTP_PORT` | `587` | Relay port |
+| `SMTP_FROM` | — | Sender address; **required** once `SMTP_HOST` is set |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | unset | Both, or neither for an open relay |
+| `SMTP_STARTTLS` | `true` | Negotiate TLS |
+| `SMTP_TIMEOUT_SECONDS` | `10` | Socket timeout, and the notification ceiling |
+| `DASHBOARD_BASE_URL` | `http://localhost:3000` | Base for the link in a message |
+| `PROMPT_THROTTLE_MAX_REQUESTS` | `20` | Requests per window to the paid prompt endpoints |
+| `PROMPT_THROTTLE_WINDOW_SECONDS` | `300` | That window |
+
+The notification log line carries only the watch id, event, and attempt count —
+the venue, date, and party size were removed, because they are someone's
+reservation and a log aggregator is the wrong place for them.
 
 for this week:
 # Milestone 3: Set Up Background Queue + State

@@ -6,18 +6,22 @@ Milestone 6 touches:
 - Enduring: a terminal transition announces itself exactly once per event, and
   cancellation stays event-free (Milestone 3's rule). Nothing public exposes a
   recipient, and the default with no notifier injected is the logging one.
-- Updated by Task 2: today `notify()` runs BEFORE the history write and is
-  bare-awaited, so a raising notifier escapes a committed transition. Both are
-  recorded here as the current behavior so Task 2's change is visible and
-  deliberate rather than silent.
-- Updated by Task 7: the Celery worker's service carries neither a history
-  recorder nor a notifier.
+- Updated by Task 2: the two assertions that pinned the pre-fix behavior (a
+  raising notifier escaping a committed transition, and the legacy paths
+  announcing before they projected) are inverted here, which is exactly the
+  visible, deliberate change Task 1 existed to set up.
+- Updated by Task 7: the worker now composes both collaborators when PostgreSQL
+  is configured; what remains pinned here is the standalone case, where it still
+  composes neither. The configured case lives in test_worker_projection.py.
+- Added by Task 8: one end-to-end privacy sentinel over a real terminal
+  transition with delivery composed.
 
 Deliberately overlaps other suites: the point of a baseline is to survive a
 future refactor of the suites those assertions live in.
 """
 
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -330,31 +334,36 @@ def test_a_failing_notification_is_identical_to_a_succeeding_one(
 
 
 # ---------------------------------------------------------------------------
-# Updated by Task 7: the worker composes neither collaborator today.
+# Updated by Task 7: with no PostgreSQL the worker still composes neither
+# collaborator, which is the enduring standalone guarantee (Requirement 4.3).
+# The configured case is covered in test_worker_projection.py.
 # ---------------------------------------------------------------------------
 
 
-def test_the_worker_service_has_no_history_recorder_or_notifier(
+def test_the_worker_service_stays_bare_without_postgres(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Why background poll outcomes reach neither the dashboard nor anyone,
-    even though `infra/docker-compose.yml` passes the worker `POSTGRES_URL`."""
+    """No `POSTGRES_URL` must behave exactly as every Milestone 1-5 worker did:
+    no projection, no email, and above all no startup failure."""
 
     pytest.importorskip("celery", reason="requires the worker extra")
     pytest.importorskip("kombu", reason="requires the worker extra")
     from backend.workers.tasks import monitor_watch as task_module
 
+    monkeypatch.delenv("POSTGRES_URL", raising=False)
     monkeypatch.setattr(
         task_module, "_settings", lambda: Settings(openai_api_key="test-key")
     )
     monkeypatch.setattr(task_module, "_redis_client", lambda: object())
     task_module.build_watch_service.cache_clear()
+    task_module._postgres_pool.cache_clear()
     try:
         service = task_module.build_watch_service()
         assert service._history is None
         assert isinstance(service._notifier, LoggingNotificationService)
     finally:
         task_module.build_watch_service.cache_clear()
+        task_module._postgres_pool.cache_clear()
 
 
 # ---------------------------------------------------------------------------
@@ -380,3 +389,68 @@ def test_no_public_watch_body_carries_a_recipient(client: TestClient) -> None:
     body = created.json()
     for leaked in ("email", "recipient", "notify_to", "user_id", "owner_client_id"):
         assert leaked not in body
+
+
+# ---------------------------------------------------------------------------
+# Task 8: one end-to-end privacy sentinel over a real terminal transition,
+# with email delivery actually composed (Requirements 6.1, 6.2, 6.3).
+# ---------------------------------------------------------------------------
+
+
+def test_a_full_terminal_transition_leaks_nothing_into_the_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Everything the system logs while finding, projecting, and emailing a
+    watch -- scanned for the reservation, the recipient, and the credential."""
+
+    from backend.config import EmailSettings
+    from backend.integrations.email import ComposedEmail, EmailNotificationService
+
+    sent: list[ComposedEmail] = []
+
+    class _Resolver:
+        async def email_for_watch(self, watch_id: str) -> str | None:
+            return "scout@example.com"
+
+    class _Sender:
+        async def send(self, *, recipient: str, email: ComposedEmail) -> None:
+            sent.append(email)
+
+    # Proves the sentinel would notice a password if one were ever logged.
+    settings = EmailSettings(
+        host="smtp.example.com",
+        sender="dibs@example.com",
+        username="dibs",
+        password="s3cr3t-sentinel",
+    )
+    assert settings.password == "s3cr3t-sentinel"
+
+    service = _build(
+        MockBookingAdapter(),
+        notifier=EmailNotificationService(
+            resolver=_Resolver(),
+            sender=_Sender(),
+            dashboard_base_url="https://dibs.example.com",
+        ),
+        history=_SequenceHistory([]),
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        watch = _run(service.create(query()))
+        result = _run(service.poll_once(watch.watch_id))
+
+    assert result.outcome is WatchPollOutcome.FOUND
+    assert len(sent) == 1  # the email really was composed and delivered
+
+    rendered = " ".join(record.getMessage() for record in caplog.records)
+    for private in (
+        "Cote",  # venue
+        TARGET_DATE,  # reservation date
+        "party",  # party size
+        "scout@example.com",  # recipient
+        "s3cr3t-sentinel",  # SMTP credential
+    ):
+        assert private not in rendered, f"{private!r} leaked into the logs"
+
+    # The email itself of course carries the reservation -- that is its job.
+    assert "Cote" in sent[0].subject

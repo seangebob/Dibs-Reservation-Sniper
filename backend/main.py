@@ -28,11 +28,13 @@ from backend.config import (
     DEFAULT_MOCK_BOOKING_RETENTION_SECONDS,
     DEFAULT_MOCK_SLOT_CAPACITY,
     DEFAULT_MOCK_SLOT_IDLE_TTL_SECONDS,
+    DEFAULT_NOTIFY_TIMEOUT_SECONDS,
     DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS,
     DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS,
     AccountSettings,
     ConfigurationError,
     CorsSettings,
+    EmailSettings,
     PostgresSettings,
     PromptThrottleSettings,
     Settings,
@@ -58,6 +60,10 @@ from backend.integrations.base import (
     SlotNotFoundError,
     SlotUnavailableError,
 )
+from backend.integrations.email import (
+    EmailNotificationService,
+    SmtplibSender,
+)
 from backend.integrations.mock_booking import MockBookingAdapter
 from backend.logging_config import configure_application_logging
 from backend.models.account import User
@@ -81,6 +87,7 @@ from backend.services.throttle import (
     throttle_key,
 )
 from backend.services.password import build_password_hasher
+from backend.services.recipients import AccountRecipientResolver
 from backend.services.readiness import Readiness, ReadinessTracker
 from backend.services.watch_recovery import RecoveryCoordinator
 from backend.services.watch_service import WatchService
@@ -230,6 +237,33 @@ async def _attach_postgres(app: FastAPI) -> None:
         )
     except ConfigurationError as exc:
         logger.error("Account settings invalid; accounts disabled: %s", str(exc))
+
+    # Outbound email (Milestone 6). Also built here, because resolving a
+    # recipient needs both the projection and the accounts table: with no
+    # PostgreSQL there is no account to email, so the logging notifier stays.
+    # Bad email settings degrade the same way accounts do -- logged, log-only
+    # notifications, never a failed startup (Requirement 5.2).
+    try:
+        email_settings = EmailSettings.from_environment()
+    except ConfigurationError as exc:
+        logger.error(
+            "Email settings invalid; notifications stay log-only: %s", str(exc)
+        )
+        return
+    if not email_settings.enabled:
+        return
+    app.state.notifier = EmailNotificationService(
+        resolver=AccountRecipientResolver(
+            app.state.watch_history, AccountRepository(pool)
+        ),
+        sender=SmtplibSender(email_settings),
+        dashboard_base_url=email_settings.dashboard_base_url,
+    )
+    # Match the wrapper's ceiling to the transport's, so neither silently
+    # pre-empts the other (the socket timeout is what actually frees the
+    # worker thread; `_notify`'s wait only frees the poll).
+    app.state.notify_timeout_seconds = float(email_settings.timeout_seconds)
+    logger.info("Email notifications enabled via %s", email_settings.host)
 
 
 async def _attach_redis(app: FastAPI) -> None:
@@ -482,6 +516,10 @@ def _build_watch_service(
         queue,
         schedule=schedule,
         history=app.state.watch_history_recorder,
+        # None until PostgreSQL and SMTP are both configured, in which case
+        # `WatchService` falls back to the logging notifier exactly as before.
+        notifier=app.state.notifier,
+        notify_timeout_seconds=app.state.notify_timeout_seconds,
         timezone_name=timezone_name,
         max_attempts=(
             max_attempts if max_attempts is not None else DEFAULT_MAX_POLL_ATTEMPTS
@@ -561,6 +599,10 @@ def create_app() -> FastAPI:
     app.state.postgres_pool = None
     app.state.watch_history = None
     app.state.watch_history_recorder = None
+    # No notifier means WatchService keeps its LoggingNotificationService
+    # default, which is the whole of Milestone 1-5 behavior (Requirement 5.1).
+    app.state.notifier = None
+    app.state.notify_timeout_seconds = DEFAULT_NOTIFY_TIMEOUT_SECONDS
     app.state.auth_service = None
     app.state.login_throttle = None
     # Unlike the login throttle, this one is always present: it caps spend on a

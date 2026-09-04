@@ -5,7 +5,7 @@ Task 2 makes notification safe to fail *before* Task 4 puts a real mail server b
 ordering matters, because reversing it would briefly make a mail outage able to corrupt a watch
 transition.
 
-- [ ] 1. Characterize and lock the pre-notification baseline
+- [x] 1. Characterize and lock the pre-notification baseline
   - Write tests proving today's contract before delivery exists: the logging notifier is the default
     when none is injected; a terminal transition calls `notify` exactly once per event; the worker's
     built service currently carries neither a history recorder nor a notifier; and no route or model
@@ -15,7 +15,7 @@ transition.
     `git diff --check`.
   - _Requirements: 6.4, 6.5_
 
-- [ ] 2. Make notification best-effort, bounded, and second
+- [x] 2. Make notification best-effort, bounded, and second
   - Add `WatchService._notify(watch, event)` mirroring the existing `_record_history` helper: catches
     every exception, logs a warning, never raises. Wrap the call in `asyncio.wait_for` with a
     configurable timeout so a hung relay cannot outlive a Milestone 3 lease.
@@ -29,7 +29,7 @@ transition.
     the notifier succeeds, raises, or times out_
   - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5_
 
-- [ ] 3. Add email configuration and strip the log line
+- [x] 3. Add email configuration and strip the log line
   - Add `EmailSettings` to `config.py` following `AccountSettings`' bounded `from_environment()`
     pattern (host, port, username, password, from, STARTTLS, timeout, dashboard base URL). An unset
     `SMTP_HOST` means disabled; a set host with no `SMTP_FROM` raises `ConfigurationError`. Keep the
@@ -38,7 +38,7 @@ transition.
     `watch_id`, `event`, and `attempts`.
   - _Requirements: 5.2, 5.3, 5.4, 6.1, 6.2_
 
-- [ ] 4. Build the email notification service
+- [x] 4. Build the email notification service
   - Add `backend/integrations/email.py`: a pure message composer (subject naming venue + outcome,
     plain-text body with the dashboard link, booking confirmation id on `BOOKED`), an injectable
     `SmtpSender` wrapping `smtplib` under `asyncio.to_thread`, and `EmailNotificationService`
@@ -49,7 +49,7 @@ transition.
     describing the outcome; delivery failures are logged and abandoned, never retried_
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 6.3_
 
-- [ ] 5. Resolve the recipient from the projection
+- [x] 5. Resolve the recipient from the projection
   - Add `backend/services/recipients.py`: `RecipientResolver` composing the two methods Milestone 5
     already shipped — `WatchHistoryRepository.get_account_owner(watch_id)` then
     `AccountRepository.get_by_id(user_id)` — returning the address or `None`. Add no SQL and no
@@ -58,14 +58,14 @@ transition.
     raising.
   - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5_
 
-- [ ] 6. Wire the notifier into the API process
+- [x] 6. Wire the notifier into the API process
   - Build the resolver and `EmailNotificationService` in `_attach_postgres` alongside `AuthService`,
     behind the same `ConfigurationError` degradation: bad email settings log and fall back to the
     logging notifier rather than failing startup. Pass `notifier=` into the `WatchService` the API
     composes — a wiring point that does not exist today at all.
   - _Requirements: 5.1, 5.2_
 
-- [ ] 7. Give the Celery worker the projection and the notifier
+- [x] 7. Give the Celery worker the projection and the notifier
   - In `monitor_watch.py`, build a cached asyncpg pool from `PostgresSettings` when `POSTGRES_URL` is
     configured and pass `history=WatchHistoryRepository(pool)` and the same `notifier=` into
     `build_watch_service()`. With no PostgreSQL configured, behave exactly as today.
@@ -77,7 +77,7 @@ transition.
     same delivery_
   - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5_
 
-- [ ] 8. Full validation
+- [x] 8. Full validation
   - Backend `python -m pytest` (full suite — M1–5 regressions plus M6), `python -m mypy backend`,
     `python -m compileall backend tests`, `git diff --check`. Frontend `typecheck` + `vitest` +
     `next build` (unchanged by this milestone; run to prove it).

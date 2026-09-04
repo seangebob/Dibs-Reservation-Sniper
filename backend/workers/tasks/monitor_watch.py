@@ -12,11 +12,22 @@ from kombu.exceptions import OperationalError as BrokerOperationalError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
-from backend.config import WatchSettings
+from backend.config import (
+    ConfigurationError,
+    EmailSettings,
+    PostgresSettings,
+    WatchSettings,
+)
 from backend.db.database import create_redis_client
+from backend.db.postgres import create_pool
+from backend.db.repositories.accounts import AccountRepository
 from backend.db.repositories.mock_booking import RedisMockBookingStateRepository
+from backend.db.repositories.watch_history import WatchHistoryRepository
 from backend.db.repositories.watches import RedisWatchRepository
+from backend.integrations.email import EmailNotificationService, SmtplibSender
 from backend.integrations.mock_booking import MockBookingAdapter
+from backend.services.notification_service import NotificationService
+from backend.services.recipients import AccountRecipientResolver
 from backend.services.watch_service import WatchService
 from backend.workers.celery_app import celery_app
 from backend.workers.queue import CeleryTaskQueue
@@ -57,10 +68,84 @@ def _redis_client() -> Any:
 
 
 @lru_cache(maxsize=1)
+def _postgres_pool() -> Any:
+    """The worker's own pool, or None when PostgreSQL is not configured.
+
+    Deliberately does NOT take `_runner_lock`: its caller holds that while
+    creating the pool on the runner's loop, and `_close_worker_resources` reads
+    the already-cached value while holding it too. Locking here would deadlock
+    shutdown, since `threading.Lock` is not reentrant.
+    """
+
+    try:
+        settings = PostgresSettings.from_environment()
+    except ConfigurationError as exc:
+        logger.error(
+            "PostgreSQL configuration is invalid; this worker's poll outcomes "
+            "will not reach the durable projection: %s",
+            str(exc),
+        )
+        return None
+    if not settings.enabled:
+        return None
+    try:
+        # On the runner's loop, so the pool's connections live where the polls
+        # that use them run.
+        return _runner().run(create_pool(settings))
+    except Exception:
+        logger.exception(
+            "PostgreSQL is unreachable; this worker's poll outcomes will not "
+            "reach the durable projection"
+        )
+        return None
+
+
+def _build_notifier(pool: Any) -> NotificationService | None:
+    """The same email notifier the API composes, or None to keep logging.
+
+    Requires the pool: an address is resolved from the projection and the
+    accounts table, so with no PostgreSQL there is nobody to email.
+    """
+
+    if pool is None:
+        return None
+    try:
+        settings = EmailSettings.from_environment()
+    except ConfigurationError as exc:
+        logger.error(
+            "Email settings invalid; this worker's notifications stay "
+            "log-only: %s",
+            str(exc),
+        )
+        return None
+    if not settings.enabled:
+        return None
+    return EmailNotificationService(
+        resolver=AccountRecipientResolver(
+            WatchHistoryRepository(pool), AccountRepository(pool)
+        ),
+        sender=SmtplibSender(settings),
+        dashboard_base_url=settings.dashboard_base_url,
+    )
+
+
+@lru_cache(maxsize=1)
 def build_watch_service() -> WatchService:
-    """Build one service whose async resources stay on the runner's loop."""
+    """Build one service whose async resources stay on the runner's loop.
+
+    Milestone 6: this worker now composes the same durable projection and
+    notifier the API process does. Before that it had neither, so every poll
+    outcome discovered in the background updated no dashboard and told no one --
+    even though `infra/docker-compose.yml` passes this worker `POSTGRES_URL`
+    precisely so that it would.
+    """
 
     settings = _settings()
+    # The pool is created on the runner's loop, so this is serialized the same
+    # way every other runner use is. `monitor_watch` calls this before taking
+    # the lock itself, so the two acquisitions are sequential, never nested.
+    with _runner_lock:
+        pool = _postgres_pool()
     # The adapter is stateless; its state lives in Redis under the shared prefix,
     # so this worker books against the same store as the API and its siblings.
     mock_state = RedisMockBookingStateRepository(
@@ -80,6 +165,8 @@ def build_watch_service() -> WatchService:
             interval_seconds=float(settings.poll_interval_seconds),
             jitter_seconds=float(settings.poll_jitter_seconds),
         ),
+        history=WatchHistoryRepository(pool) if pool is not None else None,
+        notifier=_build_notifier(pool),
         max_attempts=settings.max_poll_attempts,
         provider_timeout_seconds=settings.provider_call_timeout_seconds,
         backoff_max_seconds=settings.provider_backoff_max_seconds,
@@ -103,7 +190,17 @@ def _close_worker_resources() -> None:
             if _redis_client.cache_info().currsize:
                 runner.run(_redis_client().aclose())
         finally:
-            runner.close()
+            try:
+                # `currsize` first: calling the factory here would otherwise
+                # build a pool during shutdown purely to close it. Safe to call
+                # while holding `_runner_lock` because `_postgres_pool` does not
+                # take it.
+                if _postgres_pool.cache_info().currsize:
+                    pool = _postgres_pool()
+                    if pool is not None:
+                        runner.run(pool.close())
+            finally:
+                runner.close()
 
 
 @worker_process_shutdown.connect(weak=False)

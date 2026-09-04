@@ -167,6 +167,7 @@ _CACHED_FACTORIES = (
     task_module._settings,
     task_module._runner,
     task_module._redis_client,
+    task_module._postgres_pool,
     task_module.build_watch_service,
 )
 
@@ -182,7 +183,13 @@ def isolated_task_module():
 
     originals = {
         name: getattr(task_module, name)
-        for name in ("_settings", "_runner", "_redis_client", "build_watch_service")
+        for name in (
+            "_settings",
+            "_runner",
+            "_redis_client",
+            "_postgres_pool",
+            "build_watch_service",
+        )
     }
     task_module._resources_closed = False
     yield
