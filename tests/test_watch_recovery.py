@@ -25,7 +25,9 @@ from backend.models.reservation import AvailabilityQuery
 from backend.models.watch import Watch, WatchStatus
 from backend.models.watch_runtime import initial_runtime, window_id_for
 from backend.orchestrator.schemas import VenueType
+from backend.integrations.mock_booking import MockBookingAdapter
 from backend.services.watch_recovery import RecoveryCoordinator
+from backend.services.watch_service import WatchService
 from backend.workers.dispatcher import WatchScheduleDispatcher
 
 
@@ -225,6 +227,83 @@ def test_an_overdue_active_watch_is_expired(harness: Harness) -> None:
 
         assert outcome.expired == 1
         stored = await harness.repo.get("watch_late")
+        assert stored is not None and stored.status is WatchStatus.EXPIRED
+
+    asyncio.run(scenario())
+
+
+class RecordingHistory:
+    def __init__(self) -> None:
+        self.records: list[tuple[str, WatchStatus]] = []
+
+    async def record(self, watch, owner_client_id=None, user_id=None) -> None:
+        self.records.append((watch.watch_id, watch.status))
+
+
+class RecordingNotifier:
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str]] = []
+
+    async def notify(self, watch, event) -> None:
+        self.sent.append((watch.watch_id, event.value))
+
+
+def test_a_sweep_expired_watch_is_projected_and_announced(
+    harness: Harness,
+) -> None:
+    """Recovery expiry used to call the repository directly, so a watch the
+    sweep expired reached EXPIRED in Redis while the projection never learned
+    of it and -- since Milestone 6 -- its owner was never emailed. A user
+    waiting on a table would simply stop hearing anything.
+    """
+
+    async def scenario() -> None:
+        history = RecordingHistory()
+        notifier = RecordingNotifier()
+        harness.coordinator._watch_service = WatchService(
+            harness.repo,
+            MockBookingAdapter(),
+            harness.queue,
+            history=history,
+            notifier=notifier,
+            clock=harness.clock,
+        )
+        await _seed(
+            harness.repo,
+            _watch("watch_done", attempts=25_000, max_attempts=25_000),
+        )
+
+        first = await harness.coordinator.reconcile_once()
+        # A second pass now sees a terminal record and must not announce again.
+        second = await harness.coordinator.reconcile_once()
+
+        assert first.expired == 1
+        assert second.expired == 0
+        stored = await harness.repo.get("watch_done")
+        assert stored is not None and stored.status is WatchStatus.EXPIRED
+        assert history.records == [("watch_done", WatchStatus.EXPIRED)]
+        assert notifier.sent == [("watch_done", "EXPIRED")]
+
+    asyncio.run(scenario())
+
+
+def test_expiry_without_a_service_still_transitions_the_watch(
+    harness: Harness,
+) -> None:
+    """The coordinator the worker builds has no service; the state change must
+    be identical, only unobserved."""
+
+    async def scenario() -> None:
+        assert harness.coordinator._watch_service is None
+        await _seed(
+            harness.repo,
+            _watch("watch_bare", attempts=25_000, max_attempts=25_000),
+        )
+
+        outcome = await harness.coordinator.reconcile_once()
+
+        assert outcome.expired == 1
+        stored = await harness.repo.get("watch_bare")
         assert stored is not None and stored.status is WatchStatus.EXPIRED
 
     asyncio.run(scenario())

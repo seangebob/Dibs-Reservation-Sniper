@@ -23,6 +23,7 @@ from backend.db.repositories.watch_decisions import (
     BookingPermitStatus,
     ClaimStatus,
     CommitStatus,
+    TransitionResult,
     TransitionStatus,
     WindowClaim,
 )
@@ -290,6 +291,29 @@ class WatchService:
         if result.watch is not None:
             await self._record_history(result.watch)
         return result.watch
+
+    async def expire(self, watch_id: str) -> TransitionResult:
+        """Expire an exhausted watch with the same effects a poll would have.
+
+        Recovery reaches watches no delivery ever will: one whose window was
+        lost to a crash is exhausted by the time the sweep sees it, and there
+        is no claim left to commit. Calling the repository directly there was a
+        silent hole -- the watch reached `EXPIRED` in Redis, but the projection
+        never learned of it and, since Milestone 6, the owner was never told.
+        The user waiting for a table would simply stop hearing anything.
+
+        The notification is gated on `event_id`, which the expire script issues
+        at most once per transition, so a watch that two sweeps race to expire
+        is still announced exactly once.
+        """
+
+        result = await self._repository.expire_if_eligible(watch_id)
+        if result.status is not TransitionStatus.APPLIED or result.watch is None:
+            return result
+        await self._record_history(result.watch)
+        if result.event_id is not None:
+            await self._notify(result.watch, WatchEvent.EXPIRED)
+        return result
 
     # -- polling ------------------------------------------------------------
 

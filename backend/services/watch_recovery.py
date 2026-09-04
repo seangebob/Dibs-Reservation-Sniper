@@ -83,11 +83,16 @@ class RecoveryCoordinator:
         leader_lease_seconds: float,
         earliest_delay_seconds: float,
         mock_state: Any | None = None,
+        watch_service: Any | None = None,
         cleanup_batch_size: int = _DEFAULT_CLEANUP_BATCH_SIZE,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._repository = repository
         self._dispatcher = dispatcher
+        # Optional so a coordinator can still run against a bare repository.
+        # When present, expiry goes through the service instead, so a
+        # sweep-expired watch is projected and announced like any other.
+        self._watch_service = watch_service
         self._owner_id = owner_id
         self._distributed = distributed
         self._leader_lease_seconds = leader_lease_seconds
@@ -208,7 +213,7 @@ class RecoveryCoordinator:
             )
             return "pruned"
         if watch.is_exhausted(now):
-            result = await self._repository.expire_if_eligible(candidate.watch_id)
+            result = await self._expire(candidate.watch_id)
             if result.status is TransitionStatus.APPLIED:
                 return "expired"
             return "noop"
@@ -226,6 +231,19 @@ class RecoveryCoordinator:
         # A future or due marker with no live claim is durable and correct; the
         # dispatcher publishes it exactly when it enters the horizon.
         return "preserved"
+
+    async def _expire(self, watch_id: str) -> Any:
+        """Expire through the service when one is wired, else the repository.
+
+        The distinction matters: only the service records the projection and
+        notifies the owner. A coordinator built without one falls back to the
+        original repository call, so the state transition itself is identical
+        either way and no caller is required to supply a service.
+        """
+
+        if self._watch_service is not None:
+            return await self._watch_service.expire(watch_id)
+        return await self._repository.expire_if_eligible(watch_id)
 
     def _marker_runtime(
         self, candidate: RecoveryCandidate, now: datetime

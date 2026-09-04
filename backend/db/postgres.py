@@ -20,7 +20,7 @@ from typing import Any, Protocol
 
 import asyncpg
 
-from backend.config import ConfigurationError, PostgresSettings
+from backend.config import ConfigurationError, PostgresSettings, redact_dsn
 
 
 __all__ = [
@@ -97,7 +97,8 @@ async def create_pool(settings: PostgresSettings) -> asyncpg.Pool:
     the first user request.
     """
 
-    if not settings.enabled:
+    dsn = settings.dsn
+    if dsn is None:
         raise ConfigurationError(
             "create_pool called without a POSTGRES_URL. Check enabled first."
         )
@@ -108,14 +109,16 @@ async def create_pool(settings: PostgresSettings) -> asyncpg.Pool:
     }
     try:
         pool = await asyncpg.create_pool(
-            dsn=settings.dsn,
+            dsn=dsn,
             min_size=settings.pool_min_size,
             max_size=settings.pool_max_size,
             server_settings=server_settings,
         )
     except (OSError, asyncpg.PostgresError) as exc:
+        # `main.py` logs this message at startup, so it must name the server
+        # without disclosing the credentials used to reach it.
         raise ConfigurationError(
-            f"Could not connect to PostgreSQL at {settings.dsn!r}: {exc}"
+            f"Could not connect to PostgreSQL at {redact_dsn(dsn)}: {exc}"
         ) from exc
     if pool is None:
         # asyncpg.create_pool is typed to return `Pool | None` for the case

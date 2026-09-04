@@ -444,6 +444,10 @@ async def _start_recovery(
         leader_lease_seconds=float(settings.recovery_leader_lease_seconds),
         earliest_delay_seconds=schedule.earliest_delay,
         mock_state=app.state.mock_booking_state,
+        # Every branch above binds the service before starting recovery, so a
+        # watch the sweep expires is projected and announced exactly like one
+        # a poll expires.
+        watch_service=app.state.watch_service,
     )
     app.state.recovery_coordinator = coordinator
     app.state.readiness.record_recovery_outcome(await coordinator.reconcile_once())

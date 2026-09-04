@@ -29,12 +29,17 @@ Each of these was confirmed against the code on 2026-09-03, not taken on the spe
 | 1.24 | `LoggingNotificationService` logs venue, date, and party size | M6 Task 3 |
 | 1.25 | `notify()` is bare-awaited at all five call sites ahead of the history write, so a notifier failure escapes a committed transition | M6 Task 2 |
 
+**Fixed 2026-09-04**, after Milestone 6 made the second one user-visible:
+
+| Claim | Finding | Fix |
+| --- | --- | --- |
+| 1.13 | The Postgres DSN — password included — was interpolated into a `ConfigurationError` that `main.py` logs at startup | `config.redact_dsn` renders scheme/host/port/database only, dropping userinfo and the query string whole. Applied at both leak sites (the invalid-scheme error too, which the audit missed), and `PostgresSettings.dsn` is now `repr=False` so no traceback rendering discloses it. |
+| 1.15 | Recovery expiry called `expire_if_eligible` on the repository directly, so a sweep-expired watch was never projected and — after M6 — its owner was never emailed | New `WatchService.expire`, mirroring `cancel`: the same repository transition, then the projection write and a notification gated on the `event_id` the expire script already issues at most once. `RecoveryCoordinator` takes an optional `watch_service` and falls back to the bare repository call when it has none. |
+
 **Still open — real, verified, and not yet scheduled:**
 
 | Claim | Finding | Location |
 | --- | --- | --- |
-| 1.13 | The Postgres DSN — password included — is interpolated into a `ConfigurationError` that is logged at startup | `backend/db/postgres.py:118` |
-| 1.15 | Recovery expiry calls `expire_if_eligible` on the repository directly, bypassing `WatchService`, so no projection write and no notification | `backend/services/watch_recovery.py:211` |
 | 1.30 | The worker container inherits the image's API HTTP healthcheck and is therefore permanently "unhealthy" | `Dockerfile:40` + the `worker` service in `infra/docker-compose.yml` |
 | 1.26 | `smembers` reads the entire watch/active index | `backend/db/repositories/watches.py:892,896,1510` |
 | 1.4 | The projection upsert has no revision guard, so out-of-order writes can overwrite newer state | `backend/db/repositories/watch_history.py` |
@@ -42,8 +47,8 @@ Each of these was confirmed against the code on 2026-09-03, not taken on the spe
 | 1.29 | Migrations are tracked by version only, with no checksum, so an edited applied migration goes undetected | `backend/db/postgres.py` |
 | 1.8 | `/api/watches/mine` orders by `updated_at` and silently truncates at 100 | `backend/api/routes/watches.py` |
 
-The first three are small and worth doing; 1.13 in particular is a two-line fix for a real
-credential exposure.
+1.30 is small and worth doing. The rest are real but not urgent at this scale, and none of them is
+a reason to implement this spec as written.
 
 ## What is rejected outright
 

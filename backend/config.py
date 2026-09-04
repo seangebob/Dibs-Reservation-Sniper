@@ -301,6 +301,32 @@ class WatchSettings:
         )
 
 
+def redact_dsn(dsn: str) -> str:
+    """Render a connection URL as a target safe to log.
+
+    A DSN carries a password in its userinfo and, for some drivers, in its
+    query string, so the raw value must never reach a log line or an exception
+    message. What is left -- scheme, host, port, database -- is everything an
+    operator needs to see *which* server was refused, and nothing that would
+    let a reader connect to it. The query string is dropped whole rather than
+    filtered, because the safe set differs per driver and a miss is a leak.
+
+    Never returns its input: an unparseable value yields a placeholder, so no
+    caller can accidentally echo the original by way of a fallback.
+    """
+
+    try:
+        parsed = urlparse(dsn)
+        port = f":{parsed.port}" if parsed.port else ""
+    except ValueError:
+        # `.port` raises on a non-numeric port; the rest of the value is
+        # untrustworthy too, so disclose none of it.
+        return "<unparseable connection URL>"
+    scheme = parsed.scheme or "unknown-scheme"
+    host = parsed.hostname or "unknown-host"
+    return f"{scheme}://{host}{port}{parsed.path}"
+
+
 @dataclass(frozen=True, slots=True)
 class PostgresSettings:
     """Configuration for the durable watch-history projection.
@@ -309,9 +335,14 @@ class PostgresSettings:
     backend runs standalone. When set, it must be a syntactically valid
     ``postgres://`` or ``postgresql://`` URL -- an empty or malformed value
     fails startup with `ConfigurationError` rather than silently disabling.
+
+    It is declared ``repr=False`` for the same reason as `EmailSettings`'
+    password: it carries a credential, and a dataclass rendering inside a
+    traceback is a log line nobody chose to write. Read it through ``.dsn``;
+    log it through `redact_dsn`.
     """
 
-    dsn: str | None = None
+    dsn: str | None = field(default=None, repr=False)
     pool_min_size: int = DEFAULT_POSTGRES_POOL_MIN_SIZE
     pool_max_size: int = DEFAULT_POSTGRES_POOL_MAX_SIZE
     statement_timeout_seconds: int = DEFAULT_POSTGRES_STATEMENT_TIMEOUT_SECONDS
@@ -335,8 +366,8 @@ class PostgresSettings:
         scheme = urlparse(dsn).scheme
         if scheme not in {"postgres", "postgresql"}:
             raise ConfigurationError(
-                f"Invalid POSTGRES_URL: {dsn!r}. Expected a postgres:// or "
-                "postgresql:// URL."
+                f"Invalid POSTGRES_URL: {redact_dsn(dsn)}. Expected a "
+                "postgres:// or postgresql:// URL."
             )
 
         pool_min = _bounded_count(
