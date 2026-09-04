@@ -19,8 +19,10 @@ transition.
   - Add `WatchService._notify(watch, event)` mirroring the existing `_record_history` helper: catches
     every exception, logs a warning, never raises. Wrap the call in `asyncio.wait_for` with a
     configurable timeout so a hung relay cannot outlive a Milestone 3 lease.
-  - Replace all five bare `await self._notifier.notify(...)` call sites (`watch_service.py` 666, 907,
-    921, 952, 989) with `_notify`, and reorder each so `_record_history` runs first.
+  - Replace all five bare `await self._notifier.notify(...)` call sites with `_notify`. Per Task 1's
+    characterization, **only the four legacy sites (907, 921, 952, 989) need reordering** — the
+    primary windowed site (666) already records first via `_commit_window` and is already gated to
+    at-most-once on `result.event_id`. Preserve that gate.
   - _Bug_Condition: a raising or hanging notifier propagates out of a committed terminal transition,
     skips the projection write, and causes a poll retry_
   - _Expected_Behavior: the poll result, committed status, and history write are identical whether

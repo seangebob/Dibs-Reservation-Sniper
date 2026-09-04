@@ -43,6 +43,11 @@ DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS = 45
 #: interval (a backoff shorter than the cadence would be pointless) and never
 #: so long that a recovered provider waits most of a day for the next check.
 DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS = 3_600
+#: Ceiling on one outbound notification. A terminal transition is announced
+#: while its poll still holds a Milestone 3 window lease, so an unbounded wait
+#: on a wedged mail relay would be a coordination bug, not merely slowness.
+#: Well under `_POLL_LEASE_SECONDS` so the lease outlives the attempt.
+DEFAULT_NOTIFY_TIMEOUT_SECONDS = 10.0
 #: Shared mock-provider state bounds. Capacity counts generated *unbooked*
 #: slots; protected booking/tombstone/idempotency records are governed by the
 #: separate retention window, which defaults to (and never drops below) a week

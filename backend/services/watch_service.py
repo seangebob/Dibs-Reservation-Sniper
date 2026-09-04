@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from backend.config import (
     DEFAULT_MAX_POLL_ATTEMPTS,
+    DEFAULT_NOTIFY_TIMEOUT_SECONDS,
     DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS,
     DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS,
 )
@@ -99,6 +100,7 @@ class WatchService:
         max_attempts: int = DEFAULT_MAX_POLL_ATTEMPTS,
         provider_timeout_seconds: float = DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS,
         backoff_max_seconds: float = DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS,
+        notify_timeout_seconds: float = DEFAULT_NOTIFY_TIMEOUT_SECONDS,
         clock: Clock | None = None,
         timezone_name: str | None = None,
     ) -> None:
@@ -110,6 +112,7 @@ class WatchService:
         self._history = history
         self._max_attempts = max_attempts
         self._provider_timeout_seconds = provider_timeout_seconds
+        self._notify_timeout_seconds = notify_timeout_seconds
         self._backoff_max_seconds = max(
             backoff_max_seconds, self._schedule.interval_seconds
         )
@@ -140,6 +143,31 @@ class WatchService:
             logger.warning(
                 "watch history projection failed",
                 extra={"watch_id": watch.watch_id},
+                exc_info=True,
+            )
+
+    async def _notify(self, watch: Watch, event: WatchEvent) -> None:
+        """Best-effort outbound announcement of a committed transition.
+
+        Never raises and never waits longer than the configured timeout. The
+        transition has already been committed by the time this runs, so letting
+        a notifier failure escape would undo nothing -- it would only lose the
+        history write that follows, fail the poll, and earn a retry that
+        announces the same event a second time. A mail outage costs an email.
+
+        Deliberately mirrors `_record_history`: both are passive observers of a
+        decision the repository has already made (Requirement 3.1).
+        """
+
+        try:
+            await asyncio.wait_for(
+                self._notifier.notify(watch, event),
+                self._notify_timeout_seconds,
+            )
+        except Exception:
+            logger.warning(
+                "watch notification failed",
+                extra={"watch_id": watch.watch_id, "event": event.value},
                 exc_info=True,
             )
 
@@ -663,7 +691,7 @@ class WatchService:
         # the notification on it makes delivery observably at-most-once.
         event = _EVENT_FOR.get(committed.status)
         if result.event_id is not None and event is not None:
-            await self._notifier.notify(committed, event)
+            await self._notify(committed, event)
         return WatchPollResult(
             outcome=_OUTCOME_FOR[committed.status], watch=committed
         )
@@ -904,8 +932,8 @@ class WatchService:
                     }
                 )
             )
-            await self._notifier.notify(booked, WatchEvent.BOOKED)
             await self._record_history(booked)
+            await self._notify(booked, WatchEvent.BOOKED)
             return WatchPollResult(outcome=WatchPollOutcome.BOOKED, watch=booked)
 
         found = await self._repository.save(
@@ -918,8 +946,8 @@ class WatchService:
                 }
             )
         )
-        await self._notifier.notify(found, WatchEvent.AVAILABILITY_FOUND)
         await self._record_history(found)
+        await self._notify(found, WatchEvent.AVAILABILITY_FOUND)
         return WatchPollResult(outcome=WatchPollOutcome.FOUND, watch=found)
 
     async def _legacy_retry_auto_book(
@@ -949,8 +977,8 @@ class WatchService:
                 }
             )
         )
-        await self._notifier.notify(booked, WatchEvent.BOOKED)
         await self._record_history(booked)
+        await self._notify(booked, WatchEvent.BOOKED)
         return WatchPollResult(outcome=WatchPollOutcome.BOOKED, watch=booked)
 
     async def _legacy_reschedule(
@@ -986,8 +1014,8 @@ class WatchService:
                 }
             )
         )
-        await self._notifier.notify(expired, WatchEvent.EXPIRED)
         await self._record_history(expired)
+        await self._notify(expired, WatchEvent.EXPIRED)
         return WatchPollResult(outcome=WatchPollOutcome.EXPIRED, watch=expired)
 
 

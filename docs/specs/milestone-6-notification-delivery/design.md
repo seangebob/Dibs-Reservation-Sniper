@@ -67,18 +67,32 @@ New backend modules (mirroring the existing layout):
 
 ## The notification call sites
 
-Five sites in `watch_service.py` (`666`, `907`, `921`, `952`, `989`) currently do:
+**Corrected by Task 1's characterization tests.** An earlier draft of this document
+claimed all five sites notify before recording. They do not, and the difference matters:
 
-```python
-await self._notifier.notify(found, WatchEvent.AVAILABILITY_FOUND)   # bare await, no guard
-await self._record_history(found)
-```
+| Site | Path | Order today | Gated at-most-once? |
+| --- | --- | --- | --- |
+| `666` | primary (fenced, windowed) | `record` → `notify` ✅ | **yes** — on `result.event_id` |
+| `907`, `921`, `952`, `989` | legacy (no runtime sidecar) | `notify` → `record` ❌ | no |
 
-Every one becomes:
+Two consequences:
+
+- **Milestone 3 already delivers at-most-once on the primary path.** `_commit_window` writes
+  history on `COMMITTED`, and the notification is gated on a terminal event id issued at most once
+  per transition. This is why Milestone 6 needs no delivery state machine — the guarantee the
+  retired `.kiro` spec wanted to build already exists where it counts.
+- **Only the four legacy sites need reordering.** They become:
 
 ```python
 await self._record_history(found)                                   # durable first
 await self._notify(found, WatchEvent.AVAILABILITY_FOUND)            # best-effort
+```
+
+**All five need the isolation**, including the already-correctly-ordered primary one, because every
+site is a bare `await` today:
+
+```python
+await self._notifier.notify(committed, event)   # no guard, no timeout — the real defect
 ```
 
 where `_notify` mirrors the existing `_record_history` helper exactly:
