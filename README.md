@@ -1,136 +1,82 @@
 # Dibs
 
 **A reservation sniper for Kitchener–Waterloo.** Describe what you want in plain
-English — *"watch Cote for four next Saturday between 6 and 9"* — and Dibs opens a
-durable background watch, polls for availability on a jittered cadence, books the
-moment a table appears, and emails you.
+English — *"watch A Restaurant for four next Saturday between 6 and 9"* — and Dibs
+opens a durable background watch, polls for availability on a jittered cadence, books
+the moment a table appears, and emails you.
 
 > [!IMPORTANT]
-> **Dibs books against a built-in mock provider, not a real one.** Every layer
-> below the provider seam is production-grade — distributed coordination, fenced
-> claims, crash recovery, accounts, email — but no real venue is ever contacted.
-> A booking comes back with status `MOCK_CONFIRMED`, which by deliberate design
-> can never be mistaken for a table a venue is actually holding. See
-> [Status](#status).
+> **Dibs books against a built-in mock provider, not a real one.** Everything below
+> the provider seam is production-grade — distributed coordination, fenced claims,
+> crash recovery, accounts, email — but no real venue is ever contacted. A booking
+> returns status `MOCK_CONFIRMED`, which by design can never be mistaken for a table
+> a venue is actually holding.
 
----
-
-## Contents
-
-- [What it does](#what-it-does) · [Status](#status) · [Quickstart](#quickstart)
-- [Architecture](#architecture) · [The watch engine](#the-watch-engine) · [API](#api)
-- [Configuration](#configuration) · [Testing](#testing) · [Health](#health-and-readiness) · [Deploying](#deploying-a-change)
-- [Limitations](#limitations-and-non-goals) · [Project history](#project-history)
-
----
-
-## What it does
+## How it works
 
 ```
-        User (browser)
-              │  raw text: "book Cote for four next Saturday at 7"
+   "book A Restaurant for four next Saturday at 7"
+                      │
+                      ▼
+        API gateway — auth, rate limiting
+                      │
+                      ▼
+   AI orchestration — the LLM extracts, code
+   validates. Never the other way round.
+              │              │
+       complete              missing details
+              ▼              ▼
+   Book · Search · Watch     Ask one follow-up
+              │
               ▼
-┌──────────────────────────────────────────────┐
-│  API gateway — auth, rate limiting, CORS     │
-└──────────────────────┬───────────────────────┘
-                       ▼
-┌──────────────────────────────────────────────┐
-│  AI orchestration — the LLM extracts,        │
-│  code validates. Never the other way round.  │
-└───────────┬──────────────────────┬───────────┘
-            │ complete             │ missing details
-            ▼                      ▼
-┌───────────────────────┐  ┌──────────────────────┐
-│ Book · Search · Watch │  │ Ask one follow-up    │
-└───────────┬───────────┘  └──────────────────────┘
-            ▼
-┌──────────────────────────────────────────────┐
-│  Background workers — poll, book, notify     │
-└──────────────────────────────────────────────┘
+   Background workers — poll, book, notify
 ```
 
-Three things happen in one request:
-
-1. **Extraction.** An LLM turns untrusted prose into a strict `ReservationExtraction`.
-   That is *all* it does — it never decides anything.
-2. **Validation.** Application code independently checks the extraction, pins the
-   market to `Kitchener-Waterloo-Cambridge, ON`, and selects exactly one route:
-   `BOOKING_SERVICE`, `WATCH_SERVICE`, or `CLARIFICATION`. The model cannot override
-   any of it.
+1. **Extraction.** An LLM turns untrusted prose into a strict schema. That is *all* it
+   does — it never decides anything.
+2. **Validation.** Application code independently checks the result and picks exactly
+   one route: book, watch, or ask a clarifying question. The model cannot override it.
 3. **Execution.** A ready intent books immediately, searches, or opens a watch that
    survives restarts and keeps checking until the table appears or the date passes.
 
-Deterministic rules the model has no say in: past dates and impossible dates
-(`2026-02-30`) are refused; dates more than a year out are refused; a time that has
-already passed today is refused, and a window that started earlier today is clamped to
-the next fifteen-minute boundary; invalid time windows are dropped; a venue name
-matching several catalog entries is asked about rather than guessed.
+A watch polls on a jittered cadence (180s ± 30s — a perfectly regular one is trivially
+identifiable as a bot), survives crashes and restarts, never fans out into duplicate
+polling chains, and books idempotently so a redelivered job can't reserve twice.
 
 ## Status
 
 | Layer | State |
 | --- | --- |
-| Intent extraction and validation | **Real.** Requires an OpenAI key with credit. |
-| Watch engine — scheduling, fencing, recovery, retention | **Real.** |
-| Accounts, sessions, ownership | **Real.** argon2id + opaque bearer tokens. |
-| Email notification | **Real.** Any SMTP relay. |
-| Durable history projection | **Real.** PostgreSQL. |
-| **Reservation provider** | **Simulated.** `MockBookingAdapter` only. |
+| Intent extraction and validation | **Real** — needs an OpenAI key with credit |
+| Watch engine: scheduling, fencing, recovery, retention | **Real** |
+| Accounts and sessions | **Real** — argon2id + opaque bearer tokens |
+| Email notification | **Real** — any SMTP relay |
+| Durable history | **Real** — PostgreSQL |
+| **Reservation provider** | **Simulated** — mock adapter only |
 
-The provider seam (`ReservationAdapter`) is held to a conformance suite that runs the
-same 21 cases against two independent implementations, so a real adapter is one class
-rather than a refactor. What it still needs is partner API access, plus a
-credentials/on-behalf-of seam and provider venue-id mapping.
+The provider seam is held to a conformance suite that runs the same 21 cases against
+two independent implementations, so a real adapter is one class rather than a
+refactor. It needs partner API access to go further.
 
 ## Quickstart
 
-### No infrastructure at all
-
-Redis and PostgreSQL are upgrades, not requirements. With neither, the app boots on an
-in-memory repository and an in-process asyncio queue.
+Redis and PostgreSQL are upgrades, not requirements — with neither, the app boots on
+an in-memory store and an in-process queue.
 
 ```bash
 python -m venv .venv
-.venv/bin/pip install -e ".[test]"          # Windows: .\.venv\Scripts\pip.exe
-export OPENAI_API_KEY="sk-..."              # Windows: $env:OPENAI_API_KEY = "sk-..."
+.venv/bin/pip install -e ".[test]"       # Windows: .\.venv\Scripts\pip.exe
+export OPENAI_API_KEY="sk-..."           # Windows: $env:OPENAI_API_KEY = "sk-..."
 uvicorn backend.main:app --reload
 ```
 
-That fallback is **not restart-durable** — pending polls and recovery state are lost
-on exit, and coordination is confined to one process. `GET /health` always reports
-which store and queue are actually live.
-
-See the whole watch loop with no services running at all:
+See the whole watch loop with nothing running at all:
 
 ```bash
 PYTHONPATH=. python misc/scripts/watch_demo.py
 ```
 
-### Full stack, locally
-
-Each of these is long-running — separate terminals, leave them open.
-
-```bash
-# 1. Redis + PostgreSQL (the port is 6379)
-docker compose -f infra/docker-compose.yml up -d
-
-# 2. Backend
-export OPENAI_API_KEY="sk-..."
-export POSTGRES_URL="postgresql://dibs:dibs@localhost:5432/dibs"
-export FRONTEND_ORIGINS="http://localhost:3000"
-uvicorn backend.main:app --reload
-
-# 3. Celery worker, for genuinely distributed polling
-celery -A backend.workers.celery_app worker --loglevel=info
-
-# 4. Frontend
-cd frontend && npm install && npm run dev     # http://localhost:3000
-```
-
-### Everything in Docker
-
-The `app` compose profile adds `api`, `worker`, and `web` on top of Redis and
-PostgreSQL. A bare `up` with no profile still starts **only** the two datastores.
+Full stack in Docker — API, worker, frontend, Redis, PostgreSQL:
 
 ```bash
 export OPENAI_API_KEY="sk-..."
@@ -138,437 +84,50 @@ docker compose -f infra/docker-compose.yml --profile app up --build
 # web → http://localhost:3000    api → http://localhost:8000
 ```
 
-The `web` image bakes `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000` at build time,
-because the browser calls the API directly and cannot resolve a docker-internal
-hostname. Without `OPENAI_API_KEY` the stack still boots; prompt parsing returns `503`.
+Setup details, every environment variable, and the API reference are in
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
-## Architecture
+## Stack
 
-```text
-backend/
-├── main.py                     # App composition: lifespan wiring, /health, prompt endpoints
-├── config.py                   # Every setting, bounded and validated at startup
-├── logging_config.py
-├── api/
-│   ├── client_identity.py      # Anonymous X-Dibs-Client-Id handling
-│   ├── dependencies.py         # Optional-auth lens: current_user / require_user
-│   └── routes/
-│       ├── auth.py             # signup · login · logout · me
-│       └── watches.py          # create · list · mine · read · cancel
-├── orchestrator/
-│   ├── providers.py            # OpenAI structured-output adapter
-│   ├── engine.py               # Extraction → validation coordination
-│   ├── validator.py            # Deterministic completeness and routing rules
-│   ├── router.py               # Ready intent → booking or watch
-│   └── schemas.py              # Strict provider and public contracts
-├── integrations/
-│   ├── base.py                 # ReservationAdapter: the provider seam
-│   ├── mock_booking.py         # Deterministic simulator (the only adapter today)
-│   └── email.py                # SMTP notifier
-├── services/
-│   ├── watch_service.py        # Claim-first poll state machine
-│   ├── watch_recovery.py       # Leader lease + reconciliation sweeps
-│   ├── watch_policy.py         # Derives each watch's attempt budget from its lifetime
-│   ├── booking_service.py      # Search / book business rules
-│   ├── auth_service.py         # Sessions, password verification
-│   ├── recipients.py           # Watch → email address resolution
-│   ├── throttle.py             # Sliding-window rate limiting
-│   ├── notification_service.py # NotificationService protocol + logging default
-│   └── readiness.py            # Evidence-based /health fields
-├── db/
-│   ├── database.py             # Redis connection factory
-│   ├── postgres.py             # Pool + ordered migration runner
-│   ├── migrations/             # 0001_watch_history · 0002_accounts
-│   └── repositories/
-│       ├── watches.py          # Atomic watch state machine (in-memory + Redis Lua)
-│       ├── watch_scripts.py    # The exact Lua source
-│       ├── watch_decisions.py  # Typed decision results shared by both stores
-│       ├── watch_history.py    # Durable PostgreSQL projection
-│       ├── accounts.py         # Users and sessions
-│       └── mock_booking.py     # Shared mock provider state
-├── models/                     # Watch, WatchRuntime, reservation, account
-└── workers/
-    ├── celery_app.py           # Celery bound to the Redis broker
-    ├── dispatcher.py           # Single-flight due-marker publishing
-    ├── scheduler.py            # Jittered poll pacing
-    ├── queue.py                # TaskQueue dispatch boundary
-    └── tasks/monitor_watch.py  # The Celery task (a thin wrapper)
-
-frontend/       Next.js 15 · React 19 · TypeScript strict · vitest
-tests/          55 files, ~15k lines
-docs/specs/     Requirements / design / tasks packages per milestone
-infra/          docker-compose.yml
-misc/scripts/   spot_check.py · watch_demo.py
-```
-
-Two rules explain most of the design.
-
-**Degrade, never gate.** Every external dependency is optional, and its absence is a
-defined mode rather than an error. No `REDIS_URL` → in-memory store. No
-`POSTGRES_URL` → no projection, and `/api/watches/mine` returns `[]`. No `SMTP_HOST` →
-notifications log instead of send. No `Authorization` header → the anonymous path,
-byte-identical to how it behaved before accounts existed. A *malformed* value still
-fails startup loudly; only an *absent* one degrades.
-
-**Seams are protocols, and they have two implementations.** `WatchRepository` is
-in-memory and Redis-Lua, held to identical behaviour by equivalence tests.
-`ReservationAdapter` is the mock plus a second conformance adapter. Anything with one
-implementation and no second is a claim, not a contract.
-
-## The watch engine
-
-`WatchService.poll_window(watch_id, window_id)` is the window-aware queue handler;
-`poll_once(watch_id)` resolves the current window itself, for a delivery carrying only
-an id. Neither imports Celery or Redis — the Celery task is a thin wrapper, which is
-what lets the entire contract be tested without a broker.
-
-Each poll ends in exactly one outcome, so a watch can never fan out into several
-concurrent polling chains:
-
-| Outcome | Effect |
-| --- | --- |
-| `NO_AVAILABILITY` | Attempt recorded, one successor queued after a jittered delay |
-| `FOUND` | Slots stored, watch finished, owner notified |
-| `BOOKED` | Slot booked idempotently (auto-book only), watch finished |
-| `EXPIRED` | Attempts or the reservation date ran out; nothing requeued |
-| `ALREADY_FINISHED` | Cancelled or already resolved; the chain stops |
-| `UNKNOWN_WATCH` | The watch is gone; the chain stops |
-
-Delays are `WATCH_POLL_INTERVAL_SECONDS ± WATCH_POLL_JITTER_SECONDS`, 180s ± 30s by
-default. The jitter is the point: a perfectly regular cadence is trivially
-identifiable as a bot, and it makes watches created in the same moment stampede a
-provider together.
-
-Behaviours worth knowing:
-
-- **The first check runs immediately, with no jitter.** The user just asked; that
-  latency is the one they actually feel. Jitter starts on retries.
-- **A watch expires at the end of its reservation date.** A table for tonight is
-  worthless tomorrow. `WATCH_MAX_POLL_ATTEMPTS` is a second, independent ceiling.
-- **A provider outage does not kill the watch and does not consume an attempt.** The
-  error lands in `last_error`, an exponential backoff paces the retry, and polling
-  continues — the outage is temporary; the reservation the user wanted is not.
-- **Auto-book uses the watch itself as the idempotency key** (`watch:{watch_id}`), so
-  a redelivered job replays one reservation instead of making a second. That guarantee
-  is only as strong as the adapter beneath it: the mock is authoritative, and a real
-  integration is not assumed to be unless it implements the tri-state reconciliation
-  contract (`CONFIRMED` / `DEFINITIVELY_ABSENT` / `UNKNOWN`).
-- **Cancelling is a status change, not a dequeue.** A cancellation arriving before a
-  booking commits wins immediately; one arriving after a booking permit was granted
-  resolves to whatever the provider actually did. A real `BOOKED` watch is never
-  overwritten by a cancellation that lost the race.
-
-### Coordination and delivery safety
-
-- **Fenced single-flight claims.** Every cadence window carries a monotonic fence
-  token. A poll must hold the current, unexpired claim to commit a result; a stale or
-  superseded delivery is rejected rather than silently overwriting newer state. This is
-  `WatchRepository`'s atomic protocol — `claim_window` / `begin_booking` /
-  `commit_window` — implemented identically in memory and as exact Redis Lua, so both
-  stores reach the same fencing decision from the same inputs.
-- **Startup and follow-up recovery.** `RecoveryCoordinator` reconciles the active index
-  on every process start and on a bounded interval thereafter: pruning stale members,
-  expiring exhausted watches, republishing due markers, and repairing crash-orphaned
-  records. In Redis mode only the replica holding the finite `dibs:recovery:leader`
-  lease scans, and per-window dispatch leases remain the final idempotency boundary
-  even if two replicas briefly overlap. In memory mode there is nothing to coordinate
-  across processes, and no restart-durability is claimed.
-- **Terminal retention.** A finished watch stays fully readable for
-  `WATCH_TERMINAL_RETENTION_SECONDS` (a week by default), then a bounded cleanup pass
-  inside each recovery sweep removes its document, sidecar, and index membership. Redis
-  key TTLs are only a crash backstop — because Redis cannot atomically drop a set
-  member when a key expires, every read, list, cleanup, and recovery path self-heals a
-  missing or corrupt index member on sight rather than returning it as valid.
-
-### The mock provider
-
-`MockBookingAdapter` is stateless; every instance delegates to one injected
-`MockBookingStateRepository`, so the API and every worker child observe the same slots,
-bookings, and idempotency records rather than diverging per-process dictionaries. It is
-bounded — capacity, idle eviction, and booking retention are all configured — and the
-Redis backend implements the identical publish/admit/evict/pin/reconcile model as exact
-Lua, so the two agree on every eviction and replay decision.
-
-Slots follow `backend/data/venues.py`: fifteen-minute starts inside that venue's hours
-for that weekday, nothing running past closing, per-slot table sizes so a large party
-sees fewer options than a couple. The same request always yields the same slot ids.
-Venues outside the catalog fall back to a generic KW profile rather than being rejected.
-
-Holidays are **computed, not hard-coded**, for every year in `SUPPORTED_YEARS` —
-including the movable ones (Easter from the Gregorian computus, Family Day, Victoria
-Day, the Civic Holiday, Labour Day, Thanksgiving Monday) — and fall into three
-behaviours:
-
-- **Closed** — New Year's Day, Good Friday, Easter Sunday, Thanksgiving Monday,
-  Christmas Day, Boxing Day.
-- **Closed for restaurants, open for recreation** — the climbing gym, bowling alley,
-  and tube park work Good Friday and the Thanksgiving long weekend.
-- **Open but sold out** — Valentine's Day, Mother's Day, Christmas Eve, New Year's Eve,
-  and the long-weekend Mondays.
-
-## API
-
-### Prompts
-
-```text
-POST /api/orchestrator/parse      # Parse only — returns the validated intent
-POST /api/parse-and-book          # Parse, then execute: book, search, or open a watch
-```
-
-```json
-{ "prompt": "Set a watch for two at Grand River Rocks next Saturday between 6 and 9 pm" }
-```
-
-A ready response carries `status`, `route`, `action`, the resolved venue and party
-details, `missing_fields`, and `clarification_question`. Downstream consumers must act
-only on `status: "READY"`. When details are missing, `route` is `CLARIFICATION` and
-exactly one targeted follow-up question comes back.
-
-`/api/parse-and-book` returns one `ExecutionStatus`: `CLARIFICATION_REQUIRED`,
-`AVAILABILITY_FOUND`, `NO_AVAILABILITY`, `MOCK_BOOKED`, `WATCH_REQUIRED`, or
-`WATCH_CREATED` (with the `watch_id` to poll). Both endpoints are rate limited — they
-cost money on every call.
-
-### Watches
-
-```text
-POST   /api/watches?auto_book=false    # 201; durably scheduled, best-effort dispatched
-GET    /api/watches?active_only=false
-GET    /api/watches/mine               # Scoped to this account, or to this browser
-GET    /api/watches/{watch_id}
-DELETE /api/watches/{watch_id}         # Cancels; the queued poll stops itself
-```
-
-Every creation response carries `X-Watch-Monitoring-Policy` (`deadline` or
-`attempt-limited`) and `X-Watch-Max-Availability-Checks`. Most watches are
-**deadline-capable** — the attempt ceiling comfortably covers every check needed before
-the reservation date, so the watch really does run until the date arrives. One whose
-derived requirement exceeds the configured ceiling is **attempt-limited** and also
-carries a `Warning` header, so a client that surfaces standard headers can tell the user
-monitoring may stop early.
-
-### Accounts
-
-```text
-POST /api/auth/signup      # Create an account, open a session, claim this browser's watches
-POST /api/auth/login       # Open a session, claim this browser's watches
-POST /api/auth/logout      # Revoke the presented session (idempotent)
-GET  /api/auth/me          # id · email · created_at
-```
-
-Passwords are argon2id. A session is an **opaque bearer token whose sha256 is all the
-server stores**, sent as `Authorization: Bearer <token>`.
-
-**Authentication is an optional lens, never a gate.** A request with no `Authorization`
-header behaves exactly as it did before accounts existed. With no PostgreSQL, the
-account endpoints report a clear "accounts unavailable" `503` instead of crashing.
-
-Ownership lives entirely in the `watch_history` projection (`user_id`), never on the
-public `Watch` model. `GET`/`DELETE /api/watches/{id}` answer `404` for a watch owned by
-another account — indistinguishable from "not found", so the boundary leaks no
-existence. Logged out, a browser is identified by an opaque `X-Dibs-Client-Id` it
-generates and keeps in `localStorage`; those anonymous watches are claimed by the
-account on signup or login. A malformed client id degrades to anonymous rather than
-rejecting the request.
-
-### Notifications
-
-A watch that finds a table at 2am has to be able to say so. Delivery is **best-effort
-and never retried**: a failure is logged and abandoned rather than queued, so nobody is
-ever emailed twice about one event, and the dashboard stays the durable record.
-Notification runs *after* the history write, inside a timeout, and its failures can
-never change a committed transition or fail a poll. Announcements are gated on a
-terminal `event_id` issued at most once per transition, so a redelivered job cannot
-announce twice.
-
-The API process and the Celery worker compose the same projection and notifier, so a
-background poll behaves exactly like an in-process one. Notification log lines carry
-only the watch id, event, and attempt count — the venue, date, and party size are
-deliberately omitted, because they are someone's reservation and a log aggregator is
-the wrong place for them.
-
-## Configuration
-
-Settings are read once at startup and validated with closed bounds. An out-of-range or
-malformed value **fails startup with `ConfigurationError`** rather than silently
-clamping. There is no committed `.env` template for the backend — the tables below are
-the reference. The frontend ships `frontend/.env.local.example`.
-
-### Core
-
-| Variable | Default | Notes |
-| --- | --- | --- |
-| `OPENAI_API_KEY` | unset | Required for prompt parsing; without it those endpoints return `503`. |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Must be a valid model identifier. |
-| `RESERVATION_TIMEZONE` | `America/Toronto` | Any IANA zone. |
-| `REDIS_URL` | `redis://localhost:6379/0` | `redis://`, `rediss://`, or `unix://`. Safe to leave unset. |
-| `FRONTEND_ORIGINS` | unset | Comma-separated CORS origins. Unset ⇒ zero CORS headers sent. |
-
-### Watch engine
-
-| Variable | Default | Bounds |
-| --- | --- | --- |
-| `WATCH_POLL_INTERVAL_SECONDS` | 180 | 15–3,600 |
-| `WATCH_POLL_JITTER_SECONDS` | 30 | 0 ≤ jitter < interval |
-| `WATCH_MAX_POLL_ATTEMPTS` | 25,000 | 1–1,000,000 |
-| `WATCH_DISPATCH_HORIZON_SECONDS` | 300 | 30–3,600 |
-| `WATCH_PROVIDER_CALL_TIMEOUT_SECONDS` | 45 | 1–45 |
-| `WATCH_PROVIDER_BACKOFF_MAX_SECONDS` | 3,600 | ≥ interval, ≤ 86,400 |
-| `WATCH_TERMINAL_RETENTION_SECONDS` | 604,800 | 3,600–31,536,000 |
-| `WATCH_RECOVERY_LEADER_LEASE_SECONDS` | 30 | 5–300 |
-| `WATCH_RECOVERY_SWEEP_SECONDS` | 30 | 5–3,600 |
-| `MOCK_SLOT_CAPACITY` | 10,000 | 1–100,000 |
-| `MOCK_SLOT_IDLE_TTL_SECONDS` | 3,600 | 60–604,800 |
-| `MOCK_BOOKING_RETENTION_SECONDS` | 604,800 | 604,800–31,536,000 |
-
-`WATCH_DISPATCH_HORIZON_SECONDS` is how far ahead a due schedule marker is handed to
-Celery — far-future work stays durable in Redis instead of becoming a multi-day broker
-ETA. `WATCH_PROVIDER_CALL_TIMEOUT_SECONDS` bounds one provider sequence and must leave
-headroom under Celery's 60-second soft time limit.
-
-### PostgreSQL projection
-
-| Variable | Default | Notes |
-| --- | --- | --- |
-| `POSTGRES_URL` | unset | Enables the durable history projection. Unset ⇒ `/api/watches/mine` returns `[]`. |
-| `POSTGRES_POOL_MIN_SIZE` / `POSTGRES_POOL_MAX_SIZE` | 1 / 5 | 1–64; max must be ≥ min. |
-| `POSTGRES_STATEMENT_TIMEOUT_SECONDS` | 10 | 1–300 |
-
-Ordered `.sql` migrations are applied once at startup under an advisory lock and
-tracked in a `schema_migrations` table. A PostgreSQL outage never blocks a watch
-operation — history recording is a passive observer, and its last outcome is reported
-additively on `/health` as `history_readiness`. Connection failures never disclose the
-DSN.
-
-### Accounts and rate limiting
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `SESSION_TTL_SECONDS` | 2,592,000 | Session lifetime (30 days) |
-| `PASSWORD_MIN_LENGTH` / `PASSWORD_MAX_LENGTH` | 8 / — | Signup password policy |
-| `LOGIN_THROTTLE_MAX_ATTEMPTS` | 10 | Failed logins per window before `429` |
-| `LOGIN_THROTTLE_WINDOW_SECONDS` | 300 | That window |
-| `PROMPT_THROTTLE_MAX_REQUESTS` | 20 | Requests per window to the paid prompt endpoints |
-| `PROMPT_THROTTLE_WINDOW_SECONDS` | 300 | That window |
-
-### Email
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `SMTP_HOST` | unset | Relay host. **Unset ⇒ email disabled**, notifications log only. |
-| `SMTP_PORT` | 587 | Relay port |
-| `SMTP_FROM` | — | Sender address; **required** once `SMTP_HOST` is set |
-| `SMTP_USERNAME` / `SMTP_PASSWORD` | unset | Both, or neither for an open relay |
-| `SMTP_STARTTLS` | `true` | An unrecognized value is rejected, never treated as false |
-| `SMTP_TIMEOUT_SECONDS` | 10 | Socket timeout, and the notification ceiling |
-| `DASHBOARD_BASE_URL` | `http://localhost:3000` | Base for the link inside a message |
-
-Once `SMTP_HOST` is set the rest must be coherent — a host with no `SMTP_FROM`, or a
-username with no password, is a startup error, because a half-configured mailer that
-silently drops every notification is worse than none.
-
-### Frontend
-
-| Variable | Default | Notes |
-| --- | --- | --- |
-| `NEXT_PUBLIC_API_BASE_URL` | `http://localhost:8000` | **Inlined into the bundle at build time.** Must be reachable from the visitor's machine — never a docker-internal host. |
-
-## Testing
-
-No test makes a network call. The suite runs the real Redis Lua through
-`fakeredis[lua]`, so atomicity is proven against actual script semantics rather than a
-hand-written fake.
+**Backend** FastAPI · Pydantic v2 · Redis (atomic Lua) · PostgreSQL · Celery
+**Frontend** Next.js 15 · React 19 · TypeScript strict
+**Tests** 55 files, ~15k lines. No test makes a network call; the suite runs the real
+Redis Lua through `fakeredis[lua]`, so atomicity is proven against actual script
+semantics rather than a hand-written fake.
 
 ```bash
-pytest                                        # backend
-pytest --cov=backend --cov-report=term-missing
-mypy backend
-cd frontend && npm run typecheck && npm test  # vitest
+pytest && mypy backend
+cd frontend && npm run typecheck && npm test
 ```
 
-Ten realistic prompts end to end — the real model when `OPENAI_API_KEY` is set,
-scripted extractions when it is not:
+Two rules explain most of the design:
 
-```bash
-PYTHONPATH=. python misc/scripts/spot_check.py
-```
+- **Degrade, never gate.** Every external dependency is optional, and its absence is a
+  defined mode rather than an error. No Redis → in-memory store. No PostgreSQL → no
+  projection. No SMTP → notifications log instead of send. No auth header → the
+  anonymous path. A *malformed* value still fails startup loudly; only an *absent* one
+  degrades.
+- **Seams are protocols with two implementations.** The watch repository is in-memory
+  *and* Redis-Lua, held to identical behaviour by equivalence tests. Anything with one
+  implementation and no second is a claim, not a contract.
 
-> Three `[redis]`-parametrized cases in `test_watch_repository_state_machine.py`
-> require a live Redis server and fail without one. The suite still exits `0`.
+## Known limitations
 
-## Health and readiness
+- **No real reservation provider.** The one that matters.
+- **Redis Cluster and Sentinel are unsupported** — the atomic Lua assumes every key for
+  one watch lives on one node. Standalone, a directly addressed primary, and `rediss://`
+  all work.
+- **No rolling deploys.** Old and new worker code can't safely share one Redis; see
+  the deploy order in the architecture doc.
+- **Rate limiting is a spend ceiling, not admission control.** Per-process, keyed on
+  client id and origin.
 
-`GET /health` always returns `200` with `status: "ok"`. The additive fields expose
-degradation without changing that top-level meaning:
+## Docs
 
-```json
-{
-  "status": "ok",
-  "service": "dibs-mvp",
-  "config": "ok",
-  "watch_store": "redis",
-  "watch_queue": "celery",
-  "queue_readiness": "ready",
-  "recovery_readiness": "ready",
-  "history_readiness": "ready"
-}
-```
+- **[Architecture and reference](docs/ARCHITECTURE.md)** — layout, the watch engine, API,
+  configuration, health, deploying
+- **[docs/specs/](docs/specs/)** — requirements, design, and task packages per milestone
 
-- `watch_store` and `watch_queue` report what is **actually bound**, never merely what
-  was configured.
-- `queue_readiness` — `ready` for an open asyncio queue on the running loop, or after a
-  successful finite Celery broker dispatch; `degraded` after a performed dispatch
-  failure; `unknown` before any dispatch has been attempted. A Redis ping alone does not
-  prove a Celery worker is consuming.
-- `recovery_readiness` — `ready` after a complete reconciliation pass with no backlog;
-  `degraded` after a failed candidate, a due backlog, or a lost leader lease; `unknown`
-  before this process has ever led a pass (another replica may be leading instead).
-- `history_readiness` — the outcome of the last projection write.
-
-## Deploying a change
-
-Old (unfenced) and new (fenced) worker code are not safe to run concurrently against
-one Redis, so **rolling deploys are not supported** for this component.
-
-1. **Drain and stop old workers first.** Let in-flight polls finish, then stop consuming.
-2. **Deploy the API and worker from the same image.** Mixed versions can commit or fence
-   state inconsistently.
-3. **Let startup recovery run** before workers consume again — the initial pass
-   reconciles the active index and republishes anything due, so no watch is stranded on
-   the old topology.
-4. **Start consumers** once `queue_readiness` and `recovery_readiness` report `ready`
-   (or a bounded time has passed with only `unknown` left, on a fresh deployment).
-
-Rollback follows the same order: stop workers, roll back the image, let recovery run
-again, then resume.
-
-## Limitations and non-goals
-
-- **No real reservation provider.** The one that matters. See [Status](#status).
-- **Redis Cluster and Sentinel are unsupported.** Startup checks `cluster_enabled`; in
-  cluster mode the app logs a warning and stays on the in-memory fallback rather than
-  running multi-key Lua against a sharded keyspace. Standalone, a directly addressed
-  primary, and `rediss://` all work.
-- **No rolling deploys.** See above.
-- **Rate limiting is a spend ceiling, not admission control.** It is per-process and
-  keyed on client id plus origin; a caller rotating ids evades it, and callers behind one
-  proxy share a bucket. Put a real gateway in front when that stops being enough.
-- **No durable notification outbox.** Delivery is deliberately best-effort; the
-  projection is the durable record.
-
-## Project history
-
-Built as six spec-driven milestones. Requirements, design, and task packages for the
-later ones live in [`docs/specs/`](docs/specs/).
-
-| # | Milestone | What it added |
-| --- | --- | --- |
-| 1 | AI orchestrator | LLM extraction behind deterministic validation and routing. No execution. |
-| 2 | Mock platform adapter | The `ReservationAdapter` seam, the venue catalog, idempotent mock booking. |
-| 3 | Distributed watch coordinator | Fenced claims, jittered cadence, leader-elected recovery, retention, readiness. |
-| 4 | Write API + frontend | Next.js client, PostgreSQL history projection, CORS, anonymous client identity. |
-| 5 | Accounts and authentication | argon2id passwords, opaque sessions, ownership, anonymous-watch claiming. |
-| 6 | Notification delivery | Real SMTP email, worker/API parity, reservation details removed from logs. |
-
-The orchestrator uses OpenAI's Responses API with native Pydantic structured output,
-following the [official Structured Outputs guide](https://platform.openai.com/docs/guides/structured-outputs).
+Built as six milestones: AI orchestrator → mock platform adapter → distributed watch
+coordinator → write API and frontend → accounts and authentication → notification
+delivery.
