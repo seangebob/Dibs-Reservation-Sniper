@@ -1,4 +1,4 @@
-# Dibs
+# Dibs, A Reservation Sniper
 
 **A reservation sniper for Kitchener–Waterloo.** Describe what you want in plain
 English — *"watch A Restaurant for four next Saturday between 6 and 9"* — and Dibs
