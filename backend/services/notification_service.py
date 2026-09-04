@@ -30,16 +30,20 @@ class NotificationService(Protocol):
 
 
 class LoggingNotificationService:
-    """Writes watch transitions to the application log."""
+    """Writes watch transitions to the application log.
+
+    The line carries only the watch id, the event, and the attempt count --
+    enough to correlate a transition with a delivery. The venue, date, and party
+    size were removed in Milestone 6: they are someone's reservation, they were
+    never needed to operate the system, and a log aggregator is the wrong place
+    for them (Requirement 6.1).
+    """
 
     async def notify(self, watch: Watch, event: WatchEvent) -> None:
         logger.info(
-            "watch=%s event=%s venue=%s date=%s party=%d attempts=%d",
+            "watch=%s event=%s attempts=%d",
             watch.watch_id,
             event.value,
-            watch.query.venue_name,
-            watch.query.date,
-            watch.query.party_size,
             watch.attempts,
         )
 

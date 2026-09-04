@@ -1,6 +1,6 @@
 """Environment-backed backend configuration."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 import re
 from urllib.parse import urlparse
@@ -563,6 +563,128 @@ class PromptThrottleSettings:
                 maximum=_MAX_PROMPT_THROTTLE_WINDOW_SECONDS,
             ),
         )
+
+
+DEFAULT_SMTP_PORT = 587
+DEFAULT_SMTP_TIMEOUT_SECONDS = 10
+DEFAULT_DASHBOARD_BASE_URL = "http://localhost:3000"
+
+_MIN_SMTP_TIMEOUT_SECONDS = 1
+_MAX_SMTP_TIMEOUT_SECONDS = 60
+_MIN_TCP_PORT = 1
+_MAX_TCP_PORT = 65_535
+
+
+def _bool_from_environment(name: str, default: bool) -> bool:
+    """Read a boolean switch, rejecting anything ambiguous.
+
+    A typo'd `SMTP_STARTTLS=ture` silently meaning "no TLS" would downgrade a
+    connection carrying credentials, so an unrecognized value is an error rather
+    than a falsy default.
+    """
+
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigurationError(
+        f"{name} must be a boolean such as 'true' or 'false'; got {raw!r}."
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class EmailSettings:
+    """Outbound email delivery (Milestone 6).
+
+    Disabled by default: an unset ``SMTP_HOST`` keeps the logging notifier and
+    leaves behavior byte-identical to Milestone 5 (Requirement 5.1). Once a host
+    is set the rest must be coherent, because a half-configured mailer that
+    silently drops every notification is worse than none at all.
+
+    ``password`` is declared ``repr=False``, so neither ``repr()`` of these
+    settings nor a dataclass rendering inside a traceback can disclose it
+    (Requirement 6.2).
+    """
+
+    host: str | None = None
+    port: int = DEFAULT_SMTP_PORT
+    username: str | None = None
+    password: str | None = field(default=None, repr=False)
+    sender: str | None = None
+    starttls: bool = True
+    timeout_seconds: int = DEFAULT_SMTP_TIMEOUT_SECONDS
+    dashboard_base_url: str = DEFAULT_DASHBOARD_BASE_URL
+
+    @property
+    def enabled(self) -> bool:
+        """True once a host is configured; the composition layer keeps the
+        logging notifier otherwise."""
+
+        return self.host is not None
+
+    @classmethod
+    def from_environment(cls) -> "EmailSettings":
+        host = (os.environ.get("SMTP_HOST") or "").strip() or None
+        dashboard_base_url = _dashboard_base_url()
+        if host is None:
+            return cls(dashboard_base_url=dashboard_base_url)
+
+        sender = (os.environ.get("SMTP_FROM") or "").strip() or None
+        if sender is None:
+            raise ConfigurationError(
+                "SMTP_HOST is set but SMTP_FROM is not. Set the address email "
+                "is sent from, or unset SMTP_HOST to disable email delivery."
+            )
+        username = (os.environ.get("SMTP_USERNAME") or "").strip() or None
+        password = os.environ.get("SMTP_PASSWORD") or None
+        if username is not None and password is None:
+            raise ConfigurationError(
+                "SMTP_USERNAME is set but SMTP_PASSWORD is not. Set both to "
+                "authenticate, or neither for an unauthenticated relay."
+            )
+        return cls(
+            host=host,
+            port=_bounded_count(
+                "SMTP_PORT",
+                DEFAULT_SMTP_PORT,
+                minimum=_MIN_TCP_PORT,
+                maximum=_MAX_TCP_PORT,
+            ),
+            username=username,
+            password=password,
+            sender=sender,
+            starttls=_bool_from_environment("SMTP_STARTTLS", True),
+            timeout_seconds=_bounded_count(
+                "SMTP_TIMEOUT_SECONDS",
+                DEFAULT_SMTP_TIMEOUT_SECONDS,
+                minimum=_MIN_SMTP_TIMEOUT_SECONDS,
+                maximum=_MAX_SMTP_TIMEOUT_SECONDS,
+            ),
+            dashboard_base_url=dashboard_base_url,
+        )
+
+
+def _dashboard_base_url() -> str:
+    """The base for the 'see your watches' link in a message (Req 5.4).
+
+    Validated but never required: an unset value falls back to the local default
+    rather than blocking delivery over a cosmetic link.
+    """
+
+    raw = (os.environ.get("DASHBOARD_BASE_URL") or "").strip()
+    if not raw:
+        return DEFAULT_DASHBOARD_BASE_URL
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ConfigurationError(
+            f"Invalid DASHBOARD_BASE_URL: {raw!r}. Expected a full http:// or "
+            "https:// URL, e.g. 'https://dibs.example.com'."
+        )
+    return raw.rstrip("/")
 
 
 @dataclass(frozen=True, slots=True)

@@ -133,6 +133,11 @@ changing anything that already works.
     message, or settings representation.
 6.3 WHEN a recipient address is handled THEN it SHALL NOT be written to logs at any level.
 6.4 WHEN this milestone is complete THEN every existing test in `tests/` and `frontend/` SHALL
-    continue to pass unmodified in its assertions.
+    continue to pass unmodified in its assertions, with ONE documented exception: 6.1 deliberately
+    changes the notification log line, so
+    `test_logging_config.py::test_notification_event_is_terminal_visible_once_after_lifespan_starts`
+    updates the literal it compares against. That test's actual guarantee — the event is visible
+    exactly once, on exactly one handler, after the lifespan starts — is unchanged; only the payload
+    it happens to carry is. No other assertion may be weakened or rewritten.
 6.5 WHEN the public `Watch`, `PromptExecutionResult`, and `/health` contracts are served THEN they
     SHALL be unchanged, and the Milestone 4 contract-drift test SHALL pass untouched.

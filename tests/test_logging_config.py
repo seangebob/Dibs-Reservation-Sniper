@@ -295,10 +295,11 @@ def test_notification_event_is_terminal_visible_once_after_lifespan_starts(
     probe = _RecordProbe()
     logger.addFilter(probe)
     watch = _representative_watch(event)
-    expected = (
-        f"watch={watch.watch_id} event={event.value} venue=Cote "
-        "date=2026-09-05 party=4 attempts=2"
-    )
+    # Milestone 6 removed the venue, date, and party size from this line: they
+    # are someone's reservation and were never needed to operate the system
+    # (M6 Requirement 6.1). What this test actually guards is unchanged --
+    # the event is visible exactly once, on exactly one handler.
+    expected = f"watch={watch.watch_id} event={event.value} attempts=2"
     output = StringIO()
 
     with redirect_stderr(output), TestClient(create_app()):
