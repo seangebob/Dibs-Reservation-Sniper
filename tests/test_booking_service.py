@@ -234,8 +234,25 @@ def test_confirmation_carries_every_required_field() -> None:
     assert slot["party_size"] == 4
 
 
-def test_only_mock_confirmed_status_exists() -> None:
-    assert [status.value for status in BookingStatus] == ["MOCK_CONFIRMED"]
+def test_the_mock_provider_never_claims_a_real_booking() -> None:
+    """Was `test_only_mock_confirmed_status_exists`, which pinned `BookingStatus`
+    to a single member. Milestone 7 widened the enum so a real adapter could
+    exist at all -- but the guarantee that assertion protected is more important
+    than its literal form, so it is preserved here in a stronger shape.
+
+    The point was never "the enum has one member". It was that nothing in a
+    mock-only system can tell a user a venue is holding a table for them. So:
+    the two statuses must stay distinct, and every booking the built-in mock
+    produces must be the mock one.
+    """
+
+    assert BookingStatus.MOCK_CONFIRMED is not BookingStatus.CONFIRMED
+
+    result = asyncio.run(BookingService(MockBookingAdapter()).execute(ready_intent()))
+
+    assert result.booking is not None
+    assert result.booking.status is BookingStatus.MOCK_CONFIRMED
+    assert result.booking.provider == "mock"
 
 
 def test_closed_holiday_reports_no_availability_not_empty_success() -> None:

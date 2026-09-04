@@ -42,7 +42,7 @@ export interface AvailabilityQuery {
 
 export interface AvailabilitySlot {
   slot_id: string;
-  provider: "mock";
+  provider: string;
   venue_name: string;
   venue_type: VenueType;
   date: string;
@@ -55,7 +55,7 @@ export interface AvailabilitySlot {
 
 export interface BookingConfirmation {
   booking_id: string;
-  provider: "mock";
+  provider: string;
   status: string;
   slot: AvailabilitySlot;
   created_at: string;

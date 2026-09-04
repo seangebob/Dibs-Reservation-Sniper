@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 from enum import Enum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import Self
@@ -15,6 +15,14 @@ from backend.orchestrator.schemas import (
     TimeWindow,
     VenueType,
 )
+
+
+#: An adapter's short identifier, e.g. `mock` or `kw-rec`. Constrained rather
+#: than free text: it is logged, indexed, and echoed in public JSON, so it stays
+#: a slug instead of anything a provider response could smuggle through.
+ProviderName = Annotated[
+    str, Field(min_length=1, max_length=40, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+]
 
 
 class AvailabilityQuery(BaseModel):
@@ -61,7 +69,11 @@ class AvailabilitySlot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     slot_id: str = Field(min_length=1, max_length=200)
-    provider: Literal["mock"]
+    #: The adapter that produced this slot. Was `Literal["mock"]` through
+    #: Milestone 6, which made the "provider-neutral" claim above untrue: no
+    #: real adapter could construct a valid slot at all. Bounded to a short
+    #: identifier rather than free text so it stays safe to log and index.
+    provider: ProviderName
     venue_name: str = Field(min_length=1, max_length=200)
     venue_type: VenueType
     date: IsoDate
@@ -79,7 +91,19 @@ class AvailabilitySlot(BaseModel):
 
 
 class BookingStatus(str, Enum):
+    """How real a booking is.
+
+    `MOCK_CONFIRMED` is deliberately kept distinct from `CONFIRMED` rather than
+    renamed: a demo booking against the built-in mock provider must never be
+    indistinguishable from a table a venue is actually holding.
+
+    A `PENDING` state, for providers that confirm asynchronously, is
+    deliberately NOT added yet -- it would need a matching watch lifecycle to
+    resolve it, and an unhandled state in this enum would be a lie.
+    """
+
     MOCK_CONFIRMED = "MOCK_CONFIRMED"
+    CONFIRMED = "CONFIRMED"
 
 
 class BookingConfirmation(BaseModel):
@@ -88,7 +112,7 @@ class BookingConfirmation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     booking_id: str = Field(min_length=1, max_length=200)
-    provider: Literal["mock"]
+    provider: ProviderName
     status: BookingStatus
     slot: AvailabilitySlot
     created_at: datetime
