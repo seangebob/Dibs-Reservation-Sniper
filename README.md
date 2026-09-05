@@ -10,7 +10,8 @@ the moment a table appears, and emails you.
 > the provider seam is production-grade — distributed coordination, fenced claims,
 > crash recovery, accounts, email — but no real venue is ever contacted. A booking
 > returns status `MOCK_CONFIRMED`, which by design can never be mistaken for a table
-> a venue is actually holding.
+> a venue is actually holding. It is currently a work in progress, as within everything
+> else within this project as well.
 
 ## How it works
 
