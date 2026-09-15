@@ -167,14 +167,14 @@ Every environment variable and its bounds are documented in
 
 ## Stack
 
-**Backend** FastAPI · Pydantic v2 · Redis (atomic Lua) · PostgreSQL · Celery
-**Frontend** Next.js 15 · React 19 · TypeScript strict
-**Tests** 55 files, ~15k lines. No test makes a network call; the suite runs the real
+- **Backend** FastAPI, Pydantic v2, Redis (atomic Lua), PostgreSQL, Celery
+- **Frontend** Next.js 15, React 19, TypeScript strict
+- **Tests** 55 files, ~15k lines. No test makes a network call; the suite runs the real
 Redis Lua through `fakeredis[lua]`, so atomicity is proven against actual script
 semantics rather than a hand-written fake.
 
 ```bash
-pytest && mypy backend
+pytest && mypy backends
 cd frontend && npm run typecheck && npm test
 ```
 
