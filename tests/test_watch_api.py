@@ -450,3 +450,48 @@ def test_a_current_date_creates_normally_with_one_zero_delay_dispatch(
     assert body["status"] == "ACTIVE"
     assert len(service.creates) == 1
     assert queue.dispatches == [(body["watch_id"], 0.0)]
+
+
+def test_the_service_rejects_a_past_date_on_its_own_clock() -> None:
+    from backend.models.reservation import AvailabilityQuery
+    from backend.services.watch_service import PastReservationDateError
+
+    queue = RecordingTaskQueue()
+    repository = InMemoryWatchRepository()
+    later = datetime.fromisoformat(QUERY["date"]) + timedelta(days=2)
+    service = WatchService(
+        repository,
+        EmptyAdapter(),
+        queue,
+        clock=lambda: later.replace(tzinfo=ZoneInfo("America/Toronto")),
+    )
+
+    with pytest.raises(PastReservationDateError):
+        asyncio.run(service.create(AvailabilityQuery.model_validate(QUERY)))
+
+    assert asyncio.run(repository.list_all()) == []
+    assert queue.dispatches == []
+
+
+def test_the_prompt_path_turns_a_past_watch_date_into_a_422() -> None:
+    from backend.main import get_orchestrator
+
+    queue = RecordingTaskQueue()
+    service = WatchService(InMemoryWatchRepository(), EmptyAdapter(), queue)
+    past_intent = _watch_intent().model_copy(update={"date": "2020-01-04"})
+
+    class StubEngine:
+        async def parse(self, prompt: str) -> ReservationIntent:
+            return past_intent
+
+    app = create_app()
+    app.dependency_overrides[get_watch_service] = lambda: service
+    app.dependency_overrides[get_orchestrator] = lambda: StubEngine()
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/parse-and-book", json={"prompt": "watch Cote in 2020"}
+        )
+
+    assert response.status_code == 422
+    assert "in the past" in response.json()["detail"]
+    assert queue.dispatches == []

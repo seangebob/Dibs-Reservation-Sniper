@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 import contextlib
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from enum import Enum
 import logging
 import random
@@ -74,6 +74,10 @@ _POLL_LEASE_SECONDS = 120.0
 #: booking before giving up and treating it as an outage. Bounded so a stuck
 #: provider cannot hold the claim for the whole lease.
 _RECONCILE_ATTEMPTS = 3
+
+
+class PastReservationDateError(ValueError):
+    """Raised when a watch is requested for a date that has already passed."""
 
 
 class WatchService:
@@ -219,6 +223,10 @@ class WatchService:
 
         now = self._clock()
         timezone = self._reservation_timezone or now.tzinfo or UTC
+        if date.fromisoformat(query.date) < now.astimezone(timezone).date():
+            raise PastReservationDateError(
+                f"Cannot watch a reservation date in the past: {query.date}"
+            )
         expires_at = default_expiry(query, now, timezone)
 
         # The stored ceiling is the derived, lifetime-aware budget: enough

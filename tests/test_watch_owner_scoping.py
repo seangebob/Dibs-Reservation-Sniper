@@ -332,7 +332,7 @@ def test_parse_and_book_threads_the_client_id_into_a_created_watch(
                 venue_type=VenueType.RESTAURANT,
                 market="Kitchener-Waterloo-Cambridge, ON",
                 party_size=4,
-                date="2026-09-05",
+                date=UPCOMING_DATE,
                 preferred_time="19:00",
                 time_window=None,
                 duration_minutes=None,

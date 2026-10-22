@@ -90,7 +90,7 @@ from backend.services.password import build_password_hasher
 from backend.services.recipients import AccountRecipientResolver
 from backend.services.readiness import Readiness, ReadinessTracker
 from backend.services.watch_recovery import RecoveryCoordinator
-from backend.services.watch_service import WatchService
+from backend.services.watch_service import PastReservationDateError, WatchService
 from backend.workers.dispatcher import WatchScheduleDispatcher
 from backend.workers.queue import AsyncioTaskQueue, CeleryTaskQueue, TaskQueue
 from backend.workers.scheduler import PollSchedule
@@ -652,6 +652,16 @@ def create_app() -> FastAPI:
     ) -> JSONResponse:
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"detail": str(exc)},
+        )
+
+    @app.exception_handler(PastReservationDateError)
+    async def past_reservation_date_handler(
+        _request: Request,
+        exc: PastReservationDateError,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content={"detail": str(exc)},
         )
 

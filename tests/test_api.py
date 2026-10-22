@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
@@ -66,6 +66,13 @@ def ready_intent(
         missing_fields=[],
         clarification_question=None,
     )
+
+
+def _upcoming_date() -> str:
+    """A week from today, for watches: the service rejects past dates."""
+
+    today = datetime.now(ZoneInfo("America/Toronto")).date()
+    return (today + timedelta(days=7)).isoformat()
 
 
 def incomplete_intent() -> ReservationIntent:
@@ -194,7 +201,7 @@ def test_parse_and_book_opens_a_background_watch() -> None:
         ready_intent(
             action=IntentAction.CREATE_WATCH,
             route=OrchestratorRoute.WATCH_SERVICE,
-        )
+        ).model_copy(update={"date": _upcoming_date()})
     )
     queue = RecordingTaskQueue()
     repository = InMemoryWatchRepository()
