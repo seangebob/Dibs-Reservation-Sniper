@@ -30,7 +30,6 @@ from backend.db.repositories.watch_decisions import (
 from backend.db.repositories.watch_history import WatchHistoryRecorder
 from backend.integrations.base import (
     AdapterError,
-    ProviderSequenceTimeout,
     ReconciliationStatus,
     ReservationAdapter,
     SlotNotFoundError,

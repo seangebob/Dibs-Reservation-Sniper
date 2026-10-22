@@ -23,16 +23,6 @@ class SlotUnavailableError(AdapterError):
     """Raised when a slot is no longer available."""
 
 
-class ProviderSequenceTimeout(AdapterError):
-    """Raised when the owned provider-sequence deadline expires.
-
-    It is an `AdapterError` so it follows the same fenced, no-attempt outage
-    path as any other provider failure. Only the service's own asyncio timeout
-    is translated into this; an outer `CancelledError` or a Celery time limit
-    is deliberately never caught as a provider outage.
-    """
-
-
 class ReconciliationStatus(str, Enum):
     """The authoritative-ness of a reconciliation answer for one booking key.
 

@@ -7,7 +7,7 @@ sidecar are migrated on read without reopening terminal state or silently
 raising a legacy attempt ceiling.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 

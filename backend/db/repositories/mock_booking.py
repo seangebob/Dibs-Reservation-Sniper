@@ -87,7 +87,12 @@ class MockBookingStateRepository(Protocol):
         booking_permit_id: str | None,
         now: datetime,
     ) -> ReconciliationResult:
-        """Authoritatively resolve whether a booking exists for a key."""
+        """Authoritatively resolve whether a booking exists for a key.
+
+        ``booking_permit_id`` is unused by the mock stores, which look bookings
+        up by idempotency key alone; it is kept for a real provider that needs
+        the permit to reconcile.
+        """
         ...
 
     async def book_slot(

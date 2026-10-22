@@ -5,11 +5,10 @@ substitutes the extraction the model is expected to produce, so the validator,
 booking service, and HTTP contract can still be checked without spending
 tokens or contacting a venue.
 
-    python3 scripts/spot_check.py
+    PYTHONPATH=. python3 misc/scripts/spot_check.py
 """
 
 from datetime import datetime
-import json
 import os
 import sys
 from zoneinfo import ZoneInfo

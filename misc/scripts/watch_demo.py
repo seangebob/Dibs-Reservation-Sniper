@@ -4,7 +4,7 @@ Runs the real WatchService against the in-process asyncio queue, so it needs
 no Redis, no Celery, and no OpenAI key. The poll interval is compressed to a
 few seconds so the jitter is visible in one sitting.
 
-    PYTHONPATH=. python3 scripts/watch_demo.py
+    PYTHONPATH=. python3 misc/scripts/watch_demo.py
 """
 
 import asyncio

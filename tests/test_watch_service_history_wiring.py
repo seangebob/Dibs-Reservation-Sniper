@@ -11,8 +11,6 @@ operation.
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-import pytest
-
 from backend.db.repositories.watches import InMemoryWatchRepository
 from backend.integrations.base import AdapterError
 from backend.integrations.mock_booking import MockBookingAdapter
