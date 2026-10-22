@@ -857,13 +857,16 @@ class RedisWatchRepository:
         self._scripts: dict[str, Any] = {}
 
     def _terminal_deadlines(self, now: datetime) -> tuple[datetime, str, str]:
-        """(`terminal_delete_at`, terminal_delete_ms, retention_expire_ms)."""
+        """(`terminal_delete_at`, terminal_delete_ms, retention_ttl_ms)."""
 
+        # The key TTL is relative (PEXPIRE), so it holds the same in Redis
+        # whatever the app clock says -- an injected test clock or a skewed host.
         deadline = now + self._retention
+        ttl = self._retention + self._grace
         return (
             deadline,
             str(_to_ms(deadline)),
-            str(_to_ms(deadline + self._grace)),
+            str(int(ttl.total_seconds() * 1000)),
         )
 
     def _script(self, name: str) -> Any:
@@ -1236,9 +1239,9 @@ class RedisWatchRepository:
             "phase": None,
         }
         terminal_delete_ms = ""
-        retention_expire_ms = ""
+        retention_ttl_ms = ""
         if is_terminal:
-            deadline, terminal_delete_ms, retention_expire_ms = (
+            deadline, terminal_delete_ms, retention_ttl_ms = (
                 self._terminal_deadlines(self._clock())
             )
             update["terminal_delete_at"] = deadline
@@ -1277,7 +1280,7 @@ class RedisWatchRepository:
                 next_scheduled_ms,
                 terminal_delete_ms,
                 event_id,
-                retention_expire_ms,
+                retention_ttl_ms,
                 str(self._now_ms()),
             ],
         )
@@ -1317,7 +1320,7 @@ class RedisWatchRepository:
                 )
             else:
                 now = self._clock()
-                deadline, terminal_delete_ms, retention_expire_ms = (
+                deadline, terminal_delete_ms, retention_ttl_ms = (
                     self._terminal_deadlines(now)
                 )
                 cancelled = watch.model_copy(
@@ -1348,7 +1351,7 @@ class RedisWatchRepository:
                         cancelled.model_dump_json(),
                         new_runtime_json,
                         terminal_delete_ms,
-                        retention_expire_ms,
+                        retention_ttl_ms,
                     ],
                 )
 
@@ -1393,7 +1396,7 @@ class RedisWatchRepository:
             return TransitionResult(TransitionStatus.NOT_ELIGIBLE, watch=watch)
 
         now = self._clock()
-        deadline, terminal_delete_ms, retention_expire_ms = (
+        deadline, terminal_delete_ms, retention_ttl_ms = (
             self._terminal_deadlines(now)
         )
         new_revision = (runtime.revision + 1) if runtime is not None else 0
@@ -1436,7 +1439,7 @@ class RedisWatchRepository:
                 new_runtime_json,
                 event_id,
                 terminal_delete_ms,
-                retention_expire_ms,
+                retention_ttl_ms,
             ],
         )
         code = _code(out)

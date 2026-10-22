@@ -13,7 +13,9 @@ future refactor of the tests those assertions live in. If Milestone 4 rewrites
 ``test_api.py`` for its own reasons, these files still hold the line.
 """
 
+from datetime import datetime, timedelta
 import inspect
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -30,12 +32,19 @@ from backend.services.watch_service import WatchService
 from backend.workers.queue import RecordingTaskQueue
 
 
+# The API rejects past dates against the real clock, so a fixed date goes
+# stale. A week out keeps the watch short, as the policy assertions expect.
+UPCOMING_DATE = (
+    datetime.now(ZoneInfo("America/Toronto")).date() + timedelta(days=7)
+).isoformat()
+
+
 QUERY = {
     "venue_name": "Cote",
     "venue_type": "RESTAURANT",
     "market": "Kitchener-Waterloo-Cambridge, ON",
     "party_size": 4,
-    "date": "2026-09-05",
+    "date": UPCOMING_DATE,
     "preferred_time": "19:00",
     "time_window": None,
     "duration_minutes": None,

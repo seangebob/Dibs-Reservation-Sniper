@@ -140,8 +140,10 @@ if owner then
   redis.call('SREM', prefix..':pinop:'..owner, sid)
   redis.call('HDEL', prefix..':pinowner', sid)
 end
-redis.call('PEXPIREAT', prefix..':booking:'..key, pms + grace)
-redis.call('PEXPIREAT', prefix..':booked:'..sid, pms + grace)
+-- Relative TTL: pms and now come from the injected clock, not Redis time.
+local ttl = math.max(1, pms + grace - now)
+redis.call('PEXPIRE', prefix..':booking:'..key, ttl)
+redis.call('PEXPIRE', prefix..':booked:'..sid, ttl)
 return {'BOOKED', conf}
 """
 

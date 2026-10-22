@@ -102,7 +102,7 @@ return {'GRANTED'}
 # ARGV: watch_id, expected_revision, expected_token, owner_id, new_watch_json,
 #       new_runtime_json, is_terminal ('1'/'0'), next_scheduled_ms ('' none),
 #       terminal_delete_ms ('' none), event_id ('' none),
-#       retention_expire_ms ('' none), now_ms
+#       retention_ttl_ms ('' none), now_ms
 COMMIT_WINDOW = _PARSE_CLAIM + """
 local w = redis.call('GET', KEYS[1])
 if not w then return {'UNKNOWN'} end
@@ -125,8 +125,8 @@ if ARGV[7] == '1' then
   if ARGV[9] ~= '' then redis.call('ZADD', KEYS[7], tonumber(ARGV[9]), ARGV[1]) end
   if ARGV[10] ~= '' then redis.call('SADD', KEYS[8], ARGV[10]) end
   if ARGV[11] ~= '' then
-    redis.call('PEXPIREAT', KEYS[1], tonumber(ARGV[11]))
-    redis.call('PEXPIREAT', KEYS[2], tonumber(ARGV[11]))
+    redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[11]))
+    redis.call('PEXPIRE', KEYS[2], tonumber(ARGV[11]))
   end
   return {'COMMITTED', ARGV[5], ARGV[10]}
 end
@@ -141,7 +141,7 @@ return {'COMMITTED', ARGV[5], ''}
 # KEYS: watch, runtime, claim, active_index, schedule, terminal_index
 # ARGV: watch_id, cas_revision ('' to skip), mode ('cancel'/'pending'),
 #       new_watch_json ('' for pending), new_runtime_json ('' when no runtime),
-#       terminal_delete_ms ('' for pending), retention_expire_ms ('' none)
+#       terminal_delete_ms ('' for pending), retention_ttl_ms ('' none)
 CANCEL_IF_ACTIVE = """
 local w = redis.call('GET', KEYS[1])
 if not w then return {'UNKNOWN'} end
@@ -161,8 +161,8 @@ redis.call('SREM', KEYS[4], ARGV[1])
 redis.call('ZREM', KEYS[5], ARGV[1])
 if ARGV[6] ~= '' then redis.call('ZADD', KEYS[6], tonumber(ARGV[6]), ARGV[1]) end
 if ARGV[7] ~= '' then
-  redis.call('PEXPIREAT', KEYS[1], tonumber(ARGV[7]))
-  redis.call('PEXPIREAT', KEYS[2], tonumber(ARGV[7]))
+  redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[7]))
+  redis.call('PEXPIRE', KEYS[2], tonumber(ARGV[7]))
 end
 return {'APPLIED', ARGV[4]}
 """
@@ -200,7 +200,7 @@ return {removed, remaining}
 # KEYS: watch, runtime, claim, active_index, schedule, terminal, events
 # ARGV: watch_id, cas_revision ('' to skip), new_watch_json, new_runtime_json
 #       ('' when no runtime), event_id ('' none), terminal_delete_ms ('' none),
-#       retention_expire_ms ('' none)
+#       retention_ttl_ms ('' none)
 EXPIRE_IF_ELIGIBLE = """
 local w = redis.call('GET', KEYS[1])
 if not w then return {'UNKNOWN'} end
@@ -217,8 +217,8 @@ redis.call('ZREM', KEYS[5], ARGV[1])
 if ARGV[6] ~= '' then redis.call('ZADD', KEYS[6], tonumber(ARGV[6]), ARGV[1]) end
 if ARGV[5] ~= '' then redis.call('SADD', KEYS[7], ARGV[5]) end
 if ARGV[7] ~= '' then
-  redis.call('PEXPIREAT', KEYS[1], tonumber(ARGV[7]))
-  redis.call('PEXPIREAT', KEYS[2], tonumber(ARGV[7]))
+  redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[7]))
+  redis.call('PEXPIRE', KEYS[2], tonumber(ARGV[7]))
 end
 return {'APPLIED', ARGV[3]}
 """
