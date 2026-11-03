@@ -9,20 +9,20 @@
 
 # --- API ---
 argon2-cffi==25.1.0
-asyncpg==0.30.0
-fastapi==0.141.1
-openai==3.2.0
-pydantic==2.13.4
+asyncpg==0.32.0
+fastapi==0.162.0
+openai==3.42.1
+pydantic==2.14.2
 redis==7.4.1
-tzdata==2026.3
-uvicorn==0.52.3
+tzdata==2026.6
+uvicorn==0.54.0
 
 # --- Background worker (Milestone 3) ---
 celery==5.6.3
 
 # --- Tests / demo scripts ---
 httpx==0.28.1
-pytest==9.1.1
+pytest==9.2.0
 pytest-cov==7.1.0
 # Runs the exact atomic-repository Lua in tests (pulls in lupa via [lua]).
-fakeredis[lua]==2.37.1
+fakeredis[lua]==2.40.0
