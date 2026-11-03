@@ -82,6 +82,7 @@ from backend.services.auth_service import (
 from backend.services.booking_service import BookingService
 from backend.services.throttle import (
     RateLimitedError,
+    RedisSlidingWindowThrottle,
     SlidingWindowThrottle,
     TooManyLoginAttemptsError,
     throttle_key,
@@ -353,6 +354,7 @@ async def _attach_redis(app: FastAPI) -> None:
 
     await app.state.watch_queue.close()
     app.state.redis = client
+    _share_throttles_through_redis(app, client)
     app.state.watch_repository = RedisWatchRepository(
         client, terminal_retention_seconds=settings.terminal_retention_seconds
     )
@@ -417,6 +419,24 @@ async def _redis_cluster_enabled(client: Any) -> bool:
     except Exception:
         return False
     return bool(info.get("cluster_enabled"))
+
+
+def _share_throttles_through_redis(app: FastAPI, client: Any) -> None:
+    """Move each in-process throttle into Redis, keeping its limit, so every
+    API process counts against one shared window instead of its own."""
+
+    for attr, name in (
+        ("prompt_throttle", "prompt"),
+        ("login_throttle", "login-email"),
+        ("login_ip_throttle", "login-ip"),
+    ):
+        local = getattr(app.state, attr, None)
+        if isinstance(local, SlidingWindowThrottle):
+            setattr(
+                app.state,
+                attr,
+                RedisSlidingWindowThrottle.like(local, client, name=name),
+            )
 
 
 async def _start_recovery(
@@ -742,7 +762,7 @@ def create_app() -> FastAPI:
             "history_readiness": request.app.state.readiness.history_readiness.value,
         }
 
-    def _enforce_prompt_throttle(
+    async def _enforce_prompt_throttle(
         http_request: Request, x_dibs_client_id: str | None
     ) -> None:
         """Cap what one anonymous caller can spend on the paid endpoints.
@@ -751,13 +771,13 @@ def create_app() -> FastAPI:
         whether or not we like the answer. Keyed on the caller's client id and
         origin, falling back to the peer address when no usable id was sent.
 
-        ponytail: a caller that rotates client ids evades this, and callers
-        behind one proxy share a bucket. It is a spend ceiling, not admission
-        control -- put auth or a real gateway in front if that stops being
-        enough.
+        ponytail: a caller that rotates client ids evades this. It is a spend
+        ceiling, not admission control -- put auth or a real gateway in front if
+        that stops being enough. Behind a proxy, set FORWARDED_ALLOW_IPS so the
+        peer address is the real client rather than the proxy.
         """
 
-        throttle: SlidingWindowThrottle | None = getattr(
+        throttle: SlidingWindowThrottle | RedisSlidingWindowThrottle | None = getattr(
             http_request.app.state, "prompt_throttle", None
         )
         if throttle is None:
@@ -765,8 +785,8 @@ def create_app() -> FastAPI:
         peer = http_request.client.host if http_request.client else "-"
         identity = extract_client_id(x_dibs_client_id) or peer
         key = throttle_key(identity, http_request.headers.get("origin"))
-        throttle.check(key)
-        throttle.record(key)
+        await throttle.acheck(key)
+        await throttle.arecord(key)
 
     async def parse_prompt(
         request: ParseRequest,
@@ -774,7 +794,7 @@ def create_app() -> FastAPI:
         engine: Annotated[OrchestratorEngine, Depends(get_orchestrator)],
         x_dibs_client_id: Annotated[str | None, Header()] = None,
     ) -> ReservationIntent:
-        _enforce_prompt_throttle(http_request, x_dibs_client_id)
+        await _enforce_prompt_throttle(http_request, x_dibs_client_id)
         return await engine.parse(request.prompt)
 
     async def parse_and_book(
@@ -785,7 +805,7 @@ def create_app() -> FastAPI:
         user: Annotated[User | None, Depends(current_user)],
         x_dibs_client_id: Annotated[str | None, Header()] = None,
     ) -> PromptExecutionResult:
-        _enforce_prompt_throttle(http_request, x_dibs_client_id)
+        await _enforce_prompt_throttle(http_request, x_dibs_client_id)
         intent = await engine.parse(request.prompt)
         owner_client_id = extract_client_id(x_dibs_client_id)
         return await router.execute(

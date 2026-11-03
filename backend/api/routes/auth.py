@@ -15,6 +15,7 @@ from backend.services.auth_service import (
     InvalidCredentialsError,
 )
 from backend.services.throttle import (
+    RedisSlidingWindowThrottle,
     SlidingWindowThrottle,
     login_email_key,
     login_ip_key,
@@ -93,28 +94,28 @@ async def login(
     # client address (trying many emails). A success clears only the email
     # window; clearing the address window would let an attacker reset it by
     # logging into their own account between guesses.
-    email_throttle: SlidingWindowThrottle | None = getattr(
+    email_throttle: SlidingWindowThrottle | RedisSlidingWindowThrottle | None = getattr(
         request.app.state, "login_throttle", None
     )
-    ip_throttle: SlidingWindowThrottle | None = getattr(
+    ip_throttle: SlidingWindowThrottle | RedisSlidingWindowThrottle | None = getattr(
         request.app.state, "login_ip_throttle", None
     )
     email_key = login_email_key(body.email)
     ip_key = login_ip_key(request.client.host if request.client else None)
     if email_throttle is not None:
-        email_throttle.check(email_key)
+        await email_throttle.acheck(email_key)
     if ip_throttle is not None:
-        ip_throttle.check(ip_key)
+        await ip_throttle.acheck(ip_key)
     try:
         user, token = await service.login(body.email, body.password)
     except InvalidCredentialsError:
         if email_throttle is not None:
-            email_throttle.record(email_key)
+            await email_throttle.arecord(email_key)
         if ip_throttle is not None:
-            ip_throttle.record(ip_key)
+            await ip_throttle.arecord(ip_key)
         raise
     if email_throttle is not None:
-        email_throttle.reset(email_key)
+        await email_throttle.areset(email_key)
     await _claim_anonymous_watches(request, user, x_dibs_client_id)
     return AuthResponse(token=token, user=user)
 

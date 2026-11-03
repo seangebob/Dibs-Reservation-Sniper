@@ -9,26 +9,32 @@ One in-process counter, used for two things:
 - **The paid prompt endpoint** (Milestone 6): every request counts, because the
   cost is incurred whether or not the call succeeds.
 
-Deliberately best-effort rather than a hard quota in either case:
+Two implementations with one async interface (`acheck`/`arecord`/`areset`):
 
-- It is in-process, so N application processes each allow the threshold
-  independently -- it blunts abuse, it does not bound it globally.
-- It fails open past `_MAX_TRACKED_KEYS` live keys, so an attacker cycling keys
+- `SlidingWindowThrottle` is in-process. It is the default, and what stays in
+  use when Redis is unavailable -- then N processes each allow the threshold.
+  It fails open past `_MAX_TRACKED_KEYS` live keys, so an attacker cycling keys
   can never turn the throttle itself into a memory-exhaustion vector.
-
-ponytail: per-process dict; move the counter to Redis if one global limit
-across processes ever matters.
+- `RedisSlidingWindowThrottle` keeps the window in Redis, so every API process
+  shares one limit. The app switches to it once Redis connects. A Redis error
+  fails open (logged) rather than turning a limiter outage into an API outage.
 """
 
 from __future__ import annotations
 
+import logging
 import time
+import uuid
 from collections import deque
 from collections.abc import Callable
+from typing import Any
 
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "RateLimitedError",
+    "RedisSlidingWindowThrottle",
     "SlidingWindowThrottle",
     "TooManyLoginAttemptsError",
     "login_email_key",
@@ -127,6 +133,17 @@ class SlidingWindowThrottle:
 
         self._failures.pop(key, None)
 
+    # -- async interface, shared with RedisSlidingWindowThrottle ------------
+
+    async def acheck(self, key: str) -> None:
+        self.check(key)
+
+    async def arecord(self, key: str) -> None:
+        self.record(key)
+
+    async def areset(self, key: str) -> None:
+        self.reset(key)
+
     # -- internals ----------------------------------------------------------
 
     def _live(self, key: str) -> deque[float] | None:
@@ -150,3 +167,72 @@ class SlidingWindowThrottle:
 
         for key in list(self._failures):
             self._live(key)
+
+
+class RedisSlidingWindowThrottle:
+    """The same sliding window, stored in Redis so every process shares it.
+
+    Each key is a sorted set of event timestamps that expires with its window,
+    so idle keys clean themselves up. Timestamps are wall-clock (shared across
+    hosts), not monotonic.
+    """
+
+    def __init__(
+        self,
+        client: Any,
+        *,
+        name: str,
+        max_events: int,
+        window_seconds: int,
+        on_limit: Callable[[], RateLimitedError] = RateLimitedError,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        self._client = client
+        self._prefix = f"dibs:throttle:{name}:"
+        self._max_events = max_events
+        self._window_seconds = window_seconds
+        self._on_limit = on_limit
+        self._clock = clock or time.time
+
+    @classmethod
+    def like(
+        cls, local: SlidingWindowThrottle, client: Any, *, name: str
+    ) -> RedisSlidingWindowThrottle:
+        """A Redis throttle with the same limit as an in-process one."""
+
+        return cls(
+            client,
+            name=name,
+            max_events=local._max_events,
+            window_seconds=local._window_seconds,
+            on_limit=local._on_limit,
+        )
+
+    async def acheck(self, key: str) -> None:
+        cutoff = self._clock() - self._window_seconds
+        try:
+            pipe = self._client.pipeline(transaction=True)
+            pipe.zremrangebyscore(self._prefix + key, "-inf", cutoff)
+            pipe.zcard(self._prefix + key)
+            _, count = await pipe.execute()
+        except Exception:
+            logger.warning("throttle check failed; allowing request", exc_info=True)
+            return
+        if int(count) >= self._max_events:
+            raise self._on_limit()
+
+    async def arecord(self, key: str) -> None:
+        now = self._clock()
+        try:
+            pipe = self._client.pipeline(transaction=True)
+            pipe.zadd(self._prefix + key, {f"{now:.6f}:{uuid.uuid4().hex}": now})
+            pipe.expire(self._prefix + key, self._window_seconds + 1)
+            await pipe.execute()
+        except Exception:
+            logger.warning("throttle record failed; event not counted", exc_info=True)
+
+    async def areset(self, key: str) -> None:
+        try:
+            await self._client.delete(self._prefix + key)
+        except Exception:
+            logger.warning("throttle reset failed", exc_info=True)

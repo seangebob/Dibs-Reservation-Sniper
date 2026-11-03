@@ -316,6 +316,11 @@ DSN.
 | `LOGIN_THROTTLE_WINDOW_SECONDS` | 300 | That window, for both limits |
 | `PROMPT_THROTTLE_MAX_REQUESTS` | 20 | Requests per window to the paid prompt endpoints |
 | `PROMPT_THROTTLE_WINDOW_SECONDS` | 300 | That window |
+| `FORWARDED_ALLOW_IPS` | `127.0.0.1,::1` | Read by uvicorn: proxies whose `X-Forwarded-For` is trusted for the client address. Behind Railway/Render/Fly set it to the proxy's range, or `*` **only** if the app is reachable solely through that proxy. |
+
+With Redis connected, every limit lives in Redis and is shared by all API
+processes; without it, each process counts on its own. A Redis error lets the
+request through rather than failing it.
 
 ### Email
 

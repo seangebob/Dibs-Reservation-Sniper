@@ -225,8 +225,9 @@ see [Deploying a change](docs/ARCHITECTURE.md#deploying-a-change).
   all work.
 - **No rolling deploys.** Old and new worker code can't safely share one Redis; see
   the deploy order in the architecture doc.
-- **Rate limiting is a spend ceiling, not admission control.** Per-process, keyed on
-  client id and origin.
+- **Rate limiting is a spend ceiling, not admission control.** Limits are shared
+  through Redis when it is connected (per-process otherwise). Behind a hosting proxy,
+  set `FORWARDED_ALLOW_IPS` so limits see real client addresses.
 
 ## Docs
 

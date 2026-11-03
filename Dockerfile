@@ -5,6 +5,10 @@
 #   API (default):
 #     python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 #
+#   Behind a hosting proxy, set FORWARDED_ALLOW_IPS (read by uvicorn) so rate
+#   limits see real client addresses instead of the proxy's; see
+#   docs/ARCHITECTURE.md. Use "*" only if the proxy is the sole way in.
+#
 #   Worker (override CMD):
 #     celery -A backend.workers.celery_app worker --loglevel=info
 #
