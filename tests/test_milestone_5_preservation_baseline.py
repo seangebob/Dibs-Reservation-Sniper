@@ -75,8 +75,8 @@ def test_anonymous_watch_lifecycle_needs_no_authorization(client: TestClient) ->
     assert created.status_code == 201
     watch_id = created.json()["watch_id"]
 
-    # Unscoped listing still shows it; "my watches" answers without erroring.
-    assert watch_id in {w["watch_id"] for w in client.get("/api/watches").json()}
+    # Readable by id; "my watches" answers without erroring.
+    assert client.get(f"/api/watches/{watch_id}").status_code == 200
     assert client.get(
         "/api/watches/mine", headers={"X-Dibs-Client-Id": "visitor-alpha"}
     ).status_code == 200

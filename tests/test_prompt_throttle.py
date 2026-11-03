@@ -179,7 +179,6 @@ def test_the_watch_routes_are_unaffected(client) -> None:
     for _ in range(6):
         tc.post("/api/parse-and-book", json=PROMPT, headers=CLIENT_1)
 
-    assert tc.get("/api/watches", headers=CLIENT_1).status_code == 200
     assert tc.get("/api/watches/mine", headers=CLIENT_1).status_code == 200
     assert tc.get("/health").status_code == 200
 

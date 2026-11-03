@@ -196,11 +196,13 @@ cost money on every call.
 
 ```text
 POST   /api/watches?auto_book=false    # 201; durably scheduled, best-effort dispatched
-GET    /api/watches?active_only=false
 GET    /api/watches/mine               # Scoped to this account, or to this browser
 GET    /api/watches/{watch_id}
 DELETE /api/watches/{watch_id}         # Cancels; the queued poll stops itself
 ```
+
+There is no unscoped `GET /api/watches` (it answers `405`): listing every
+watch exposed other users' plans. Use `/mine`.
 
 Every creation response carries `X-Watch-Monitoring-Policy` (`deadline` or
 `attempt-limited`) and `X-Watch-Max-Availability-Checks`. Most watches are

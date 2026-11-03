@@ -118,15 +118,9 @@ def _apply_policy_headers(
         )
 
 
-@router.get("", response_model=list[Watch], summary="List watches")
-async def list_watches(
-    service: WatchServiceDep,
-    active_only: Annotated[
-        bool,
-        Query(description="Return only watches the queue is still polling"),
-    ] = False,
-) -> list[Watch]:
-    return await service.list(active_only=active_only)
+# There is deliberately no unscoped `GET /api/watches`: it returned every
+# user's watches (venue, date, party size, booking) to anyone. Callers list
+# their own through `/mine`.
 
 
 @router.get(

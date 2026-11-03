@@ -83,24 +83,20 @@ def test_creating_a_watch_returns_201_and_queues_the_first_check(
     assert queue.dispatches == [(body["watch_id"], 0.0)]
 
 
-def test_watches_can_be_listed_and_read_back(client: TestClient) -> None:
+def test_a_watch_can_be_read_back(client: TestClient) -> None:
     watch_id = client.post("/api/watches", json=QUERY).json()["watch_id"]
 
-    listed = client.get("/api/watches")
     read = client.get(f"/api/watches/{watch_id}")
 
-    assert [record["watch_id"] for record in listed.json()] == [watch_id]
     assert read.status_code == 200
     assert read.json()["watch_id"] == watch_id
 
 
-def test_listing_can_be_narrowed_to_active_watches(client: TestClient) -> None:
-    first = client.post("/api/watches", json=QUERY).json()["watch_id"]
-    client.post("/api/watches", json={**QUERY, "venue_name": "Bhima's Warung"})
-    client.delete(f"/api/watches/{first}")
+def test_other_peoples_watches_cannot_be_listed(client: TestClient) -> None:
+    client.post("/api/watches", json=QUERY)
 
-    assert len(client.get("/api/watches").json()) == 2
-    assert len(client.get("/api/watches", params={"active_only": True}).json()) == 1
+    assert client.get("/api/watches").status_code == 405
+    assert client.get("/api/watches", params={"active_only": True}).status_code == 405
 
 
 def test_cancelling_a_watch_marks_it_cancelled(client: TestClient) -> None:

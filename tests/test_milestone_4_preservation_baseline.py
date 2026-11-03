@@ -22,7 +22,6 @@ from fastapi.testclient import TestClient
 
 from backend.api.routes.watches import (
     cancel_watch,
-    list_watches,
     read_watch,
 )
 from backend.db.repositories.watches import InMemoryWatchRepository
@@ -108,13 +107,12 @@ def test_watch_service_poll_signatures_have_no_owner_parameter() -> None:
 # `tests/test_watch_owner_scoping.py`). Requirement 2.5 keeps ownership
 # scoping out of `read_watch`/`cancel_watch` -- a watch's own id remains
 # sufficient to read or cancel it regardless of who created it -- and
-# `list_watches` stays globally unscoped by design (Task 5 added a separate,
-# dedicated endpoint for "my watches" instead of overloading this one).
+# the unscoped `list_watches` route has since been removed (see below).
 # ---------------------------------------------------------------------------
 
 
 def test_watch_route_signatures_have_no_owner_or_client_id_parameter() -> None:
-    for endpoint in (list_watches, read_watch, cancel_watch):
+    for endpoint in (read_watch, cancel_watch):
         parameters = inspect.signature(endpoint).parameters
         forbidden = {"owner", "owner_client_id", "client_id", "x_dibs_client_id"}
         assert not (forbidden & set(parameters)), (
@@ -122,45 +120,19 @@ def test_watch_route_signatures_have_no_owner_or_client_id_parameter() -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# Requirement 6.2: GET /api/watches is globally unscoped -- watches created
-# without any ownership signal appear in the list, and no ``owner`` query
-# parameter is honored today.
+# GET /api/watches used to be globally unscoped (Requirement 6.2). It leaked
+# every user's watches to anyone, so it was removed; `/mine` is the listing.
 # ---------------------------------------------------------------------------
 
 
-def test_list_watches_returns_every_watch_regardless_of_creator(
-    client: TestClient,
-) -> None:
-    first = client.post(
+def test_there_is_no_unscoped_watch_listing(client: TestClient) -> None:
+    client.post(
         "/api/watches", json=QUERY, headers={"X-Dibs-Client-Id": "visitor-alpha"}
-    ).json()["watch_id"]
-    second = client.post(
-        "/api/watches", json=QUERY, headers={"X-Dibs-Client-Id": "visitor-beta"}
-    ).json()["watch_id"]
-    # A creation with no client header at all also lands in the same list.
-    third = client.post("/api/watches", json=QUERY).json()["watch_id"]
+    )
 
-    body = client.get("/api/watches").json()
-    ids = {watch["watch_id"] for watch in body}
+    response = client.get("/api/watches")
 
-    assert {first, second, third} <= ids
-
-
-def test_list_watches_ignores_an_owner_query_parameter_today(
-    client: TestClient,
-) -> None:
-    kept = client.post(
-        "/api/watches", json=QUERY, headers={"X-Dibs-Client-Id": "visitor-alpha"}
-    ).json()["watch_id"]
-
-    scoped = client.get("/api/watches?owner=someone-else").json()
-    ids = {watch["watch_id"] for watch in scoped}
-
-    # The pre-Milestone-4 route has no ``owner`` filter, so passing one has no
-    # effect: the alpha watch is still visible even though it was created
-    # under a different client id.
-    assert kept in ids
+    assert response.status_code == 405
 
 
 # ---------------------------------------------------------------------------
