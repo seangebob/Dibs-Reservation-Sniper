@@ -19,6 +19,7 @@ from backend.services.auth_service import InvalidCredentialsError
 from backend.services.throttle import (
     SlidingWindowThrottle,
     TooManyLoginAttemptsError,
+    is_internal_address,
     login_email_key,
     login_ip_key,
     throttle_key,
@@ -276,3 +277,48 @@ def test_a_successful_login_does_not_clear_the_address_limit() -> None:
         body = {"email": "victim9@x.com", "password": "hunter2-secret"}
         assert client.post("/api/auth/login", json=body).status_code == 401
         assert client.post("/api/auth/login", json=body).status_code == 429
+
+
+def test_behind_an_untrusted_proxy_one_attacker_cannot_lock_everyone_out() -> None:
+    """Without FORWARDED_ALLOW_IPS every request seems to come from the proxy's
+    private address. The address limit must not then become one global limit."""
+
+    app = _login_app(email_max=100, ip_max=3)
+    failing, succeeding = _AlwaysFailsAuth(), _AlwaysSucceedsAuth()
+    current = {"service": failing}
+    app.dependency_overrides[get_auth_service] = lambda: current["service"]
+    with TestClient(app, client=("10.0.0.5", 50000)) as client:
+        for n in range(5):
+            body = {"email": f"guess{n}@x.com", "password": "wrong-password"}
+            client.post("/api/auth/login", json=body)
+        current["service"] = succeeding  # a different, legitimate user
+        assert client.post("/api/auth/login", json=CREDS).status_code == 200
+
+
+def test_a_public_address_is_still_limited() -> None:
+    app = _login_app(email_max=100, ip_max=3)
+    app.dependency_overrides[get_auth_service] = lambda: _AlwaysFailsAuth()
+    with TestClient(app, client=("8.8.8.8", 50000)) as client:
+        for n in range(3):
+            body = {"email": f"user{n}@x.com", "password": "hunter2-secret"}
+            client.post("/api/auth/login", json=body)
+        assert client.post("/api/auth/login", json=CREDS).status_code == 429
+
+
+@pytest.mark.parametrize(
+    ("host", "internal"),
+    [
+        ("10.0.0.5", True),
+        ("172.17.0.1", True),
+        ("192.168.1.4", True),
+        ("100.64.1.2", True),  # carrier-grade NAT range some hosts use internally
+        ("127.0.0.1", True),
+        ("fdaa::1", True),
+        ("8.8.8.8", False),
+        ("2001:4860:4860::8888", False),
+        ("testclient", False),
+        (None, False),
+    ],
+)
+def test_internal_addresses_are_recognised(host, internal) -> None:
+    assert is_internal_address(host) is internal

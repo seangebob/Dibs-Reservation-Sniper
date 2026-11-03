@@ -17,6 +17,7 @@ from backend.services.auth_service import (
 from backend.services.throttle import (
     RedisSlidingWindowThrottle,
     SlidingWindowThrottle,
+    is_internal_address,
     login_email_key,
     login_ip_key,
 )
@@ -54,6 +55,22 @@ async def _claim_anonymous_watches(
         logger.warning(
             "failed to claim anonymous watches on auth", exc_info=True
         )
+
+
+_warned_about_proxy = False
+
+
+def _warn_untrusted_proxy_once(peer: str | None) -> None:
+    global _warned_about_proxy
+    if _warned_about_proxy:
+        return
+    _warned_about_proxy = True
+    logger.warning(
+        "Logins arrive from internal address %s, so the per-address login "
+        "limit is off. Behind a proxy, set FORWARDED_ALLOW_IPS so the real "
+        "client address is used.",
+        peer,
+    )
 
 
 class Credentials(BaseModel):
@@ -101,7 +118,12 @@ async def login(
         request.app.state, "login_ip_throttle", None
     )
     email_key = login_email_key(body.email)
-    ip_key = login_ip_key(request.client.host if request.client else None)
+    peer = request.client.host if request.client else None
+    ip_key = login_ip_key(peer)
+    if ip_throttle is not None and is_internal_address(peer):
+        # Every user would share this address (see is_internal_address).
+        _warn_untrusted_proxy_once(peer)
+        ip_throttle = None
     if email_throttle is not None:
         await email_throttle.acheck(email_key)
     if ip_throttle is not None:

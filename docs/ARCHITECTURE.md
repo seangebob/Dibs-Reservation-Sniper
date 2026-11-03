@@ -312,7 +312,7 @@ DSN.
 | `SESSION_TTL_SECONDS` | 2,592,000 | Session lifetime (30 days) |
 | `PASSWORD_MIN_LENGTH` / `PASSWORD_MAX_LENGTH` | 8 / — | Signup password policy |
 | `LOGIN_THROTTLE_MAX_ATTEMPTS` | 10 | Failed logins for one email per window before `429` |
-| `LOGIN_IP_THROTTLE_MAX_ATTEMPTS` | 50 | Failed logins from one client address (any email) per window before `429` |
+| `LOGIN_IP_THROTTLE_MAX_ATTEMPTS` | 50 | Failed logins from one client address (any email) per window before `429`. Skipped for private/loopback addresses — usually an untrusted proxy, where every user would share one limit (a warning is logged; set `FORWARDED_ALLOW_IPS`). |
 | `LOGIN_THROTTLE_WINDOW_SECONDS` | 300 | That window, for both limits |
 | `PROMPT_THROTTLE_MAX_REQUESTS` | 20 | Requests per window to the paid prompt endpoints |
 | `PROMPT_THROTTLE_WINDOW_SECONDS` | 300 | That window |

@@ -22,6 +22,7 @@ Two implementations with one async interface (`acheck`/`arecord`/`areset`):
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import time
 import uuid
@@ -37,6 +38,7 @@ __all__ = [
     "RedisSlidingWindowThrottle",
     "SlidingWindowThrottle",
     "TooManyLoginAttemptsError",
+    "is_internal_address",
     "login_email_key",
     "login_ip_key",
     "throttle_key",
@@ -80,6 +82,32 @@ def login_email_key(email: str) -> str:
     """
 
     return f"email:{email.strip().lower()}"
+
+
+#: Carrier-grade NAT space. Some hosts route proxy traffic through it, and
+#: Python does not count it as private.
+_SHARED_ADDRESS_SPACE = ipaddress.ip_network("100.64.0.0/10")
+
+
+def is_internal_address(host: str | None) -> bool:
+    """True for loopback, private, or shared-NAT addresses.
+
+    A login arriving from one of these is almost always a hosting proxy whose
+    real-client header is not trusted (FORWARDED_ALLOW_IPS unset), so every
+    user appears to share it. Callers skip the per-address limit then, or one
+    attacker could lock every user out. An internet client cannot fake this:
+    the address is the TCP peer, not a header.
+    """
+
+    if not host:
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if address.is_loopback or address.is_private:
+        return True
+    return address.version == 4 and address in _SHARED_ADDRESS_SPACE
 
 
 def login_ip_key(peer: str | None) -> str:
