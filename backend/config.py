@@ -459,6 +459,9 @@ DEFAULT_ARGON2_MEMORY_COST_KIB = 65_536
 DEFAULT_ARGON2_PARALLELISM = 4
 DEFAULT_LOGIN_THROTTLE_MAX_ATTEMPTS = 10
 DEFAULT_LOGIN_THROTTLE_WINDOW_SECONDS = 300
+#: Failed logins from one IP address, across every email, per window. Looser
+#: than the per-email limit so people sharing one address are not blocked.
+DEFAULT_LOGIN_IP_THROTTLE_MAX_ATTEMPTS = 50
 
 _MIN_SESSION_TTL_SECONDS = 3_600
 _MAX_SESSION_TTL_SECONDS = 7_776_000  # 90 days
@@ -494,6 +497,7 @@ class AccountSettings:
     argon2_parallelism: int = DEFAULT_ARGON2_PARALLELISM
     login_throttle_max_attempts: int = DEFAULT_LOGIN_THROTTLE_MAX_ATTEMPTS
     login_throttle_window_seconds: int = DEFAULT_LOGIN_THROTTLE_WINDOW_SECONDS
+    login_ip_throttle_max_attempts: int = DEFAULT_LOGIN_IP_THROTTLE_MAX_ATTEMPTS
 
     @classmethod
     def from_environment(cls) -> "AccountSettings":
@@ -551,6 +555,12 @@ class AccountSettings:
                 DEFAULT_LOGIN_THROTTLE_WINDOW_SECONDS,
                 minimum=_MIN_LOGIN_THROTTLE_WINDOW_SECONDS,
                 maximum=_MAX_LOGIN_THROTTLE_WINDOW_SECONDS,
+            ),
+            login_ip_throttle_max_attempts=_bounded_count(
+                "LOGIN_IP_THROTTLE_MAX_ATTEMPTS",
+                DEFAULT_LOGIN_IP_THROTTLE_MAX_ATTEMPTS,
+                minimum=_MIN_LOGIN_THROTTLE_MAX_ATTEMPTS,
+                maximum=_MAX_LOGIN_THROTTLE_MAX_ATTEMPTS,
             ),
         )
 

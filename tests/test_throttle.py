@@ -19,6 +19,8 @@ from backend.services.auth_service import InvalidCredentialsError
 from backend.services.throttle import (
     SlidingWindowThrottle,
     TooManyLoginAttemptsError,
+    login_email_key,
+    login_ip_key,
     throttle_key,
 )
 
@@ -113,8 +115,7 @@ def test_keys_are_independent() -> None:
     for _ in range(3):
         throttle.record("a@x.com|https://app")
 
-    throttle.check("b@x.com|https://app")  # a different account
-    throttle.check("a@x.com|https://other")  # a different origin
+    throttle.check("b@x.com|https://app")  # a different key
 
 
 def test_a_drained_key_is_forgotten_rather_than_accumulating() -> None:
@@ -126,6 +127,12 @@ def test_a_drained_key_is_forgotten_rather_than_accumulating() -> None:
     throttle.check("k")
 
     assert throttle._failures == {}
+
+
+def test_login_keys_ignore_origin_and_normalize_email() -> None:
+    assert login_email_key("  A@X.com ") == "email:a@x.com"
+    assert login_ip_key("203.0.113.9") == "ip:203.0.113.9"
+    assert login_ip_key(None) == "ip:-"
 
 
 def test_throttle_key_normalizes_email_and_missing_origin() -> None:
@@ -216,3 +223,56 @@ def test_login_works_normally_when_no_throttle_is_configured() -> None:
         for _ in range(5):
             assert client.post("/api/auth/login", json=CREDS).status_code == 401
     app.dependency_overrides.clear()
+
+
+def _login_app(email_max: int = 3, ip_max: int = 100):
+    app = create_app()
+    app.state.login_throttle = SlidingWindowThrottle(
+        max_events=email_max, window_seconds=300, on_limit=TooManyLoginAttemptsError
+    )
+    app.state.login_ip_throttle = SlidingWindowThrottle(
+        max_events=ip_max, window_seconds=300, on_limit=TooManyLoginAttemptsError
+    )
+    return app
+
+
+def test_a_made_up_origin_does_not_reset_the_email_limit() -> None:
+    app = _login_app(email_max=3)
+    app.dependency_overrides[get_auth_service] = lambda: _AlwaysFailsAuth()
+    with TestClient(app) as client:
+        for n in range(3):
+            client.post(
+                "/api/auth/login", json=CREDS, headers={"Origin": f"https://x{n}"}
+            )
+        resp = client.post(
+            "/api/auth/login", json=CREDS, headers={"Origin": "https://fresh"}
+        )
+    assert resp.status_code == 429
+
+
+def test_one_address_trying_many_emails_is_limited() -> None:
+    app = _login_app(email_max=100, ip_max=3)
+    app.dependency_overrides[get_auth_service] = lambda: _AlwaysFailsAuth()
+    with TestClient(app) as client:
+        for n in range(3):
+            body = {"email": f"user{n}@x.com", "password": "hunter2-secret"}
+            assert client.post("/api/auth/login", json=body).status_code == 401
+        body = {"email": "someone-new@x.com", "password": "hunter2-secret"}
+        assert client.post("/api/auth/login", json=body).status_code == 429
+
+
+def test_a_successful_login_does_not_clear_the_address_limit() -> None:
+    app = _login_app(email_max=100, ip_max=3)
+    failing, succeeding = _AlwaysFailsAuth(), _AlwaysSucceedsAuth()
+    current = {"service": failing}
+    app.dependency_overrides[get_auth_service] = lambda: current["service"]
+    with TestClient(app) as client:
+        for n in range(2):
+            body = {"email": f"victim{n}@x.com", "password": "hunter2-secret"}
+            client.post("/api/auth/login", json=body)
+        current["service"] = succeeding  # attacker logs into their own account
+        assert client.post("/api/auth/login", json=CREDS).status_code == 200
+        current["service"] = failing
+        body = {"email": "victim9@x.com", "password": "hunter2-secret"}
+        assert client.post("/api/auth/login", json=body).status_code == 401
+        assert client.post("/api/auth/login", json=body).status_code == 429

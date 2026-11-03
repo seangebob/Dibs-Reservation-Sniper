@@ -14,7 +14,11 @@ from backend.services.auth_service import (
     AuthService,
     InvalidCredentialsError,
 )
-from backend.services.throttle import SlidingWindowThrottle, throttle_key
+from backend.services.throttle import (
+    SlidingWindowThrottle,
+    login_email_key,
+    login_ip_key,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -84,22 +88,33 @@ async def login(
     service: AuthServiceDep,
     x_dibs_client_id: ClientIdHeader = None,
 ) -> AuthResponse:
-    # Best-effort brute-force throttle (Req 6.4): only failures count, and a
-    # success clears the window, so a fumbled password is never penalized.
-    throttle: SlidingWindowThrottle | None = getattr(
+    # Best-effort brute-force throttle (Req 6.4): only failures count. Two
+    # limits: per email (guessing one account's password) and a looser one per
+    # client address (trying many emails). A success clears only the email
+    # window; clearing the address window would let an attacker reset it by
+    # logging into their own account between guesses.
+    email_throttle: SlidingWindowThrottle | None = getattr(
         request.app.state, "login_throttle", None
     )
-    key = throttle_key(body.email, request.headers.get("origin"))
-    if throttle is not None:
-        throttle.check(key)
+    ip_throttle: SlidingWindowThrottle | None = getattr(
+        request.app.state, "login_ip_throttle", None
+    )
+    email_key = login_email_key(body.email)
+    ip_key = login_ip_key(request.client.host if request.client else None)
+    if email_throttle is not None:
+        email_throttle.check(email_key)
+    if ip_throttle is not None:
+        ip_throttle.check(ip_key)
     try:
         user, token = await service.login(body.email, body.password)
     except InvalidCredentialsError:
-        if throttle is not None:
-            throttle.record(key)
+        if email_throttle is not None:
+            email_throttle.record(email_key)
+        if ip_throttle is not None:
+            ip_throttle.record(ip_key)
         raise
-    if throttle is not None:
-        throttle.reset(key)
+    if email_throttle is not None:
+        email_throttle.reset(email_key)
     await _claim_anonymous_watches(request, user, x_dibs_client_id)
     return AuthResponse(token=token, user=user)
 

@@ -31,6 +31,8 @@ __all__ = [
     "RateLimitedError",
     "SlidingWindowThrottle",
     "TooManyLoginAttemptsError",
+    "login_email_key",
+    "login_ip_key",
     "throttle_key",
 ]
 
@@ -40,7 +42,7 @@ class RateLimitedError(Exception):
 
 
 class TooManyLoginAttemptsError(RateLimitedError):
-    """Too many recent failed logins for this email+origin (-> 429)."""
+    """Too many recent failed logins for this email or address (-> 429)."""
 
     def __init__(self) -> None:
         super().__init__("Too many failed login attempts. Try again shortly.")
@@ -62,6 +64,22 @@ def throttle_key(identity: str, origin: str | None) -> str:
     """
 
     return f"{identity.strip().lower()}|{origin or '-'}"
+
+
+def login_email_key(email: str) -> str:
+    """Bucket failed logins by account email alone.
+
+    Never by `Origin`: a script can send any `Origin` it likes, so keying on it
+    would hand out a fresh allowance per made-up value.
+    """
+
+    return f"email:{email.strip().lower()}"
+
+
+def login_ip_key(peer: str | None) -> str:
+    """Bucket failed logins by client address, across every email tried."""
+
+    return f"ip:{peer or '-'}"
 
 
 class SlidingWindowThrottle:

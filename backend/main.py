@@ -235,6 +235,11 @@ async def _attach_postgres(app: FastAPI) -> None:
             window_seconds=account_settings.login_throttle_window_seconds,
             on_limit=TooManyLoginAttemptsError,
         )
+        app.state.login_ip_throttle = SlidingWindowThrottle(
+            max_events=account_settings.login_ip_throttle_max_attempts,
+            window_seconds=account_settings.login_throttle_window_seconds,
+            on_limit=TooManyLoginAttemptsError,
+        )
     except ConfigurationError as exc:
         logger.error("Account settings invalid; accounts disabled: %s", str(exc))
 
@@ -609,6 +614,7 @@ def create_app() -> FastAPI:
     app.state.notify_timeout_seconds = DEFAULT_NOTIFY_TIMEOUT_SECONDS
     app.state.auth_service = None
     app.state.login_throttle = None
+    app.state.login_ip_throttle = None
     # Unlike the login throttle, this one is always present: it caps spend on a
     # paid, unauthenticated endpoint, so a bad env value degrades to the
     # documented defaults rather than silently disabling the limit.
