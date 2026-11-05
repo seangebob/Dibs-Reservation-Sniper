@@ -118,6 +118,7 @@ class _FakeConnection:
             expires_at,
             watch_json,
             user_id,
+            revision,
         ) = args
         existing = self.rows.get(watch_id)
         if existing is not None:
@@ -136,6 +137,7 @@ class _FakeConnection:
             "expires_at": expires_at,
             "watch_json": watch_json,
             "user_id": user_id,
+            "revision": revision,
         }
 
     async def fetchval(self, query: str, *args: Any) -> Any:

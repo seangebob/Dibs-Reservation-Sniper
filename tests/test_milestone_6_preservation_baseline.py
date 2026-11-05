@@ -195,7 +195,7 @@ class _SequenceHistory:
     def __init__(self, log: list[str]) -> None:
         self._log = log
 
-    async def record(self, watch, owner_client_id=None, user_id=None) -> None:
+    async def record(self, watch, owner_client_id=None, user_id=None, revision=-1) -> None:
         self._log.append("record")
 
 

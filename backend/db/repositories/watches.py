@@ -595,8 +595,8 @@ class InMemoryWatchRepository:
                     "updated_at": now,
                 }
             )
-            self._apply_terminal(watch_id, cancelled, runtime, now)
-            return TransitionResult(TransitionStatus.APPLIED, watch=cancelled)
+            revision = self._apply_terminal(watch_id, cancelled, runtime, now)
+            return TransitionResult(TransitionStatus.APPLIED, watch=cancelled, revision=revision)
 
     async def expire_if_eligible(
         self,
@@ -635,7 +635,7 @@ class InMemoryWatchRepository:
                 watch_id, WatchStatus.EXPIRED, revision
             )
             return TransitionResult(
-                TransitionStatus.APPLIED, watch=expired, event_id=event_id
+                TransitionStatus.APPLIED, watch=expired, event_id=event_id, revision=revision
             )
 
     async def release_claim(self, claim: WindowClaim) -> bool:
@@ -1362,6 +1362,7 @@ class RedisWatchRepository:
                 return TransitionResult(
                     TransitionStatus.APPLIED,
                     watch=Watch.model_validate_json(_text(out[1])),
+                    revision=runtime.revision + 1 if runtime is not None else 0,
                 )
             if code == "NOT_ELIGIBLE":
                 return TransitionResult(TransitionStatus.NOT_ELIGIBLE, watch=watch)
@@ -1448,6 +1449,7 @@ class RedisWatchRepository:
                 TransitionStatus.APPLIED,
                 watch=Watch.model_validate_json(_text(out[1])),
                 event_id=event_id,
+                revision=new_revision,
             )
         if code == "NOOP":
             return TransitionResult(

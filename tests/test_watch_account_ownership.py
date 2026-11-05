@@ -71,7 +71,7 @@ class _FakeHistory:
     def __init__(self) -> None:
         self.rows: dict[str, tuple[Watch, str | None, UUID | None]] = {}
 
-    async def record(self, watch, owner_client_id=None, user_id=None) -> None:
+    async def record(self, watch, owner_client_id=None, user_id=None, revision=-1) -> None:
         prev = self.rows.get(watch.watch_id)
         if prev is not None:
             owner_client_id = owner_client_id or prev[1]

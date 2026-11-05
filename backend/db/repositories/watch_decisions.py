@@ -119,6 +119,7 @@ class TransitionResult:
     status: TransitionStatus
     watch: Watch | None = None
     event_id: str | None = None
+    revision: int = -1
 
 
 @dataclass(frozen=True, slots=True)

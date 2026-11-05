@@ -135,6 +135,7 @@ class WatchService:
         watch: Watch,
         owner_client_id: str | None = None,
         user_id: UUID | None = None,
+        revision: int = -1,
     ) -> None:
         """Best-effort mirror of ``watch`` into the durable history projection.
 
@@ -146,7 +147,7 @@ class WatchService:
         if self._history is None:
             return
         try:
-            await self._history.record(watch, owner_client_id, user_id)
+            await self._history.record(watch, owner_client_id, user_id, revision=revision)
         except Exception:
             logger.warning(
                 "watch history projection failed",
@@ -265,7 +266,7 @@ class WatchService:
                     "Account watch creation is temporarily unavailable. Try again later."
                 )
             try:
-                await self._history.record(watch, owner_client_id, user_id)
+                await self._history.record(watch, owner_client_id, user_id, revision=0)
             except Exception as exc:
                 raise WatchOwnershipUnavailableError(
                     "Account watch creation is temporarily unavailable. Try again later."
@@ -273,7 +274,7 @@ class WatchService:
         result = await self._repository.create_with_schedule(watch, runtime)
         stored = result.watch or watch
         if user_id is None:
-            await self._record_history(stored, owner_client_id)
+            await self._record_history(stored, owner_client_id, revision=0)
 
         # The first check runs without jitter: the user just asked, so the
         # latency they see is the one that matters. Jitter starts on retries.
@@ -313,8 +314,8 @@ class WatchService:
         # APPLIED -> the CANCELLED watch; NOOP -> the already-terminal watch;
         # NOT_ELIGIBLE -> a booking is in flight, so the request is recorded and
         # the still-active watch is returned (its resolution is the owner's).
-        if result.watch is not None:
-            await self._record_history(result.watch)
+        if result.status is TransitionStatus.APPLIED and result.watch is not None:
+            await self._record_history(result.watch, revision=result.revision)
         return result.watch
 
     async def expire(self, watch_id: str) -> TransitionResult:
@@ -335,7 +336,7 @@ class WatchService:
         result = await self._repository.expire_if_eligible(watch_id)
         if result.status is not TransitionStatus.APPLIED or result.watch is None:
             return result
-        await self._record_history(result.watch)
+        await self._record_history(result.watch, revision=result.revision)
         if result.event_id is not None:
             await self._notify(result.watch, WatchEvent.EXPIRED)
         return result
@@ -771,7 +772,7 @@ class WatchService:
         if result.status is CommitStatus.COMMITTED:
             # Every reschedule (outage or miss) and every terminal transition
             # funnels through here, so this one call-out covers all of them.
-            await self._record_history(result.watch or new_watch)
+            await self._record_history(result.watch or new_watch, revision=claim.runtime.revision + 1)
         return result
 
     def _noop(self, watch: Watch | None) -> WatchPollResult:

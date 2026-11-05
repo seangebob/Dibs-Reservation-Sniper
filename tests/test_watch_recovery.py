@@ -236,7 +236,7 @@ class RecordingHistory:
     def __init__(self) -> None:
         self.records: list[tuple[str, WatchStatus]] = []
 
-    async def record(self, watch, owner_client_id=None, user_id=None) -> None:
+    async def record(self, watch, owner_client_id=None, user_id=None, revision=-1) -> None:
         self.records.append((watch.watch_id, watch.status))
 
 

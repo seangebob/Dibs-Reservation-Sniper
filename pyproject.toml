@@ -41,6 +41,9 @@ dev = [
 where = ["."]
 include = ["backend*"]
 
+[tool.setuptools.package-data]
+"backend.db" = ["migrations/*.sql"]
+
 [tool.pytest.ini_options]
 addopts = "-q"
 pythonpath = ["."]

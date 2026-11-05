@@ -111,8 +111,7 @@ class _RecordingHistory:
         self.calls: list[tuple[str, str | None]] = []
 
     async def record(
-        self, watch: Watch, owner_client_id: str | None = None, user_id=None
-    ) -> None:
+        self, watch: Watch, owner_client_id: str | None = None, user_id=None, revision=-1) -> None:
         self.calls.append((watch.watch_id, owner_client_id))
 
 
@@ -122,8 +121,7 @@ class _RaisingHistory:
         self.attempts = 0
 
     async def record(
-        self, watch: Watch, owner_client_id: str | None = None, user_id=None
-    ) -> None:
+        self, watch: Watch, owner_client_id: str | None = None, user_id=None, revision=-1) -> None:
         self.attempts += 1
         raise self.error
 

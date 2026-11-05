@@ -52,15 +52,16 @@ class WatchHistoryRecorder(Protocol):
         watch: Watch,
         owner_client_id: str | None = None,
         user_id: UUID | None = None,
+        *, revision: int = -1,
     ) -> None: ...
 
 
 _UPSERT_SQL = """
 INSERT INTO watch_history (
     watch_id, owner_client_id, status, created_at, updated_at, expires_at,
-    watch_json, user_id
+    watch_json, user_id, revision
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (watch_id) DO UPDATE SET
     -- A later call with no owner (e.g. a poll outcome, which carries no
     -- client identity) must never erase an owner recorded at creation. The
@@ -71,7 +72,13 @@ ON CONFLICT (watch_id) DO UPDATE SET
     status = EXCLUDED.status,
     updated_at = EXCLUDED.updated_at,
     expires_at = EXCLUDED.expires_at,
-    watch_json = EXCLUDED.watch_json
+    watch_json = EXCLUDED.watch_json,
+    revision = EXCLUDED.revision
+WHERE watch_history.status = 'ACTIVE' AND (
+    EXCLUDED.revision > watch_history.revision
+    OR (EXCLUDED.revision = -1 AND watch_history.revision = -1
+        AND EXCLUDED.updated_at >= watch_history.updated_at)
+)
 """.strip()
 
 _SELECT_ONE_SQL = "SELECT watch_json FROM watch_history WHERE watch_id = $1"
@@ -113,6 +120,7 @@ class WatchHistoryRepository:
         watch: Watch,
         owner_client_id: str | None = None,
         user_id: UUID | None = None,
+        *, revision: int = -1,
     ) -> None:
         """Upsert the current public state of ``watch``.
 
@@ -136,6 +144,7 @@ class WatchHistoryRepository:
                 watch.expires_at,
                 watch.model_dump_json(),
                 user_id,
+                revision,
             )
 
     async def get(self, watch_id: str) -> Watch | None:
@@ -227,9 +236,10 @@ class TrackingHistoryRecorder:
         watch: Watch,
         owner_client_id: str | None = None,
         user_id: UUID | None = None,
+        *, revision: int = -1,
     ) -> None:
         try:
-            await self._inner.record(watch, owner_client_id, user_id)
+            await self._inner.record(watch, owner_client_id, user_id, revision=revision)
         except Exception:
             self._tracker.record_history_outcome(ok=False)
             raise
