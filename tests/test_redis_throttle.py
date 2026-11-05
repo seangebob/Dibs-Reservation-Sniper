@@ -51,6 +51,26 @@ def test_two_processes_share_one_limit() -> None:
     asyncio.run(scenario())
 
 
+def test_concurrent_admission_across_processes_cannot_exceed_the_limit() -> None:
+    async def scenario():
+        client = fakeredis_aio.FakeRedis()
+        processes = [_throttle(client, _Clock(), max_events=3) for _ in range(10)]
+        async def admit(throttle):
+            try:
+                return await throttle.aconsume("shared")
+            except RateLimitedError:
+                return None
+        admitted = await asyncio.gather(*(admit(t) for t in processes))
+        tokens = [token for token in admitted if token is not None]
+        assert len(tokens) == 3
+        await processes[0].arelease("shared", tokens[0])
+        assert await processes[1].aconsume("shared") is not None
+        with pytest.raises(RateLimitedError):
+            await processes[2].aconsume("shared")
+        await client.aclose()
+    asyncio.run(scenario())
+
+
 def test_events_age_out_of_the_window() -> None:
     async def scenario() -> None:
         client = fakeredis_aio.FakeRedis()

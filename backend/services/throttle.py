@@ -132,7 +132,7 @@ class SlidingWindowThrottle:
         self._on_limit = on_limit
         # Monotonic: a clock adjustment must not widen or void a window.
         self._clock = clock or time.monotonic
-        self._failures: dict[str, deque[float]] = {}
+        self._failures: dict[str, deque[tuple[float, str]]] = {}
 
     def check(self, key: str) -> None:
         """Raise if ``key`` has already spent its allowance this window."""
@@ -141,7 +141,7 @@ class SlidingWindowThrottle:
         if attempts is not None and len(attempts) >= self._max_events:
             raise self._on_limit()
 
-    def record(self, key: str) -> None:
+    def record(self, key: str) -> str | None:
         """Count one event against ``key``."""
 
         attempts = self._live(key)
@@ -149,10 +149,12 @@ class SlidingWindowThrottle:
             if len(self._failures) >= _MAX_TRACKED_KEYS:
                 self._sweep()
             if len(self._failures) >= _MAX_TRACKED_KEYS:
-                return  # fail open rather than grow without bound
+                return None  # fail open rather than grow without bound
             attempts = deque()
             self._failures[key] = attempts
-        attempts.append(self._clock())
+        token = uuid.uuid4().hex
+        attempts.append((self._clock(), token))
+        return token
 
     def reset(self, key: str) -> None:
         """Forget ``key``'s events -- used on a successful login, so a fumbled
@@ -172,9 +174,23 @@ class SlidingWindowThrottle:
     async def areset(self, key: str) -> None:
         self.reset(key)
 
+    async def aconsume(self, key: str) -> str | None:
+        """Check and reserve one event without yielding between operations."""
+        self.check(key)
+        return self.record(key)
+
+    async def arelease(self, key: str, token: str | None) -> None:
+        """Remove just this successful/aborted request's reservation."""
+        attempts = self._live(key)
+        if attempts is not None and token is not None:
+            for event in attempts:
+                if event[1] == token:
+                    attempts.remove(event)
+                    break
+
     # -- internals ----------------------------------------------------------
 
-    def _live(self, key: str) -> deque[float] | None:
+    def _live(self, key: str) -> deque[tuple[float, str]] | None:
         """Return ``key``'s events still inside the window, or None when it has
         none left. Drops the key entirely once its window drains, which is what
         keeps idle keys from accumulating."""
@@ -183,7 +199,7 @@ class SlidingWindowThrottle:
         if attempts is None:
             return None
         cutoff = self._clock() - self._window_seconds
-        while attempts and attempts[0] <= cutoff:
+        while attempts and attempts[0][0] <= cutoff:
             attempts.popleft()
         if not attempts:
             del self._failures[key]
@@ -195,6 +211,17 @@ class SlidingWindowThrottle:
 
         for key in list(self._failures):
             self._live(key)
+
+
+_CONSUME_LUA = """
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[2]) then
+    return 0
+end
+redis.call('ZADD', KEYS[1], ARGV[3], ARGV[4])
+redis.call('EXPIRE', KEYS[1], ARGV[5])
+return 1
+"""
 
 
 class RedisSlidingWindowThrottle:
@@ -264,3 +291,28 @@ class RedisSlidingWindowThrottle:
             await self._client.delete(self._prefix + key)
         except Exception:
             logger.warning("throttle reset failed", exc_info=True)
+
+    async def aconsume(self, key: str) -> str | None:
+        """Reserve quota atomically across all API processes."""
+        now = self._clock()
+        token = uuid.uuid4().hex
+        try:
+            accepted = await self._client.eval(
+                _CONSUME_LUA, 1, self._prefix + key,
+                now - self._window_seconds, self._max_events, now,
+                token, self._window_seconds + 1,
+            )
+        except Exception:
+            logger.warning("throttle admission failed; allowing request", exc_info=True)
+            return None
+        if not accepted:
+            raise self._on_limit()
+        return token
+
+    async def arelease(self, key: str, token: str | None) -> None:
+        if token is None:
+            return
+        try:
+            await self._client.zrem(self._prefix + key, token)
+        except Exception:
+            logger.warning("throttle release failed", exc_info=True)

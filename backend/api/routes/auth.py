@@ -124,20 +124,31 @@ async def login(
         # Every user would share this address (see is_internal_address).
         _warn_untrusted_proxy_once(peer)
         ip_throttle = None
-    if email_throttle is not None:
-        await email_throttle.acheck(email_key)
-    if ip_throttle is not None:
-        await ip_throttle.acheck(ip_key)
+    email_token = await email_throttle.aconsume(email_key) if email_throttle else None
+    ip_token = None
+    try:
+        if ip_throttle is not None:
+            ip_token = await ip_throttle.aconsume(ip_key)
+    except BaseException:
+        if email_throttle is not None:
+            await email_throttle.arelease(email_key, email_token)
+        raise
     try:
         user, token = await service.login(body.email, body.password)
     except InvalidCredentialsError:
+        # Keep the reservations as failed attempts. Pending attempts already
+        # count, so simultaneous guesses cannot all pass an empty window.
+        raise
+    except BaseException:
         if email_throttle is not None:
-            await email_throttle.arecord(email_key)
+            await email_throttle.arelease(email_key, email_token)
         if ip_throttle is not None:
-            await ip_throttle.arecord(ip_key)
+            await ip_throttle.arelease(ip_key, ip_token)
         raise
     if email_throttle is not None:
         await email_throttle.areset(email_key)
+    if ip_throttle is not None:
+        await ip_throttle.arelease(ip_key, ip_token)
     await _claim_anonymous_watches(request, user, x_dibs_client_id)
     return AuthResponse(token=token, user=user)
 

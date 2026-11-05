@@ -790,8 +790,7 @@ def create_app() -> FastAPI:
         peer = http_request.client.host if http_request.client else "-"
         identity = extract_client_id(x_dibs_client_id) or peer
         key = throttle_key(identity, http_request.headers.get("origin"))
-        await throttle.acheck(key)
-        await throttle.arecord(key)
+        await throttle.aconsume(key)
 
     async def parse_prompt(
         request: ParseRequest,
