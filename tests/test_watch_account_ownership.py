@@ -264,16 +264,32 @@ def test_authentication_still_works_without_the_projection(
     assert resp.json()["user"]["email"] == USER_A.email
 
 
-def test_ownership_enforcement_degrades_to_the_anonymous_case(
+def test_account_watch_creation_fails_closed_without_the_projection(
     projectionless_client: TestClient,
 ) -> None:
     tc = projectionless_client
-    watch_id = _create(tc, BEARER_A)  # created while authenticated...
-
-    # ...but with nothing recording ownership, the watch stays reachable by id
-    # exactly as in Milestones 1-4 rather than the request failing.
+    resp = tc.post("/api/watches", json=QUERY, headers=BEARER_A)
+    assert resp.status_code == 503
+    # Anonymous creation remains available without account infrastructure.
+    watch_id = _create(tc)
     assert tc.get(f"/api/watches/{watch_id}").status_code == 200
-    assert tc.get(f"/api/watches/{watch_id}", headers=BEARER_B).status_code == 200
+
+
+def test_failed_ownership_write_never_publishes_a_live_watch(client) -> None:
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    tc, history = client
+    service = tc.app.dependency_overrides[get_watch_service]()
+    history.record = AsyncMock(side_effect=RuntimeError("database unavailable"))
+
+    resp = tc.post("/api/watches", json=QUERY, headers=BEARER_A)
+
+    assert resp.status_code == 503
+    assert "database unavailable" not in resp.text
+    assert asyncio.run(service.list()) == []
+    assert service._queue.dispatches == []
+    assert asyncio.run(service._repository.list_recovery_candidates()) == []
 
 
 def test_mine_is_an_empty_list_not_an_error_without_the_projection(

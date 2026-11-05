@@ -79,6 +79,10 @@ class PastReservationDateError(ValueError):
     """Raised when a watch is requested for a date that has already passed."""
 
 
+class WatchOwnershipUnavailableError(RuntimeError):
+    """Account watch creation cannot safely persist its access boundary."""
+
+
 class WatchService:
     """Creates watches and performs the single availability check a job runs.
 
@@ -253,9 +257,23 @@ class WatchService:
             required_attempts=policy.required_attempts,
             supports_deadline=policy.supports_deadline,
         )
+        # Persist account ownership before exposing a live watch or a recovery
+        # marker. A best-effort write here could turn an account watch public.
+        if user_id is not None:
+            if self._history is None:
+                raise WatchOwnershipUnavailableError(
+                    "Account watch creation is temporarily unavailable. Try again later."
+                )
+            try:
+                await self._history.record(watch, owner_client_id, user_id)
+            except Exception as exc:
+                raise WatchOwnershipUnavailableError(
+                    "Account watch creation is temporarily unavailable. Try again later."
+                ) from exc
         result = await self._repository.create_with_schedule(watch, runtime)
         stored = result.watch or watch
-        await self._record_history(stored, owner_client_id, user_id)
+        if user_id is None:
+            await self._record_history(stored, owner_client_id)
 
         # The first check runs without jitter: the user just asked, so the
         # latency they see is the one that matters. Jitter starts on retries.

@@ -91,7 +91,11 @@ from backend.services.password import build_password_hasher
 from backend.services.recipients import AccountRecipientResolver
 from backend.services.readiness import Readiness, ReadinessTracker
 from backend.services.watch_recovery import RecoveryCoordinator
-from backend.services.watch_service import PastReservationDateError, WatchService
+from backend.services.watch_service import (
+    PastReservationDateError,
+    WatchOwnershipUnavailableError,
+    WatchService,
+)
 from backend.workers.dispatcher import WatchScheduleDispatcher
 from backend.workers.queue import AsyncioTaskQueue, CeleryTaskQueue, TaskQueue
 from backend.workers.scheduler import PollSchedule
@@ -843,6 +847,7 @@ def create_app() -> FastAPI:
         AuthenticationRequiredError: status.HTTP_401_UNAUTHORIZED,
         AuthValidationError: status.HTTP_422_UNPROCESSABLE_CONTENT,
         AccountsUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
+        WatchOwnershipUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
         RateLimitedError: status.HTTP_429_TOO_MANY_REQUESTS,
     }
 
