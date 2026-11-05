@@ -7,6 +7,7 @@ full credential round-trip is exercised without a live PostgreSQL.
 from __future__ import annotations
 
 import asyncio
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -24,6 +25,68 @@ from backend.services.auth_service import (
     PasswordPolicyError,
 )
 from backend.services.password import build_password_hasher
+
+
+@pytest.mark.parametrize("operation", ["signup", "known-login", "unknown-login"])
+def test_password_work_does_not_block_the_event_loop(operation) -> None:
+    async def scenario():
+        service, _, _ = _service()
+        await service.signup("known@x.com", "hunter2-secret")
+        entered = threading.Event()
+        release = threading.Event()
+        loop_thread = threading.get_ident()
+        worker_threads = []
+        class BlockingHasher:
+            def work(self, *args):
+                worker_threads.append(threading.get_ident())
+                entered.set()
+                if not release.wait(2):
+                    raise AssertionError("event loop could not release password worker")
+                return "hash" if operation == "signup" else True
+            hash = verify = dummy_verify = work
+        service._hasher = BlockingHasher()
+        call = service.signup("new@x.com", "hunter2-secret") if operation == "signup" else service.login("known@x.com" if operation == "known-login" else "missing@x.com", "hunter2-secret")
+        task = asyncio.create_task(call)
+        try:
+            async with asyncio.timeout(1):
+                while not entered.is_set():
+                    await asyncio.sleep(0.001)
+            assert not task.done()
+            assert worker_threads[0] != loop_thread
+        finally:
+            release.set()
+        if operation == "unknown-login":
+            with pytest.raises(InvalidCredentialsError):
+                await task
+        else:
+            await task
+    asyncio.run(scenario())
+
+
+def test_password_worker_concurrency_is_bounded() -> None:
+    async def scenario():
+        service, _, _ = _service()
+        release = threading.Event()
+        entered = []
+        lock = threading.Lock()
+        class Hasher:
+            def dummy_verify(self, password):
+                with lock:
+                    entered.append(password)
+                assert release.wait(2)
+        service._hasher = Hasher()
+        tasks = [asyncio.create_task(service.login(f"missing{i}@x.com", "wrong")) for i in range(8)]
+        try:
+            async with asyncio.timeout(1):
+                while len(entered) < 4:
+                    await asyncio.sleep(0.001)
+            await asyncio.sleep(0.01)
+            assert len(entered) == 4
+        finally:
+            release.set()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        assert all(isinstance(r, InvalidCredentialsError) for r in results)
+    asyncio.run(scenario())
 
 
 NOW = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)

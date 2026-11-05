@@ -11,12 +11,14 @@ the repositories, it never contacts Redis or the fenced polling protocol.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
+from typing import Any, TypeVar
 
 from backend.config import AccountSettings
 from backend.db.repositories.accounts import (
@@ -82,6 +84,7 @@ class PasswordPolicyError(AuthValidationError):
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 Clock = Callable[[], datetime]
+T = TypeVar("T")
 
 
 def hash_token(raw_token: str) -> str:
@@ -108,6 +111,21 @@ class AuthService:
         self._hasher = hasher
         self._settings = settings
         self._clock = clock or (lambda: datetime.now(UTC))
+        # Bound Argon2's CPU/memory use while keeping the API loop responsive.
+        self._password_slots = asyncio.Semaphore(4)
+
+    async def _password_work(self, operation: Callable[..., T], *args: Any) -> T:
+        async with self._password_slots:
+            task = asyncio.create_task(asyncio.to_thread(operation, *args))
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # A cancelled await cannot stop a running thread. Keep its
+                # slot until it finishes rather than admitting extra hashers.
+                try:
+                    await task
+                finally:
+                    raise
 
     async def signup(self, email: str, password: str) -> tuple[User, str]:
         """Create an account and open a session. Returns (public user, raw token).
@@ -118,7 +136,7 @@ class AuthService:
 
         normalized = self._normalize_email(email)
         self._check_password(password)
-        password_hash = self._hasher.hash(password)
+        password_hash = await self._password_work(self._hasher.hash, password)
         try:
             user = await self._accounts.create_user(normalized, password_hash)
         except DuplicateEmailError as exc:
@@ -139,9 +157,9 @@ class AuthService:
         normalized = self._normalize_email(email)
         stored = await self._accounts.get_by_email(normalized)
         if stored is None:
-            self._hasher.dummy_verify(password)
+            await self._password_work(self._hasher.dummy_verify, password)
             raise InvalidCredentialsError()
-        if not self._hasher.verify(stored.password_hash, password):
+        if not await self._password_work(self._hasher.verify, stored.password_hash, password):
             raise InvalidCredentialsError()
         token = await self._issue_session(stored.id)
         return stored.to_public(), token
