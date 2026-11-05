@@ -27,7 +27,7 @@ from backend.models.reservation import (
 )
 from backend.models.reservation import AvailabilityQuery
 from backend.models.watch import Watch, WatchStatus
-from backend.orchestrator.schemas import VenueType
+from backend.orchestrator.schemas import TimeWindow, VenueType
 from backend.services.notification_service import WatchEvent
 
 
@@ -154,6 +154,31 @@ def test_mock_availability_does_not_claim_a_real_table_opened() -> None:
     email = compose(_watch(status=WatchStatus.FOUND, slots=[_slot()]), WatchEvent.AVAILABILITY_FOUND, DASHBOARD)
     assert "Mock availability" in email.subject
     assert "does not indicate real table availability" in email.body
+
+
+def test_window_only_expiry_email_describes_the_requested_band() -> None:
+    watch = _watch()
+    query = watch.query.model_copy(update={
+        "preferred_time": None,
+        "time_window": TimeWindow(start="18:00", end="20:00"),
+    })
+    email = compose(watch.model_copy(update={"query": query}), WatchEvent.EXPIRED, DASHBOARD)
+    assert "between 18:00 and 20:00" in email.body
+    assert "None" not in email.body
+
+
+@pytest.mark.parametrize("event", [WatchEvent.BOOKED, WatchEvent.AVAILABILITY_FOUND])
+def test_email_uses_the_actual_slot_time_and_date(event) -> None:
+    watch = _booked_watch()
+    slot = _slot().model_copy(update={"date": "2026-09-06", "start_time": "18:30", "end_time": "20:30"})
+    watch = watch.model_copy(update={
+        "booking": watch.booking.model_copy(update={"slot": slot}),
+        "found_slots": [slot],
+    })
+    email = compose(watch, event, DASHBOARD)
+    assert "2026-09-06" in email.subject
+    assert "2026-09-06 at 18:30–20:30" in email.body
+    assert "at 19:00" not in email.body
 
 
 def test_an_expired_message_explains_that_nothing_opened() -> None:
