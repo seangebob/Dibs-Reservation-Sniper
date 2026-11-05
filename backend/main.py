@@ -39,6 +39,7 @@ from backend.config import (
     PromptThrottleSettings,
     Settings,
     WatchSettings,
+    redact_dsn,
 )
 from backend.db.postgres import create_pool, run_migrations
 from backend.db.repositories.accounts import AccountRepository, SessionRepository
@@ -320,7 +321,7 @@ async def _attach_redis(app: FastAPI) -> None:
     if not await ping(client):
         logger.warning(
             "Redis at %s is unreachable; watches stay in process memory",
-            settings.redis_url,
+            redact_dsn(settings.redis_url),
         )
         await client.aclose()
         await _start_recovery(app, settings, schedule, distributed=False)
@@ -336,7 +337,7 @@ async def _attach_redis(app: FastAPI) -> None:
         logger.warning(
             "Redis at %s reports cluster mode, which the atomic watch "
             "repository does not support; watches stay in process memory",
-            settings.redis_url,
+            redact_dsn(settings.redis_url),
         )
         await client.aclose()
         await _start_recovery(app, settings, schedule, distributed=False)
@@ -385,7 +386,7 @@ async def _attach_redis(app: FastAPI) -> None:
     )
     logger.info(
         "Watch state is backed by Redis at %s using the %s queue",
-        settings.redis_url,
+        redact_dsn(settings.redis_url),
         app.state.watch_queue_mode,
     )
     await _start_recovery(app, settings, schedule, distributed=True)
