@@ -34,6 +34,8 @@ export function WatchCard({
   onCancel: (watchId: string) => void;
 }) {
   const meta = STATUS_META[watch.status];
+  const isMockBooking = watch.status === "BOOKED" &&
+    (watch.booking?.status === "MOCK_CONFIRMED" || watch.booking?.provider === "mock");
   const isActive = watch.status === "ACTIVE";
   const nextCheck = isActive ? formatCountdown(watch.next_check_at, now) : null;
 
@@ -69,7 +71,7 @@ export function WatchCard({
             ) : meta.tone === "green" ? (
               <span className="dot" data-tone="green" aria-hidden="true" />
             ) : null}
-            {meta.label}
+            {isMockBooking ? "MOCK CONFIRMED" : meta.label}
           </span>
         </div>
 
@@ -100,6 +102,9 @@ export function WatchCard({
           )}
         </div>
 
+        {isMockBooking && (
+          <p>Simulation only. No real table has been reserved.</p>
+        )}
         {isActive && watch.last_error && (
           <div className="watch-error">
             Last check hit a snag — still tracking.

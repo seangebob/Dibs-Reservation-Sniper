@@ -31,6 +31,7 @@ from typing import Protocol
 
 from backend.config import EmailSettings
 from backend.models.watch import Watch
+from backend.models.reservation import BookingStatus
 from backend.services.notification_service import WatchEvent
 from backend.services.recipients import RecipientResolver
 
@@ -67,14 +68,25 @@ def compose(watch: Watch, event: WatchEvent, dashboard_base_url: str) -> Compose
     dashboard = f"{dashboard_base_url}/watches"
 
     if event is WatchEvent.BOOKED:
-        subject = f"Booked: {venue} on {query.date}"
-        opening = (
-            f"Dibs booked your table at {venue} for {when} ({party}).\n\n"
-            "It grabbed the slot the moment it opened, so you should not need "
-            "to do anything else."
-        )
-        if watch.booking is not None:
-            opening += f"\n\nConfirmation: {watch.booking.booking_id}"
+        booking = watch.booking
+        if booking is None:
+            subject = f"Booking update: {venue} on {query.date}"
+            opening = "A booking update has no confirmation. Check your dashboard before assuming a reservation is held."
+        elif booking.status is BookingStatus.MOCK_CONFIRMED or booking.provider == "mock":
+            subject = f"Mock booking: {venue} on {query.date}"
+            opening = (
+                f"Dibs simulated a booking at {venue} for {when} ({party}).\n\n"
+                "This is a simulation. No real table has been reserved."
+                f"\n\nSimulation reference: {booking.booking_id}"
+            )
+        else:
+            subject = f"Booked: {venue} on {query.date}"
+            opening = (
+                f"Dibs booked your table at {venue} for {when} ({party}).\n\n"
+                "It grabbed the slot the moment it opened, so you should not need "
+                "to do anything else."
+            )
+            opening += f"\n\nConfirmation: {booking.booking_id}"
     elif event is WatchEvent.AVAILABILITY_FOUND:
         subject = f"A table opened at {venue} — {query.date}"
         opening = (
@@ -82,6 +94,12 @@ def compose(watch: Watch, event: WatchEvent, dashboard_base_url: str) -> Compose
             "This watch was set to notify rather than book, so the table is "
             "not held. Move quickly."
         )
+        if watch.found_slots and all(slot.provider == "mock" for slot in watch.found_slots):
+            subject = f"Mock availability: {venue} on {query.date}"
+            opening = (
+                f"Dibs found simulated availability at {venue} for {when} ({party}).\n\n"
+                "This is a simulation. It does not indicate real table availability."
+            )
     else:  # EXPIRED
         subject = f"Your {venue} watch has ended"
         opening = (

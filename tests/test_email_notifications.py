@@ -126,8 +126,10 @@ def test_a_booked_message_carries_the_confirmation_id() -> None:
 
     email = compose(_booked_watch(), WatchEvent.BOOKED, DASHBOARD)
 
-    assert "Booked" in email.subject
+    assert "Mock booking" in email.subject
     assert "booking_abc123" in email.body
+    assert "No real table has been reserved" in email.body
+    assert "Dibs booked your table" not in email.body
 
 
 def test_a_booked_message_survives_a_missing_confirmation() -> None:
@@ -135,7 +137,23 @@ def test_a_booked_message_survives_a_missing_confirmation() -> None:
         _watch(status=WatchStatus.ACTIVE), WatchEvent.BOOKED, DASHBOARD
     )
 
-    assert "Booked" in email.subject  # no crash, just no confirmation line
+    assert "Booking update" in email.subject
+    assert "before assuming a reservation is held" in email.body
+
+
+def test_real_confirmations_remain_distinct_from_simulations() -> None:
+    watch = _booked_watch()
+    booking = watch.booking.model_copy(update={"provider": "real", "status": BookingStatus.CONFIRMED})
+    email = compose(watch.model_copy(update={"booking": booking}), WatchEvent.BOOKED, DASHBOARD)
+    assert email.subject.startswith("Booked:")
+    assert "Dibs booked your table" in email.body
+    assert "simulation" not in email.body.lower()
+
+
+def test_mock_availability_does_not_claim_a_real_table_opened() -> None:
+    email = compose(_watch(status=WatchStatus.FOUND, slots=[_slot()]), WatchEvent.AVAILABILITY_FOUND, DASHBOARD)
+    assert "Mock availability" in email.subject
+    assert "does not indicate real table availability" in email.body
 
 
 def test_an_expired_message_explains_that_nothing_opened() -> None:

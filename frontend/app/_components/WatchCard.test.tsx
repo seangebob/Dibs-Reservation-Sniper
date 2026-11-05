@@ -57,7 +57,8 @@ describe("WatchCard", () => {
         onCancel={noop}
       />,
     );
-    expect(container.textContent).toMatch(/CONFIRMED/);
+    expect(container.textContent).toMatch(/MOCK CONFIRMED/);
+    expect(container.textContent).toContain("No real table has been reserved");
     expect(container.textContent).toContain("#bk_9");
     expect(screen.queryByRole("button", { name: /CANCEL/i })).toBeNull();
   });
