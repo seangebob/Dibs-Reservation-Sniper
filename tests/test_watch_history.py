@@ -150,7 +150,7 @@ class _FakeConnection:
             owner_client_id, limit = args
             matches = [
                 row for row in self.rows.values()
-                if row["owner_client_id"] == owner_client_id
+                if row["owner_client_id"] == owner_client_id and row["user_id"] is None
             ]
             matches.sort(key=lambda row: row["updated_at"], reverse=True)
             return matches[:limit]

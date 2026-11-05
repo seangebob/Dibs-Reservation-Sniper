@@ -80,7 +80,7 @@ _SELECT_ACCOUNT_OWNER_SQL = "SELECT user_id FROM watch_history WHERE watch_id = 
 
 _SELECT_FOR_OWNER_SQL = """
 SELECT watch_json FROM watch_history
-WHERE owner_client_id = $1
+WHERE owner_client_id = $1 AND user_id IS NULL
 ORDER BY updated_at DESC
 LIMIT $2
 """.strip()

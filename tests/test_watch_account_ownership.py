@@ -86,7 +86,7 @@ class _FakeHistory:
         return [r[0] for r in self.rows.values() if r[2] == user_id][:limit]
 
     async def list_for_owner(self, owner_client_id: str, *, limit: int = 100):
-        return [r[0] for r in self.rows.values() if r[1] == owner_client_id][:limit]
+        return [r[0] for r in self.rows.values() if r[1] == owner_client_id and r[2] is None][:limit]
 
     async def claim_anonymous(self, owner_client_id: str, user_id: UUID) -> None:
         for wid, (w, owner, uid) in list(self.rows.items()):
@@ -173,6 +173,13 @@ def test_anonymous_gets_404_for_an_account_owned_watch(client) -> None:
     watch_id = _create(tc, BEARER_A)
     assert tc.get(f"/api/watches/{watch_id}").status_code == 404
     assert tc.delete(f"/api/watches/{watch_id}").status_code == 404
+
+
+def test_anonymous_listing_cannot_reveal_an_account_watch_after_logout(client) -> None:
+    tc, _ = client
+    wid = _create(tc, {**BEARER_A, "X-Dibs-Client-Id": "shared-browser"})
+    assert tc.get("/api/watches/mine", headers=BEARER_A).json()[0]["watch_id"] == wid
+    assert tc.get("/api/watches/mine", headers={"X-Dibs-Client-Id": "shared-browser"}).json() == []
 
 
 def test_an_anonymous_watch_stays_reachable_by_id_for_everyone(client) -> None:
