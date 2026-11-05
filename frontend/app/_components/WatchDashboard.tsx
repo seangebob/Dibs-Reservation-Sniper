@@ -8,7 +8,7 @@
  * tick. Everything it shows goes through the pure `WatchCard`.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { cancelWatch, listMyWatches } from "@/lib/api";
 import type { Watch } from "@/types/api";
 import { WatchCard } from "./WatchCard";
@@ -30,35 +30,62 @@ export function WatchDashboard() {
   const [cancelling, setCancelling] = useState<ReadonlySet<string>>(new Set());
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const mounted = useRef(false);
+  const requestVersion = useRef(0);
+  const inFlight = useRef<number | null>(null);
+  const mutations = useRef(0);
 
-  const load = useCallback(() => {
-    setState({ phase: "loading" });
-    setCancelError(null);
-    void listMyWatches().then((result) => {
-      setState(
-        result.ok
-          ? { phase: "ready", watches: mostRecentFirst(result.data) }
-          : { phase: "error", message: result.message },
-      );
-    });
+  const load = useCallback(async (initial = false) => {
+    if (mutations.current > 0 || (!initial && inFlight.current !== null)) return;
+    const version = ++requestVersion.current;
+    inFlight.current = version;
+    if (initial) setState({ phase: "loading" });
+    const result = await listMyWatches();
+    if (inFlight.current === version) inFlight.current = null;
+    if (!mounted.current || version !== requestVersion.current) return;
+    if (result.ok) {
+      setState({ phase: "ready", watches: mostRecentFirst(result.data) });
+      setRefreshError(null);
+    } else if (initial) {
+      setState({ phase: "error", message: result.message });
+    } else {
+      setRefreshError(result.message);
+    }
   }, []);
 
   useEffect(() => {
-    load();
+    mounted.current = true;
+    void load(true);
+    const refreshVisible = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    const id = setInterval(() => {
+      setNow(Date.now());
+      refreshVisible();
+    }, 30_000);
+    window.addEventListener("focus", refreshVisible);
+    document.addEventListener("visibilitychange", refreshVisible);
+    return () => {
+      mounted.current = false;
+      requestVersion.current++;
+      inFlight.current = null;
+      clearInterval(id);
+      window.removeEventListener("focus", refreshVisible);
+      document.removeEventListener("visibilitychange", refreshVisible);
+    };
   }, [load]);
 
-  // Refresh the injected clock so open "next check in …" countdowns don't go
-  // stale while the page is left open. 30s is well under the poll cadence.
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(id);
-  }, []);
-
   async function onCancel(watchId: string) {
+    mutations.current++;
+    requestVersion.current++; // An earlier refresh cannot undo cancellation.
+    inFlight.current = null;
     setCancelError(null);
     setCancelling((prev) => new Set(prev).add(watchId));
 
     const result = await cancelWatch(watchId);
+    mutations.current--;
+    if (!mounted.current) return;
 
     setCancelling((prev) => {
       const next = new Set(prev);
@@ -85,6 +112,12 @@ export function WatchDashboard() {
     }
   }
 
+  const refreshBanner = refreshError && (
+    <div className="dash-banner" role="alert">
+      Refresh failed: {refreshError} Retrying automatically.
+    </div>
+  );
+
   if (state.phase === "loading") {
     return (
       <div className="dash-status" role="status" aria-live="polite">
@@ -106,7 +139,7 @@ export function WatchDashboard() {
           {state.message}
         </div>
         <div style={{ marginTop: 16 }}>
-          <button type="button" className="result-link" onClick={load}>
+          <button type="button" className="result-link" onClick={() => void load(true)}>
             RETRY
           </button>
         </div>
@@ -116,6 +149,8 @@ export function WatchDashboard() {
 
   if (state.watches.length === 0) {
     return (
+      <>
+      {refreshBanner}
       <div className="empty">
         <div className="empty-title">No watches on the board.</div>
         <p className="empty-text">
@@ -126,11 +161,13 @@ export function WatchDashboard() {
           OPEN A WATCH ▸
         </a>
       </div>
+      </>
     );
   }
 
   return (
     <>
+      {refreshBanner}
       {cancelError && (
         <div className="dash-banner" role="alert">
           {cancelError}

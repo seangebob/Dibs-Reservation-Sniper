@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, render, screen, fireEvent } from "@testing-library/react";
 
 vi.mock("@/lib/api", () => ({
   listMyWatches: vi.fn(),
@@ -11,6 +11,7 @@ import { WatchDashboard } from "./WatchDashboard";
 import { makeWatch } from "./testFixtures";
 
 describe("WatchDashboard", () => {
+  afterEach(() => vi.useRealTimers());
   beforeEach(() => {
     vi.mocked(listMyWatches).mockReset();
     vi.mocked(cancelWatch).mockReset();
@@ -23,6 +24,70 @@ describe("WatchDashboard", () => {
     await screen.findByText(/No watches on the board/i);
     const cta = screen.getByText(/OPEN A WATCH/i).closest("a");
     expect(cta?.getAttribute("href")).toBe("/");
+  });
+
+  it("refreshes background state and removes its timer on unmount", async () => {
+    vi.useFakeTimers();
+    const active = makeWatch({ status: "ACTIVE" });
+    vi.mocked(listMyWatches)
+      .mockResolvedValueOnce({ ok: true, data: [active] })
+      .mockResolvedValue({ ok: true, data: [{ ...active, status: "EXPIRED", next_check_at: null }] });
+    const view = render(<WatchDashboard />);
+    await act(async () => {});
+    expect(screen.getByText("TRACKING")).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(screen.getByText("STOOD DOWN")).toBeTruthy();
+    expect(listMyWatches).toHaveBeenCalledTimes(2);
+    view.unmount();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(listMyWatches).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the board on refresh failure and recovers on focus", async () => {
+    const active = makeWatch();
+    vi.mocked(listMyWatches)
+      .mockResolvedValueOnce({ ok: true, data: [active] })
+      .mockResolvedValueOnce({ ok: false, message: "Offline" })
+      .mockResolvedValue({ ok: true, data: [{ ...active, status: "EXPIRED", next_check_at: null }] });
+    render(<WatchDashboard />);
+    await screen.findByText("TRACKING");
+    fireEvent.focus(window);
+    await screen.findByText(/Refresh failed: Offline/);
+    expect(screen.getByText("TRACKING")).toBeTruthy();
+    fireEvent.focus(window);
+    await screen.findByText("STOOD DOWN");
+    expect(screen.queryByText(/Refresh failed/)).toBeNull();
+  });
+
+  it("does not overlap slow refresh requests", async () => {
+    vi.useFakeTimers();
+    let finish!: (value: { ok: true; data: ReturnType<typeof makeWatch>[] }) => void;
+    vi.mocked(listMyWatches)
+      .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }))
+      .mockResolvedValue({ ok: true, data: [] });
+    render(<WatchDashboard />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(listMyWatches).toHaveBeenCalledTimes(1);
+    await act(async () => { finish({ ok: true, data: [] }); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(listMyWatches).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores a stale refresh that finishes after cancellation", async () => {
+    const active = makeWatch();
+    let finishRefresh!: (value: { ok: true; data: typeof active[] }) => void;
+    vi.mocked(listMyWatches)
+      .mockResolvedValueOnce({ ok: true, data: [active] })
+      .mockImplementationOnce(() => new Promise(resolve => { finishRefresh = resolve; }));
+    vi.mocked(cancelWatch).mockResolvedValue({ ok: true, data: { ...active, status: "CANCELLED", next_check_at: null } });
+    render(<WatchDashboard />);
+    await screen.findByText("TRACKING");
+    fireEvent.focus(window);
+    fireEvent.click(screen.getByRole("button", { name: /CANCEL WATCH/i }));
+    await screen.findByText("CALLED OFF");
+    await act(async () => { finishRefresh({ ok: true, data: [active] }); });
+    expect(screen.queryByText("TRACKING")).toBeNull();
+    expect(screen.getByText("CALLED OFF")).toBeTruthy();
   });
 
   it("lists owned watches, most recently created first (Req 4.1)", async () => {
