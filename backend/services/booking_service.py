@@ -2,6 +2,7 @@
 
 import json
 from hashlib import sha256
+from uuid import UUID, uuid4
 
 from backend.integrations.base import (
     ReservationAdapter,
@@ -26,7 +27,13 @@ class BookingService:
     def __init__(self, adapter: ReservationAdapter) -> None:
         self._adapter = adapter
 
-    async def execute(self, intent: ReservationIntent) -> PromptExecutionResult:
+    async def execute(
+        self,
+        intent: ReservationIntent,
+        *,
+        owner_client_id: str | None = None,
+        user_id: UUID | None = None,
+    ) -> PromptExecutionResult:
         if not intent.is_ready:
             return PromptExecutionResult(
                 status=ExecutionStatus.CLARIFICATION_REQUIRED,
@@ -51,7 +58,14 @@ class BookingService:
         query = self._query_from(intent)
         idempotency_key: str | None = None
         if intent.action is IntentAction.BOOK_RESERVATION:
-            idempotency_key = self._idempotency_key(intent, query)
+            # Account identity supersedes the browser id. Without either,
+            # there is no safe way to identify a retry across requests.
+            scope = (
+                f"account:{user_id}" if user_id is not None
+                else f"client:{owner_client_id}" if owner_client_id
+                else f"request:{uuid4().hex}"
+            )
+            idempotency_key = self._idempotency_key(intent, query, scope)
             replayed = await self._replayed_booking(intent, idempotency_key)
             if replayed is not None:
                 return replayed
@@ -151,8 +165,10 @@ class BookingService:
     def _idempotency_key(
         intent: ReservationIntent,
         query: AvailabilityQuery,
+        scope: str,
     ) -> str:
         identity = {
+            "owner": scope,
             "action": intent.action.value if intent.action is not None else None,
             "venue_name": query.venue_name.casefold(),
             "venue_type": query.venue_type.value,

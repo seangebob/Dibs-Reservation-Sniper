@@ -1,5 +1,8 @@
 import asyncio
 from datetime import UTC, datetime
+from uuid import uuid4
+
+import pytest
 
 from backend.integrations.mock_booking import MockBookingAdapter
 from backend.models.reservation import BookingStatus, ExecutionStatus
@@ -13,6 +16,36 @@ from backend.orchestrator.schemas import (
     VenueType,
 )
 from backend.services.booking_service import BookingService
+from backend.orchestrator.router import PromptRouter
+
+
+@pytest.mark.parametrize("case", ["same-account", "different-accounts", "same-client", "different-clients", "unidentified", "account-and-anonymous"])
+def test_router_only_replays_bookings_for_the_same_owner(case) -> None:
+    account = uuid4()
+    first = {"user_id": account, "owner_client_id": "browser-a"}
+    second = {"user_id": account, "owner_client_id": "browser-b"}
+    if case == "different-accounts":
+        second = {"user_id": uuid4(), "owner_client_id": "browser-a"}
+    elif case in {"same-client", "different-clients"}:
+        first = {"owner_client_id": "browser-a"}
+        second = {"owner_client_id": "browser-a" if case == "same-client" else "browser-b"}
+    elif case == "unidentified":
+        first, second = {}, {}
+    elif case == "account-and-anonymous":
+        second = {"owner_client_id": "browser-a"}
+
+    async def scenario():
+        router = PromptRouter(BookingService(MockBookingAdapter()), None)
+        a = await router.execute(ready_intent(), **first)
+        b = await router.execute(ready_intent(), **second)
+        assert a.booking is not None
+        if case in {"same-account", "same-client"}:
+            assert b.booking == a.booking
+        else:
+            assert b.booking is None
+            assert b.status is ExecutionStatus.NO_AVAILABILITY
+
+    asyncio.run(scenario())
 
 
 def ready_intent(
@@ -43,7 +76,7 @@ def test_search_action_returns_slots_without_booking() -> None:
     service = BookingService(MockBookingAdapter())
 
     result = asyncio.run(
-        service.execute(ready_intent(action=IntentAction.SEARCH_AVAILABILITY))
+        service.execute(ready_intent(action=IntentAction.SEARCH_AVAILABILITY), owner_client_id="visitor-1")
     )
 
     assert result.status is ExecutionStatus.AVAILABILITY_FOUND
@@ -59,8 +92,8 @@ def test_book_action_returns_idempotent_mock_confirmation() -> None:
     )
     intent = ready_intent()
 
-    first = asyncio.run(service.execute(intent))
-    repeated = asyncio.run(service.execute(intent))
+    first = asyncio.run(service.execute(intent, owner_client_id="visitor-1"))
+    repeated = asyncio.run(service.execute(intent, owner_client_id="visitor-1"))
 
     assert first.status is ExecutionStatus.MOCK_BOOKED
     assert first.booking is not None
@@ -71,7 +104,7 @@ def test_book_action_returns_idempotent_mock_confirmation() -> None:
 def test_no_availability_does_not_create_confirmation() -> None:
     service = BookingService(MockBookingAdapter(unavailable_venues={"Cote"}))
 
-    result = asyncio.run(service.execute(ready_intent()))
+    result = asyncio.run(service.execute(ready_intent(), owner_client_id="visitor-1"))
 
     assert result.status is ExecutionStatus.NO_AVAILABILITY
     assert result.booking is None
@@ -87,7 +120,7 @@ def test_watch_action_is_refused_by_the_booking_service() -> None:
                 action=IntentAction.CREATE_WATCH,
                 route=OrchestratorRoute.WATCH_SERVICE,
             )
-        )
+        , owner_client_id="visitor-1")
     )
 
     assert result.status is ExecutionStatus.WATCH_REQUIRED
@@ -114,7 +147,7 @@ def test_incomplete_intent_never_calls_booking_adapter() -> None:
     )
     service = BookingService(MockBookingAdapter())
 
-    result = asyncio.run(service.execute(intent))
+    result = asyncio.run(service.execute(intent, owner_client_id="visitor-1"))
 
     assert result.status is ExecutionStatus.CLARIFICATION_REQUIRED
     assert result.message == "How many guests or participants are there?"
@@ -138,7 +171,7 @@ def test_recreation_window_is_preserved_through_service() -> None:
         clarification_question=None,
     )
 
-    result = asyncio.run(BookingService(MockBookingAdapter()).execute(intent))
+    result = asyncio.run(BookingService(MockBookingAdapter()).execute(intent, owner_client_id="visitor-1"))
 
     assert [slot.start_time for slot in result.slots] == [
         "18:00",
@@ -162,8 +195,8 @@ def test_retry_survives_service_recreation_and_semantic_variation() -> None:
         }
     )
 
-    first = asyncio.run(BookingService(adapter).execute(original))
-    retried = asyncio.run(BookingService(adapter).execute(equivalent))
+    first = asyncio.run(BookingService(adapter).execute(original, owner_client_id="visitor-1"))
+    retried = asyncio.run(BookingService(adapter).execute(equivalent, owner_client_id="visitor-1"))
 
     assert first.booking is not None
     assert retried.status is ExecutionStatus.MOCK_BOOKED
@@ -185,8 +218,8 @@ def test_simultaneous_bookings_of_one_slot_leave_a_single_winner() -> None:
 
     async def race() -> list[object]:
         return await asyncio.gather(
-            service.execute(ready_intent().model_copy(update={"special_requests": ["booth"]})),
-            service.execute(ready_intent().model_copy(update={"special_requests": ["patio"]})),
+            service.execute(ready_intent().model_copy(update={"special_requests": ["booth"]}), owner_client_id="visitor-1"),
+            service.execute(ready_intent().model_copy(update={"special_requests": ["patio"]}), owner_client_id="visitor-1"),
             return_exceptions=True,
         )
 
@@ -207,7 +240,7 @@ def test_concurrent_identical_requests_share_one_booking() -> None:
     intent = ready_intent()
 
     async def race() -> list[object]:
-        return await asyncio.gather(*(service.execute(intent) for _ in range(5)))
+        return await asyncio.gather(*(service.execute(intent, owner_client_id="visitor-1") for _ in range(5)))
 
     results = asyncio.run(race())
 
@@ -219,7 +252,7 @@ def test_concurrent_identical_requests_share_one_booking() -> None:
 def test_confirmation_carries_every_required_field() -> None:
     service = BookingService(MockBookingAdapter())
 
-    result = asyncio.run(service.execute(ready_intent()))
+    result = asyncio.run(service.execute(ready_intent(), owner_client_id="visitor-1"))
 
     assert result.booking is not None
     booking = result.booking.model_dump()
@@ -248,7 +281,7 @@ def test_the_mock_provider_never_claims_a_real_booking() -> None:
 
     assert BookingStatus.MOCK_CONFIRMED is not BookingStatus.CONFIRMED
 
-    result = asyncio.run(BookingService(MockBookingAdapter()).execute(ready_intent()))
+    result = asyncio.run(BookingService(MockBookingAdapter()).execute(ready_intent(), owner_client_id="visitor-1"))
 
     assert result.booking is not None
     assert result.booking.status is BookingStatus.MOCK_CONFIRMED
@@ -263,7 +296,7 @@ def test_closed_holiday_reports_no_availability_not_empty_success() -> None:
             ready_intent().model_copy(update={"date": "2026-12-25"}).model_copy(
                 update={"action": IntentAction.SEARCH_AVAILABILITY}
             )
-        )
+        , owner_client_id="visitor-1")
     )
 
     assert result.status is ExecutionStatus.NO_AVAILABILITY
@@ -276,7 +309,7 @@ def test_repeated_identical_prompt_returns_the_same_slot() -> None:
     service = BookingService(adapter)
     intent = ready_intent()
 
-    runs = [asyncio.run(service.execute(intent)) for _ in range(3)]
+    runs = [asyncio.run(service.execute(intent, owner_client_id="visitor-1")) for _ in range(3)]
 
     assert {run.booking.booking_id for run in runs} == {runs[0].booking.booking_id}
     assert {run.booking.slot.start_time for run in runs} == {"19:00"}
@@ -285,7 +318,7 @@ def test_repeated_identical_prompt_returns_the_same_slot() -> None:
 def test_venue_casing_alone_does_not_create_a_second_booking() -> None:
     adapter = MockBookingAdapter()
 
-    first = asyncio.run(BookingService(adapter).execute(ready_intent(venue_name="Cote")))
-    again = asyncio.run(BookingService(adapter).execute(ready_intent(venue_name="COTE")))
+    first = asyncio.run(BookingService(adapter).execute(ready_intent(venue_name="Cote"), owner_client_id="visitor-1"))
+    again = asyncio.run(BookingService(adapter).execute(ready_intent(venue_name="COTE"), owner_client_id="visitor-1"))
 
     assert again.booking == first.booking

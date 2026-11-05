@@ -38,7 +38,9 @@ class PromptRouter:
             return await self._create_watch(
                 intent, owner_client_id=owner_client_id, user_id=user_id
             )
-        return await self._booking_service.execute(intent)
+        return await self._booking_service.execute(
+            intent, owner_client_id=owner_client_id, user_id=user_id
+        )
 
     async def _create_watch(
         self,
