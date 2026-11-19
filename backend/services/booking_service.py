@@ -84,7 +84,7 @@ class BookingService:
                 intent=intent,
                 slots=[],
                 booking=None,
-                message="No availability matched the request. (mock search only returns one slot for testing purposes.)",
+                message="No availability matched the request.",
             )
 
         if intent.action is IntentAction.SEARCH_AVAILABILITY:

@@ -109,6 +109,8 @@ def test_no_availability_does_not_create_confirmation() -> None:
     assert result.status is ExecutionStatus.NO_AVAILABILITY
     assert result.booking is None
     assert result.slots == []
+    # Visitors see a plain answer, not a note about the test setup.
+    assert result.message == "No availability matched the request."
 
 
 def test_watch_action_is_refused_by_the_booking_service() -> None:
