@@ -67,7 +67,9 @@ Redis and PostgreSQL, which are upgrades rather than requirements.
 ### 1. Minimal — API only, no infrastructure
 
 With no Redis and no PostgreSQL the app boots on an in-memory store and an in-process
-queue. Everything works; nothing survives a restart.
+queue. Watches, polling, and booking all work; nothing survives a restart. Two things
+need PostgreSQL (mode 3): accounts (`/api/auth/*` returns `503`) and the `/watches`
+dashboard, which reads `/api/watches/mine` and stays empty without it.
 
 ```bash
 git clone https://github.com/seangebob/Dibs-Reservation-Sniper.git
@@ -100,7 +102,28 @@ Open <http://localhost:8000/docs> for the interactive API, or
 
 Without `OPENAI_API_KEY` the server still starts — only the two prompt endpoints
 return `503`. Everything else, including creating watches through
-`POST /api/watches`, works without it.
+`POST /api/watches`, works without it:
+
+```bash
+curl -X POST "http://localhost:8000/api/watches?auto_book=true" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "venue_name": "The Bauer Kitchen",
+        "venue_type": "RESTAURANT",
+        "market": "Kitchener-Waterloo-Cambridge, ON",
+        "party_size": 4,
+        "date": "2026-12-05",
+        "preferred_time": "19:00",
+        "time_window": null,
+        "duration_minutes": null,
+        "special_requests": []
+      }'
+```
+
+Every field is required: send `null` or `[]` for the ones you don't need, `market` must
+be exactly that string, and `date` must be today or later. `auto_book=true` books the
+first matching slot; without it the watch only reports what it finds. Follow it with
+`GET /api/watches/{watch_id}`, or use **Try it out** on `/docs` instead of curl.
 
 ### 2. No API key, no services — just watch the engine run
 
