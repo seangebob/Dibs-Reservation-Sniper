@@ -67,6 +67,12 @@ services:
       # still boots.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      # LLM_PROVIDER=local reads prompts with a model served on the host (e.g.
+      # Ollama) instead of OpenAI; no key needed. host.docker.internal is the
+      # host machine from inside this container (see extra_hosts below).
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      LOCAL_LLM_BASE_URL: ${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-qwen3.5:9b}
       RESERVATION_TIMEZONE: ${RESERVATION_TIMEZONE:-America/Toronto}
       # Email (Milestone 6). An empty SMTP_HOST keeps notifications log-only.
       SMTP_HOST: ${SMTP_HOST:-}
@@ -76,6 +82,10 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
       DASHBOARD_BASE_URL: ${DASHBOARD_BASE_URL:-http://localhost:3000}
+    # Docker Desktop defines host.docker.internal already; this makes it
+    # resolve on Linux too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       redis:
         condition: service_healthy

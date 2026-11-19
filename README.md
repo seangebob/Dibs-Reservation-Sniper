@@ -48,7 +48,7 @@ polling chains, and books idempotently so a redelivered job can't reserve twice.
 
 | Layer | State |
 | --- | --- |
-| Intent extraction and validation | **Real** — needs an OpenAI key with credit |
+| Intent extraction and validation | **Real** — OpenAI (needs a key with credit) or a free local model via Ollama |
 | Watch engine: scheduling, fencing, recovery, retention | **Real** |
 | Accounts and sessions | **Real** — argon2id + opaque bearer tokens |
 | Email notification | **Real** — any SMTP relay |
@@ -108,8 +108,11 @@ uvicorn backend.main:app --reload
 Open <http://localhost:8000/docs> for the interactive API, or
 <http://localhost:8000/health> to see which store and queue actually got bound.
 
-Without `OPENAI_API_KEY` the server still starts — only the two prompt endpoints
-return `503`. Everything else, including creating watches through
+No OpenAI key? Prompts can be read by a free model on your own machine instead — see
+[Reading prompts with a local model](#reading-prompts-with-a-local-model-no-openai-key).
+
+Without `OPENAI_API_KEY` (or a local model) the server still starts — only the two
+prompt endpoints return `503`. Everything else, including creating watches through
 `POST /api/watches`, works without it:
 
 ```bash
@@ -224,6 +227,43 @@ use that file, pass it explicitly:
 ```bash
 docker compose --env-file .env -f infra/docker-compose.yml --profile app up --build
 ```
+
+### Reading prompts with a local model (no OpenAI key)
+
+Prompts can be read by a model running on your own machine instead of OpenAI: free,
+and nothing leaves your computer. The cost is a few seconds per prompt and a one-time
+download of several GB. Any server with an OpenAI-compatible Chat Completions API
+works — Ollama, LM Studio, llama.cpp, vLLM. With [Ollama](https://ollama.com/download):
+
+```bash
+# once, after installing Ollama
+ollama pull qwen3.5:9b
+
+# in the API terminal, instead of exporting OPENAI_API_KEY
+export LLM_PROVIDER=local
+uvicorn backend.main:app --reload
+```
+
+The API logs `Prompts are read by local model 'qwen3.5:9b' at http://localhost:11434/v1`
+at startup. For another model or server, set `LOCAL_LLM_MODEL` and `LOCAL_LLM_BASE_URL`
+(LM Studio serves `http://localhost:1234/v1`). Only the API reads prompts; the worker
+needs none of this.
+
+In Docker (mode 4), Ollama keeps running on your machine and the `api` container
+reaches it at `host.docker.internal`, which is the compose default:
+
+```bash
+LLM_PROVIDER=local docker compose -f infra/docker-compose.yml --profile app up --build
+```
+
+On Linux, start Ollama with `OLLAMA_HOST=0.0.0.0` so the container can connect.
+
+If the server isn't running or the model hasn't finished downloading, the prompt box
+says the assistant is temporarily unavailable and the API log says why — for a
+missing model, the exact `ollama pull` to run. Every reply goes through the same
+validation as OpenAI's, and malformed output gets one corrective retry before it is
+reported as an error. A small model can still misread a detail such as a relative
+date, so check the parsed details before trusting a booking.
 
 Every environment variable and its bounds are documented in
 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.

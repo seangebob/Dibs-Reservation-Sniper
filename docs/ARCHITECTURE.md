@@ -19,7 +19,7 @@ backend/
 │       ├── auth.py             # signup · login · logout · me
 │       └── watches.py          # create · list · mine · read · cancel
 ├── orchestrator/
-│   ├── providers.py            # OpenAI structured-output adapter
+│   ├── providers.py            # OpenAI and local-model (Ollama etc.) extraction adapters
 │   ├── engine.py               # Extraction → validation coordination
 │   ├── validator.py            # Deterministic completeness and routing rules
 │   ├── router.py               # Ready intent → booking or watch
@@ -260,7 +260,8 @@ malformed value **raises `ConfigurationError`** rather than silently clamping �
 API process still boots. It logs the error and switches off only what depends on the
 value:
 
-- a bad watch setting (or a missing `OPENAI_API_KEY`) → the routes that need it return
+- a bad watch setting, an unrecognized `LLM_PROVIDER`, or a missing `OPENAI_API_KEY`
+  when OpenAI is the provider → the routes that need it return
   `503`, and `/health` reports `"config": "error"`;
 - a bad `POSTGRES_URL`, account setting, `FRONTEND_ORIGINS`, or SMTP setting → that
   feature stays off (no projection, no accounts, no CORS, log-only notifications).
@@ -276,8 +277,11 @@ full reference. The frontend ships `frontend/.env.local.example`.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | unset | Required for prompt parsing; without it those endpoints return `503`. |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Must be a valid model identifier. |
+| `LLM_PROVIDER` | `openai` | Which model reads prompts: `openai`, or `local` (alias `ollama`) for a self-hosted OpenAI-compatible server. |
+| `OPENAI_API_KEY` | unset | Required for prompt parsing unless `LLM_PROVIDER=local`; without it those endpoints return `503`. |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Must be a valid model identifier. Ignored when `LLM_PROVIDER=local`. |
+| `LOCAL_LLM_BASE_URL` | `http://localhost:11434/v1` | Chat Completions base URL of the local server (Ollama's default). LM Studio: `http://localhost:1234/v1`. |
+| `LOCAL_LLM_MODEL` | `qwen3.5:9b` | Local model name; `:` tags and `/` namespaces are allowed. |
 | `RESERVATION_TIMEZONE` | `America/Toronto` | Any IANA zone. |
 | `REDIS_URL` | `redis://localhost:6379/0` | `redis://`, `rediss://`, or `unix://`. Safe to leave unset. |
 | `FRONTEND_ORIGINS` | unset | Comma-separated CORS origins. Unset ⇒ zero CORS headers sent. |
