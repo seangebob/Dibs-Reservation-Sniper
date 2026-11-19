@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { WatchCard } from "./WatchCard";
-import { makeWatch, makeBooking } from "./testFixtures";
+import { makeWatch, makeBooking, makeSlot } from "./testFixtures";
 
 // A fixed clock 5 minutes before the default next_check_at.
 const NOW = Date.parse("2026-09-02T12:00:00Z");
@@ -75,6 +75,54 @@ describe("WatchCard", () => {
     expect(container.textContent).toMatch(/CALLED OFF/);
     expect(container.textContent).not.toMatch(/next in/);
     expect(screen.queryByRole("button", { name: /CANCEL/i })).toBeNull();
+  });
+
+  it.each([
+    [false, "NOTIFY ME"],
+    [true, "AUTO-BOOK"],
+  ])("shows the watch's mode (auto_book=%s → %s)", (autoBook, label) => {
+    const { container } = render(
+      <WatchCard
+        watch={makeWatch({ auto_book: autoBook })}
+        now={NOW}
+        cancelling={false}
+        onCancel={noop}
+      />,
+    );
+    expect(container.querySelector(".watch-mode")?.textContent).toBe(label);
+  });
+
+  it("FOUND with mock slots: says when, and that it isn't real availability", () => {
+    const { container } = render(
+      <WatchCard
+        watch={makeWatch({
+          status: "FOUND",
+          next_check_at: null,
+          found_slots: [makeSlot({ start_time: "19:15" })],
+        })}
+        now={NOW}
+        cancelling={false}
+        onCancel={noop}
+      />,
+    );
+    expect(container.textContent).toContain("table at 19:15");
+    expect(container.textContent).toContain("This is not real availability");
+  });
+
+  it("FOUND from a real provider carries no simulation note", () => {
+    const { container } = render(
+      <WatchCard
+        watch={makeWatch({
+          status: "FOUND",
+          next_check_at: null,
+          found_slots: [makeSlot({ provider: "opentable" })],
+        })}
+        now={NOW}
+        cancelling={false}
+        onCancel={noop}
+      />,
+    );
+    expect(container.textContent).not.toMatch(/Simulation only/);
   });
 
   it("shows the busy label while a cancel is in flight", () => {

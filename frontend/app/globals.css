@@ -668,6 +668,16 @@ a:hover {
 .watch-booking {
   color: var(--green-soft);
 }
+.watch-mode {
+  letter-spacing: 1px;
+  color: var(--text-dim);
+}
+.watch-mode[data-auto="true"] {
+  color: var(--amber);
+}
+.watch-found {
+  color: var(--green-soft);
+}
 
 .watch-cancel {
   flex-shrink: 0;

@@ -7,7 +7,7 @@
  */
 
 import type { Watch, WatchStatus } from "@/types/api";
-import { formatCountdown, formatDate, formatTimeBand } from "@/lib/format";
+import { formatClock, formatCountdown, formatDate, formatTimeBand } from "@/lib/format";
 
 type Tone = "amber" | "green" | "muted";
 
@@ -38,6 +38,11 @@ export function WatchCard({
     (watch.booking?.status === "MOCK_CONFIRMED" || watch.booking?.provider === "mock");
   const isActive = watch.status === "ACTIVE";
   const nextCheck = isActive ? formatCountdown(watch.next_check_at, now) : null;
+  const foundSlot = watch.status === "FOUND" ? watch.found_slots[0] : undefined;
+  const isMockAvailability =
+    watch.status === "FOUND" &&
+    watch.found_slots.length > 0 &&
+    watch.found_slots.every((slot) => slot.provider === "mock");
 
   const metaItems = [
     `PARTY ${watch.query.party_size}`,
@@ -77,9 +82,17 @@ export function WatchCard({
 
         <div className="watch-foot">
           <div className="watch-stats">
-            <span>
-              {watch.attempts} / {watch.max_attempts} checks
+            <span className="watch-mode" data-auto={watch.auto_book}>
+              {watch.auto_book ? "AUTO-BOOK" : "NOTIFY ME"}
             </span>
+            <span>
+              · {watch.attempts} / {watch.max_attempts} checks
+            </span>
+            {foundSlot && (
+              <span className="watch-found">
+                · table at {formatClock(foundSlot.start_time)}
+              </span>
+            )}
             {nextCheck && (
               <span className="watch-next">· next {nextCheck}</span>
             )}
@@ -104,6 +117,9 @@ export function WatchCard({
 
         {isMockBooking && (
           <p>Simulation only. No real table has been reserved.</p>
+        )}
+        {isMockAvailability && (
+          <p>Simulation only. This is not real availability.</p>
         )}
         {isActive && watch.last_error && (
           <div className="watch-error">
