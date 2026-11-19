@@ -80,8 +80,8 @@ need PostgreSQL (mode 3): accounts (`/api/auth/*` returns `503`) and the `/watch
 dashboard, which reads `/api/watches/mine` and stays empty without it.
 
 ```bash
-git clone https://github.com/seangebob/Dibs-Reservation-Sniper.git
-cd Dibs-Reservation-Sniper
+git clone https://github.com/seangebob/reservation-sniper.git
+cd reservation-sniper
 python -m venv .venv
 ```
 
