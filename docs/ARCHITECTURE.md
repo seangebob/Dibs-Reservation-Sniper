@@ -266,8 +266,11 @@ value:
   feature stays off (no projection, no accounts, no CORS, log-only notifications).
 
 The Celery worker reads its settings per task, so a bad watch setting there fails each
-task with the same `ConfigurationError` rather than stopping the worker at boot. There is no committed `.env` template for the backend — the tables below are
-the reference. The frontend ships `frontend/.env.local.example`.
+task with the same `ConfigurationError` rather than stopping the worker at boot.
+
+The backend template is the repo-root `.env.example`; nothing loads it automatically,
+so `set -a; source .env; set +a` in each API and worker shell. The tables below are the
+full reference. The frontend ships `frontend/.env.local.example`.
 
 ### Core
 

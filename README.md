@@ -64,6 +64,14 @@ refactor. It needs partner API access to go further.
 **Requirements:** Python 3.12+. Node 20+ for the frontend. Docker only if you want
 Redis and PostgreSQL, which are upgrades rather than requirements.
 
+**Environment variables.** The commands below `export` what they need. To keep them in
+a file instead, `cp .env.example .env`, fill it in, and load it in every terminal that
+runs the API or the worker — nothing reads `.env` automatically:
+
+```bash
+set -a; source .env; set +a
+```
+
 ### 1. Minimal — API only, no infrastructure
 
 With no Redis and no PostgreSQL the app boots on an in-memory store and an in-process
