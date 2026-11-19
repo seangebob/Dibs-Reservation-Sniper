@@ -9,10 +9,19 @@ from typing import Annotated
 
 from fastapi import Depends, Header, Request
 
-from backend.config import ConfigurationError, Settings, WatchSettings
+from backend.config import (
+    LLM_PROVIDER_LOCAL,
+    ConfigurationError,
+    Settings,
+    WatchSettings,
+)
 from backend.models.account import User
 from backend.orchestrator.engine import OrchestratorEngine
-from backend.orchestrator.providers import OpenAIIntentProvider
+from backend.orchestrator.providers import (
+    IntentProvider,
+    LocalIntentProvider,
+    OpenAIIntentProvider,
+)
 from backend.orchestrator.router import PromptRouter
 from backend.services.auth_service import AuthenticationRequiredError, AuthService
 from backend.services.booking_service import BookingService
@@ -82,17 +91,27 @@ async def get_orchestrator(request: Request) -> OrchestratorEngine:
         engine = request.app.state.orchestrator
         if engine is None:
             settings = request.app.state.settings or Settings.from_environment()
-            provider = OpenAIIntentProvider(
-                api_key=settings.openai_api_key,
-                model=settings.openai_model,
-            )
             engine = OrchestratorEngine(
-                provider,
+                build_intent_provider(settings),
                 timezone_name=settings.timezone_name,
             )
             request.app.state.orchestrator = engine
 
     return engine
+
+
+def build_intent_provider(settings: Settings) -> IntentProvider:
+    """The model that reads prompts, chosen by `LLM_PROVIDER`."""
+
+    if settings.llm_provider == LLM_PROVIDER_LOCAL:
+        return LocalIntentProvider(
+            model=settings.local_llm_model,
+            base_url=settings.local_llm_base_url,
+        )
+    return OpenAIIntentProvider(
+        api_key=settings.openai_api_key,
+        model=settings.openai_model,
+    )
 
 
 def get_booking_service(request: Request) -> BookingService:

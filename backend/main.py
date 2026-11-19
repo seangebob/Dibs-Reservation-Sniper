@@ -31,6 +31,7 @@ from backend.config import (
     DEFAULT_NOTIFY_TIMEOUT_SECONDS,
     DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS,
     DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS,
+    LLM_PROVIDER_LOCAL,
     AccountSettings,
     ConfigurationError,
     CorsSettings,
@@ -136,6 +137,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         app.state.settings = Settings.from_environment()
         app.state.settings_error = None
+        _log_intent_provider(app.state.settings)
     except ConfigurationError as exc:
         app.state.settings = None
         app.state.settings_error = exc
@@ -162,6 +164,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     engine: OrchestratorEngine | None = app.state.orchestrator
     if engine is not None:
         await engine.close()
+
+
+def _log_intent_provider(settings: Settings) -> None:
+    """Say at startup which model will read prompts.
+
+    `/health` stays byte-identical, so this line is where an operator confirms
+    that `LLM_PROVIDER=local` took effect -- and where to point Ollama.
+    """
+
+    if settings.llm_provider == LLM_PROVIDER_LOCAL:
+        logger.info(
+            "Prompts are read by local model %r at %s",
+            settings.local_llm_model,
+            settings.local_llm_base_url,
+        )
+    else:
+        logger.info("Prompts are read by OpenAI model %r", settings.openai_model)
 
 
 def _bind_mock_adapter(app: FastAPI, state: MockBookingStateRepository) -> None:

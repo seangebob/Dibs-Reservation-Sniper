@@ -13,6 +13,9 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "OPENAI_API_KEY",
         "OPENAI_MODEL",
+        "LLM_PROVIDER",
+        "LOCAL_LLM_BASE_URL",
+        "LOCAL_LLM_MODEL",
         "RESERVATION_TIMEZONE",
         "REDIS_URL",
         "WATCH_POLL_INTERVAL_SECONDS",
@@ -89,6 +92,117 @@ def test_plausible_model_names_are_accepted(
     monkeypatch.setenv("OPENAI_MODEL", model)
 
     assert Settings.from_environment().openai_model == model
+
+
+# --- prompt-parsing provider: OpenAI or a local model -----------------------
+
+
+def test_openai_stays_the_default_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    settings = Settings.from_environment()
+
+    assert settings.llm_provider == "openai"
+
+
+@pytest.mark.parametrize("value", ["local", "LOCAL", " local ", "ollama", "Ollama"])
+def test_local_provider_needs_no_openai_key(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", value)
+
+    settings = Settings.from_environment()
+
+    assert settings.llm_provider == "local"
+    assert settings.openai_api_key is None
+    assert settings.local_llm_base_url == "http://localhost:11434/v1"
+    assert settings.local_llm_model == "qwen3.5:9b"
+
+
+def test_unknown_provider_names_the_variable_and_the_choices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("LLM_PROVIDER", "olama")
+
+    with pytest.raises(ConfigurationError, match="LLM_PROVIDER") as error:
+        Settings.from_environment()
+
+    assert "'openai' or 'local'" in str(error.value)
+
+
+def test_empty_provider_means_openai(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "  ")
+
+    with pytest.raises(ConfigurationError, match="OPENAI_API_KEY"):
+        Settings.from_environment()
+
+
+def test_local_provider_ignores_openai_model_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "local")
+    monkeypatch.setenv("OPENAI_MODEL", "not a model")
+
+    assert Settings.from_environment().llm_provider == "local"
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["llama3.1:8b", "qwen/qwen3-8b", "hf.co/unsloth/Qwen3.5-9B-GGUF:Q4_K_M"],
+)
+def test_local_model_names_with_tags_and_namespaces_are_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "local")
+    monkeypatch.setenv("LOCAL_LLM_MODEL", f"  {model}  ")
+
+    assert Settings.from_environment().local_llm_model == model
+
+
+@pytest.mark.parametrize("model", ["qwen 3", "qwen;rm -rf /", "-qwen"])
+def test_invalid_local_model_names_the_variable(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "local")
+    monkeypatch.setenv("LOCAL_LLM_MODEL", model)
+
+    with pytest.raises(ConfigurationError, match="LOCAL_LLM_MODEL"):
+        Settings.from_environment()
+
+
+def test_local_base_url_can_point_elsewhere(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "local")
+    monkeypatch.setenv("LOCAL_LLM_BASE_URL", " http://host.docker.internal:11434/v1/ ")
+
+    assert (
+        Settings.from_environment().local_llm_base_url
+        == "http://host.docker.internal:11434/v1"
+    )
+
+
+@pytest.mark.parametrize("url", ["localhost:11434/v1", "ftp://localhost/v1", "http://"])
+def test_invalid_local_base_url_names_the_variable(
+    monkeypatch: pytest.MonkeyPatch,
+    url: str,
+) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "local")
+    monkeypatch.setenv("LOCAL_LLM_BASE_URL", url)
+
+    with pytest.raises(ConfigurationError, match="LOCAL_LLM_BASE_URL"):
+        Settings.from_environment()
+
+
+def test_local_settings_are_not_validated_for_openai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("LOCAL_LLM_BASE_URL", "not a url")
+
+    assert Settings.from_environment().llm_provider == "openai"
 
 
 def test_unknown_timezone_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:

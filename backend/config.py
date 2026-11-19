@@ -14,9 +14,25 @@ class ConfigurationError(RuntimeError):
 #: Model identifiers are opaque to us, but a name containing whitespace or
 #: shell punctuation is a configuration mistake worth catching at startup
 #: rather than as a provider error on the first user request.
-_MODEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:\-]{1,63}$")
+#: `/` is allowed for namespaced local models such as LM Studio's
+#: `qwen/qwen3-8b` or Ollama's `hf.co/<org>/<repo>:<quant>`.
+_MODEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\-]{1,63}$")
 
 DEFAULT_MODEL = "gpt-4o-mini"
+
+#: Which model reads prompts: OpenAI's API, or a self-hosted server speaking
+#: the OpenAI-compatible Chat Completions API (Ollama, LM Studio, llama.cpp).
+LLM_PROVIDER_OPENAI = "openai"
+LLM_PROVIDER_LOCAL = "local"
+DEFAULT_LLM_PROVIDER = LLM_PROVIDER_OPENAI
+#: Accepted spellings. "ollama" is the name people reach for first.
+_LLM_PROVIDER_ALIASES = {
+    "openai": LLM_PROVIDER_OPENAI,
+    "local": LLM_PROVIDER_LOCAL,
+    "ollama": LLM_PROVIDER_LOCAL,
+}
+DEFAULT_LOCAL_LLM_BASE_URL = "http://localhost:11434/v1"
+DEFAULT_LOCAL_LLM_MODEL = "qwen3.5:9b"
 DEFAULT_TIMEZONE = "America/Toronto"
 DEFAULT_REDIS_URL = "redis://localhost:6379/0"
 
@@ -728,10 +744,53 @@ def _dashboard_base_url() -> str:
     return raw.rstrip("/")
 
 
+def _llm_provider() -> str:
+    """`LLM_PROVIDER`, normalized. Unset means OpenAI, as before it existed."""
+
+    raw = os.environ.get("LLM_PROVIDER", "")
+    value = raw.strip().lower()
+    if not value:
+        return DEFAULT_LLM_PROVIDER
+    try:
+        return _LLM_PROVIDER_ALIASES[value]
+    except KeyError:
+        raise ConfigurationError(
+            f"Invalid LLM_PROVIDER: {raw!r}. Expected 'openai' or 'local' "
+            "('ollama' also means local)."
+        ) from None
+
+
+def _local_llm_base_url() -> str:
+    raw = (os.environ.get("LOCAL_LLM_BASE_URL") or "").strip()
+    if not raw:
+        return DEFAULT_LOCAL_LLM_BASE_URL
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ConfigurationError(
+            f"Invalid LOCAL_LLM_BASE_URL: {raw!r}. Expected a full http:// or "
+            f"https:// URL such as {DEFAULT_LOCAL_LLM_BASE_URL!r}."
+        )
+    return raw.rstrip("/")
+
+
+def _local_llm_model() -> str:
+    model = (os.environ.get("LOCAL_LLM_MODEL") or "").strip() or DEFAULT_LOCAL_LLM_MODEL
+    if not _MODEL_NAME_PATTERN.fullmatch(model):
+        raise ConfigurationError(
+            f"Invalid LOCAL_LLM_MODEL name: {model!r}. Expected a model name "
+            f"such as {DEFAULT_LOCAL_LLM_MODEL!r}."
+        )
+    return model
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
-    openai_api_key: str
+    #: None only when a local model reads prompts, which needs no key.
+    openai_api_key: str | None
     openai_model: str = DEFAULT_MODEL
+    llm_provider: str = DEFAULT_LLM_PROVIDER
+    local_llm_base_url: str = DEFAULT_LOCAL_LLM_BASE_URL
+    local_llm_model: str = DEFAULT_LOCAL_LLM_MODEL
     timezone_name: str = DEFAULT_TIMEZONE
     redis_url: str = DEFAULT_REDIS_URL
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
@@ -749,26 +808,40 @@ class Settings:
 
     @classmethod
     def from_environment(cls) -> "Settings":
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        if not api_key:
-            raise ConfigurationError(
-                "OPENAI_API_KEY is not configured. Set it in the environment "
-                "before starting the service."
-            )
+        provider = _llm_provider()
+        if provider == LLM_PROVIDER_LOCAL:
+            # Only the selected provider's settings are validated: a stale
+            # OPENAI_MODEL must not stop a local model from reading prompts.
+            api_key: str | None = os.getenv("OPENAI_API_KEY", "").strip() or None
+            model = DEFAULT_MODEL
+            local_base_url = _local_llm_base_url()
+            local_model = _local_llm_model()
+        else:
+            api_key = os.getenv("OPENAI_API_KEY", "").strip()
+            if not api_key:
+                raise ConfigurationError(
+                    "OPENAI_API_KEY is not configured. Set it in the environment "
+                    "before starting the service."
+                )
 
-        model = os.getenv("OPENAI_MODEL", DEFAULT_MODEL).strip()
-        if not model:
-            raise ConfigurationError("OPENAI_MODEL cannot be empty")
-        if not _MODEL_NAME_PATTERN.fullmatch(model):
-            raise ConfigurationError(
-                f"Invalid OPENAI_MODEL name: {model!r}. Expected an identifier "
-                "such as 'gpt-4o-mini'."
-            )
+            model = os.getenv("OPENAI_MODEL", DEFAULT_MODEL).strip()
+            if not model:
+                raise ConfigurationError("OPENAI_MODEL cannot be empty")
+            if not _MODEL_NAME_PATTERN.fullmatch(model):
+                raise ConfigurationError(
+                    f"Invalid OPENAI_MODEL name: {model!r}. Expected an identifier "
+                    "such as 'gpt-4o-mini'."
+                )
+            local_base_url = DEFAULT_LOCAL_LLM_BASE_URL
+            local_model = DEFAULT_LOCAL_LLM_MODEL
 
         watch = WatchSettings.from_environment()
         return cls(
             openai_api_key=api_key,
             openai_model=model,
+            llm_provider=provider,
+            local_llm_base_url=local_base_url,
+            local_llm_model=local_model,
             timezone_name=watch.timezone_name,
             redis_url=watch.redis_url,
             poll_interval_seconds=watch.poll_interval_seconds,
