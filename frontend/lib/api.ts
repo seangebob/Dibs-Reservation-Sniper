@@ -15,6 +15,7 @@ import type {
   AvailabilityQuery,
   PromptExecutionResult,
   User,
+  VenueSummary,
   Watch,
 } from "@/types/api";
 
@@ -34,16 +35,26 @@ export function apiBaseUrl(): string {
 }
 
 async function errorMessage(response: Response): Promise<string> {
-  // The backend serializes every handled error as `{ "detail": "..." }`.
+  // The backend serializes every handled error as `{ "detail": "..." }`;
+  // request validation (422) sends `{ "detail": [{ "msg": "..." }, ...] }`.
   try {
     const body: unknown = await response.json();
+    const detail =
+      body && typeof body === "object" && "detail" in body
+        ? (body as { detail: unknown }).detail
+        : undefined;
+    if (typeof detail === "string") {
+      return detail;
+    }
+    const first: unknown = Array.isArray(detail) ? detail[0] : undefined;
     if (
-      body &&
-      typeof body === "object" &&
-      "detail" in body &&
-      typeof (body as { detail: unknown }).detail === "string"
+      first &&
+      typeof first === "object" &&
+      typeof (first as { msg?: unknown }).msg === "string"
     ) {
-      return (body as { detail: string }).detail;
+      // Pydantic prefixes custom validator messages with "Value error, ".
+      const msg = (first as { msg: string }).msg.replace(/^Value error, /, "");
+      return msg.charAt(0).toUpperCase() + msg.slice(1);
     }
   } catch {
     // fall through to a status-based default
@@ -136,6 +147,11 @@ export function cancelWatch(watchId: string): Promise<ApiResult<Watch>> {
   return apiFetch(`/api/watches/${encodeURIComponent(watchId)}`, {
     method: "DELETE",
   });
+}
+
+/** GET the venue catalog, for the watch form's suggestions. */
+export function listVenues(): Promise<ApiResult<VenueSummary[]>> {
+  return apiFetch("/api/venues", { method: "GET" });
 }
 
 /** POST a fully-validated query to open a watch directly. */

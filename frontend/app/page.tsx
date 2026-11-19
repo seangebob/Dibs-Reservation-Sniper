@@ -2,13 +2,13 @@
  * The prompt page — Dibs' front door.
  *
  * A server-rendered Night Scope shell (masthead, hero, scope furniture) wraps
- * the one interactive island, `PromptConsole`, which owns the input and the
- * response state machine. Keeping the shell on the server means only the
- * console's logic ships to the browser.
+ * the one interactive island, `EntryPanel`: the prompt console and the manual
+ * watch form behind two tabs. Keeping the shell on the server means only their
+ * logic ships to the browser.
  */
 
 import { Masthead } from "./_components/Masthead";
-import { PromptConsole } from "./_components/PromptConsole";
+import { EntryPanel } from "./_components/EntryPanel";
 import { ScopeBackdrop } from "./_components/Scope";
 
 export default function Home() {
@@ -34,13 +34,13 @@ export default function Home() {
             they keep <em>losing.</em>
           </h1>
           <p>
-            Describe the reservation in plain words. We keep it in the
-            crosshairs around the clock and take the shot the instant a table
-            frees up.
+            Describe the reservation in plain words, or fill in the details.
+            We keep it in the crosshairs around the clock and take the shot the
+            instant a table frees up.
           </p>
         </section>
 
-        <PromptConsole />
+        <EntryPanel />
       </div>
     </main>
   );

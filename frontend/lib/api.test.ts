@@ -10,6 +10,7 @@ import {
   apiBaseUrl,
   cancelWatch,
   listMyWatches,
+  listVenues,
   login,
   logout,
   me,
@@ -251,5 +252,56 @@ describe("session handling", () => {
 
     expect(headersOf(fetchMock).get("Authorization")).toBe("Bearer tok-abc");
     expect(getSessionToken()).toBeNull();
+  });
+});
+
+describe("watch form calls", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    __resetClientIdCacheForTests();
+    __resetSessionTokenForTests();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("lists venues with a GET to /api/venues", async () => {
+    const venues = [{ name: "The Bauer Kitchen", venue_type: "RESTAURANT", aliases: [] }];
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(venues));
+
+    const result = await listVenues();
+
+    expect(result).toEqual({ ok: true, data: venues });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://localhost:8000/api/venues");
+    expect((init as RequestInit).method).toBe("GET");
+  });
+
+  it("turns a request-validation 422 into its first readable message", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(
+        {
+          detail: [
+            {
+              type: "value_error",
+              loc: ["body"],
+              msg: "Value error, availability query requires a time or time window",
+            },
+          ],
+        },
+        422,
+      ),
+    );
+
+    const result = await listVenues();
+
+    expect(result).toEqual({
+      ok: false,
+      status: 422,
+      message: "Availability query requires a time or time window",
+    });
   });
 });

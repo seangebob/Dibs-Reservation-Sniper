@@ -6,7 +6,15 @@
  * fields the frontend actually reads are typed; the backend may send more.
  */
 
-export type VenueType = "RESTAURANT" | "RECREATION";
+/** UNKNOWN is valid on a query: the venue is scheduled on the generic profile. */
+export type VenueType = "RESTAURANT" | "RECREATION" | "UNKNOWN";
+
+/** One catalog venue, from `GET /api/venues` — suggestions, not a whitelist. */
+export interface VenueSummary {
+  name: string;
+  venue_type: VenueType;
+  aliases: string[];
+}
 
 export type WatchStatus =
   | "ACTIVE"

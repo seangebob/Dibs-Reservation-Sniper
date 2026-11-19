@@ -25,8 +25,11 @@ FRONTEND_ORIGINS=http://localhost:3000 uvicorn backend.main:app --reload
 
 What works depends on the backend's setup (see the root README):
 
-- **The prompt box** needs `OPENAI_API_KEY` on the backend; without it, every
-  prompt shows "OPENAI_API_KEY is not configured".
+- **The prompt box** needs a model on the backend — `OPENAI_API_KEY`, or a local
+  model with `LLM_PROVIDER=local`; without either, every prompt shows
+  "OPENAI_API_KEY is not configured".
+- **The "Fill in a form" tab** needs no model at all: it posts the watch straight
+  to `POST /api/watches`.
 - **The watch dashboard and sign-in** need `POSTGRES_URL`; without it the
   dashboard is always empty and sign-in shows "Accounts are unavailable because
   PostgreSQL is not configured".
@@ -51,12 +54,14 @@ rebuild (or a dev-server restart), not just an environment edit.
 frontend/
 ├── app/
 │   ├── layout.tsx              # Root layout: fonts, AuthProvider
-│   ├── page.tsx                # Prompt page (/)
+│   ├── page.tsx                # Front door (/): prompt or form
 │   ├── watches/page.tsx        # Watch dashboard (/watches)
 │   ├── account/page.tsx        # Sign in / sign up (/account)
 │   ├── globals.css             # "Night Scope" theme
 │   └── _components/
+│       ├── EntryPanel.tsx      # "Describe it" / "Fill in a form" tabs
 │       ├── PromptConsole.tsx   # Prompt input + request state machine
+│       ├── WatchForm.tsx       # Manual watch form, notify or auto-book
 │       ├── ResultView.tsx      # Renders each prompt outcome
 │       ├── WatchDashboard.tsx  # Loads, refreshes, and cancels your watches
 │       ├── WatchCard.tsx       # One watch
@@ -69,7 +74,8 @@ frontend/
 │   ├── api.ts                  # Typed fetch wrapper; normalizes every failure
 │   ├── auth.ts                 # Session token store
 │   ├── client-id.ts            # Anonymous X-Dibs-Client-Id
-│   └── format.ts               # Display helpers
+│   ├── format.ts               # Display helpers
+│   └── watch-form.ts           # Form values ⇄ watch query, validation
 └── types/
     └── api.ts                  # Hand-maintained mirror of the backend contracts
 ```
