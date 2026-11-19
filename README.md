@@ -70,7 +70,8 @@ With no Redis and no PostgreSQL the app boots on an in-memory store and an in-pr
 queue. Everything works; nothing survives a restart.
 
 ```bash
-git clone <this repo> && cd Reservation
+git clone https://github.com/seangebob/Dibs-Reservation-Sniper.git
+cd Dibs-Reservation-Sniper
 python -m venv .venv
 ```
 
