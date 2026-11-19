@@ -116,18 +116,23 @@ mock provider. Nothing external required.
 Redis makes watches restart-durable and lets a real Celery worker do the polling;
 PostgreSQL adds the durable history projection that powers accounts and
 `/api/watches/mine`. Each command below is long-running — **use separate terminals**.
+Every new terminal starts with an empty environment, so activate the venv and export
+the variables in **each** Python terminal (2 and 3).
 
 ```bash
 # Terminal 1 — Redis + PostgreSQL
 docker compose -f infra/docker-compose.yml up -d
 
 # Terminal 2 — API
+source .venv/bin/activate
 export OPENAI_API_KEY="sk-..."
 export POSTGRES_URL="postgresql://dibs:dibs@localhost:5432/dibs"
 export FRONTEND_ORIGINS="http://localhost:3000"
 uvicorn backend.main:app --reload
 
 # Terminal 3 — Celery worker (polling happens here instead of in-process)
+source .venv/bin/activate
+export POSTGRES_URL="postgresql://dibs:dibs@localhost:5432/dibs"
 celery -A backend.workers.celery_app worker --loglevel=info
 
 # Terminal 4 — frontend
@@ -138,15 +143,29 @@ npm run dev                                    # http://localhost:3000
 
 ```powershell
 # Terminal 2 on Windows
+.\.venv\Scripts\Activate.ps1
 $env:OPENAI_API_KEY = "sk-..."
 $env:POSTGRES_URL = "postgresql://dibs:dibs@localhost:5432/dibs"
 $env:FRONTEND_ORIGINS = "http://localhost:3000"
 uvicorn backend.main:app --reload
+
+# Terminal 3 on Windows — Celery's default pool doesn't run on Windows; use solo
+.\.venv\Scripts\Activate.ps1
+$env:POSTGRES_URL = "postgresql://dibs:dibs@localhost:5432/dibs"
+celery -A backend.workers.celery_app worker --loglevel=info --pool=solo
 ```
 
+The worker needs `POSTGRES_URL` too: it does the polling and booking, so without it
+what it finds never reaches the `/watches` dashboard, and no email goes out — the
+dashboard shows the watch stuck at whatever the API last recorded.
+
 Migrations apply themselves at startup. `FRONTEND_ORIGINS` is required or the browser
-is blocked by CORS — unset, the API sends no CORS headers at all. To get email instead
-of logged notifications, set `SMTP_HOST` and `SMTP_FROM` as well.
+is blocked by CORS — unset, the API sends no CORS headers at all.
+
+To get email instead of logged notifications, set `SMTP_HOST` and `SMTP_FROM` (plus
+`SMTP_USERNAME`/`SMTP_PASSWORD` if your relay needs them) in **both** terminal 2 and
+terminal 3. Email goes to signed-in accounts only; anonymous watches have no address
+to send to.
 
 Confirm everything bound correctly:
 
