@@ -75,10 +75,14 @@ cd Dibs-Reservation-Sniper
 python -m venv .venv
 ```
 
+The install pulls in every extra — `worker` (Celery, needed for mode 3), `test`, and
+`dev` (mypy) — so one install covers every mode below. `pip install -r requirements.txt`
+installs the same set minus mypy.
+
 ```bash
 # macOS / Linux
 source .venv/bin/activate
-pip install -e ".[test]"
+pip install -e ".[worker,test,dev]"
 export OPENAI_API_KEY="sk-..."
 uvicorn backend.main:app --reload
 ```
@@ -86,7 +90,7 @@ uvicorn backend.main:app --reload
 ```powershell
 # Windows PowerShell
 .\.venv\Scripts\Activate.ps1
-pip install -e ".[test]"
+pip install -e ".[worker,test,dev]"
 $env:OPENAI_API_KEY = "sk-..."
 uvicorn backend.main:app --reload
 ```
