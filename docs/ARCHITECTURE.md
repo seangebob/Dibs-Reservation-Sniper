@@ -70,8 +70,9 @@ Two rules explain most of the design.
 defined mode rather than an error. No `REDIS_URL` → in-memory store. No
 `POSTGRES_URL` → no projection, and `/api/watches/mine` returns `[]`. No `SMTP_HOST` →
 notifications log instead of send. No `Authorization` header → the anonymous path,
-byte-identical to how it behaved before accounts existed. A *malformed* value still
-fails startup loudly; only an *absent* one degrades.
+byte-identical to how it behaved before accounts existed. A *malformed* value is never
+quietly treated as absent: the API still boots, but logs a `ConfigurationError` and
+switches off whatever depends on that value (see [Configuration](#configuration)).
 
 **Seams are protocols, and they have two implementations.** `WatchRepository` is
 in-memory and Redis-Lua, held to identical behaviour by equivalence tests.
@@ -255,8 +256,17 @@ the wrong place for them.
 ## Configuration
 
 Settings are read once at startup and validated with closed bounds. An out-of-range or
-malformed value **fails startup with `ConfigurationError`** rather than silently
-clamping. There is no committed `.env` template for the backend — the tables below are
+malformed value **raises `ConfigurationError`** rather than silently clamping — but the
+API process still boots. It logs the error and switches off only what depends on the
+value:
+
+- a bad watch setting (or a missing `OPENAI_API_KEY`) → the routes that need it return
+  `503`, and `/health` reports `"config": "error"`;
+- a bad `POSTGRES_URL`, account setting, `FRONTEND_ORIGINS`, or SMTP setting → that
+  feature stays off (no projection, no accounts, no CORS, log-only notifications).
+
+The Celery worker reads its settings per task, so a bad watch setting there fails each
+task with the same `ConfigurationError` rather than stopping the worker at boot. There is no committed `.env` template for the backend — the tables below are
 the reference. The frontend ships `frontend/.env.local.example`.
 
 ### Core
@@ -335,8 +345,9 @@ request through rather than failing it.
 | `DASHBOARD_BASE_URL` | `http://localhost:3000` | Base for the link inside a message |
 
 Once `SMTP_HOST` is set the rest must be coherent — a host with no `SMTP_FROM`, or a
-username with no password, is a startup error, because a half-configured mailer that
-silently drops every notification is worse than none.
+username with no password, is rejected at startup with a logged error and email stays
+off, because a half-configured mailer that silently drops every notification is worse
+than none.
 
 ### Frontend
 

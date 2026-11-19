@@ -230,8 +230,11 @@ Two rules explain most of the design:
 - **Degrade, never gate.** Every external dependency is optional, and its absence is a
   defined mode rather than an error. No Redis → in-memory store. No PostgreSQL → no
   projection. No SMTP → notifications log instead of send. No auth header → the
-  anonymous path. A *malformed* value still fails startup loudly; only an *absent* one
-  degrades.
+  anonymous path. A *malformed* value is never quietly treated as absent: the API still
+  boots, but logs a `ConfigurationError` and switches off whatever depends on that
+  value (a bad watch setting makes the watch routes return `503`; a bad
+  `POSTGRES_URL`, `FRONTEND_ORIGINS`, or SMTP setting leaves that feature off). Check
+  the startup log when something you configured isn't working.
 - **Seams are protocols with two implementations.** The watch repository is in-memory
   *and* Redis-Lua, held to identical behaviour by equivalence tests. Anything with one
   implementation and no second is a claim, not a contract.
