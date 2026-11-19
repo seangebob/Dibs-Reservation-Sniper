@@ -217,6 +217,14 @@ The `app` profile adds `api`, `worker`, and `web` on top of the datastores. A ba
 `up` with no profile starts **only** Redis and PostgreSQL, which is what you want for
 mode 3.
 
+Compose takes `OPENAI_API_KEY`, the `SMTP_*` settings, and the rest from your shell.
+It does **not** read the repo-root `.env` on its own (it only looks in `infra/`); to
+use that file, pass it explicitly:
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml --profile app up --build
+```
+
 Every environment variable and its bounds are documented in
 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 

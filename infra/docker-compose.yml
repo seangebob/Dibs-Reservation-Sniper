@@ -60,11 +60,22 @@ services:
       # Origins allowed to call this API cross-origin from a browser. Defaults to
       # the web service's published origin; override to add a deployed origin.
       FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://localhost:3000}
-      # Passed through from the host shell / root .env. Required for prompt
-      # parsing; if unset, parse-and-book returns 503 but the service still boots.
+      # Passed through from the host shell, or from the repo-root .env when you
+      # add `--env-file .env` -- Compose only looks for a .env next to this file
+      # (infra/), so the root one is ignored without the flag. Required for
+      # prompt parsing; if unset, parse-and-book returns 503 but the service
+      # still boots.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       RESERVATION_TIMEZONE: ${RESERVATION_TIMEZONE:-America/Toronto}
+      # Email (Milestone 6). An empty SMTP_HOST keeps notifications log-only.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+      DASHBOARD_BASE_URL: ${DASHBOARD_BASE_URL:-http://localhost:3000}
     depends_on:
       redis:
         condition: service_healthy
@@ -83,6 +94,14 @@ services:
       # Same projection so background poll outcomes are recorded to history too.
       POSTGRES_URL: postgresql://dibs:dibs@postgres:5432/dibs
       RESERVATION_TIMEZONE: ${RESERVATION_TIMEZONE:-America/Toronto}
+      # The worker finds and books the tables, so it is the one that emails.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+      DASHBOARD_BASE_URL: ${DASHBOARD_BASE_URL:-http://localhost:3000}
     depends_on:
       redis:
         condition: service_healthy
