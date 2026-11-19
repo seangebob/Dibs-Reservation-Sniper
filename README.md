@@ -198,8 +198,8 @@ Redis Lua through `fakeredis[lua]`, so atomicity is proven against actual script
 semantics rather than a hand-written fake.
 
 ```bash
-pytest && mypy backends
-cd frontend && npm run typecheck && npm test
+pytest && mypy                    # mypy reads its target (backend/) from pyproject.toml
+cd frontend && npm ci && npm run typecheck && npm test
 ```
 
 Two rules explain most of the design:
