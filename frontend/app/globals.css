@@ -1146,3 +1146,13 @@ a:hover {
     max-width: none;
   }
 }
+
+/* ---- no table: watch instead ------------------------------------------ */
+
+.watch-instead {
+  margin-top: 18px;
+}
+.watch-instead .watch-form {
+  margin-top: 0;
+  background: var(--panel-inset);
+}

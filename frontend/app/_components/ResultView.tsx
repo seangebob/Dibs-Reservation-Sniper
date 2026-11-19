@@ -1,11 +1,13 @@
 /**
- * The pure view half of the prompt console: a discriminated `ConsoleState` in,
- * the right Night Scope card out. It holds no state and fires no requests — the
- * only interaction it forwards is `onRetry` for the failure branch — which keeps
- * every response branch trivially unit-testable (Task 12).
+ * The view half of the prompt console: a discriminated `ConsoleState` in, the
+ * right Night Scope card out. The cards hold no state and fire no requests —
+ * the only interaction forwarded is `onRetry` for the failure branch — which
+ * keeps every response branch trivially unit-testable (Task 12). The one
+ * exception is the no-availability card's "watch instead" disclosure, which
+ * opens the self-contained `WatchForm`.
  */
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type {
   AvailabilitySlot,
   PromptExecutionResult,
@@ -16,6 +18,8 @@ import {
   formatTimeBand,
   readIntentView,
 } from "@/lib/format";
+import { formFromIntent } from "@/lib/watch-form";
+import { WatchForm } from "./WatchForm";
 
 export type ConsoleState =
   | { phase: "idle" }
@@ -245,7 +249,36 @@ function NoAvailability({ result }: { result: PromptExecutionResult }) {
       </div>
       <div className="result-title sm">{intent.venueName ?? "No availability"}</div>
       <div className="result-text">{result.message}</div>
+      <WatchInstead result={result} />
     </Card>
+  );
+}
+
+/**
+ * "No table — watch instead?" Opens the manual form prefilled from the intent
+ * this prompt already produced, so turning it into a watch costs no second
+ * model call. The visitor reviews or edits the details and picks a mode.
+ */
+function WatchInstead({ result }: { result: PromptExecutionResult }) {
+  const [open, setOpen] = useState(false);
+
+  if (!open) {
+    return (
+      <div className="result-foot watch-instead">
+        <div className="result-text" style={{ marginTop: 0 }}>
+          Dibs can keep checking and catch a table when one opens.
+        </div>
+        <button type="button" className="result-link" onClick={() => setOpen(true)}>
+          WATCH FOR AN OPENING ▸
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="watch-instead">
+      <WatchForm initial={formFromIntent(result.intent)} allowAnother={false} />
+    </div>
   );
 }
 

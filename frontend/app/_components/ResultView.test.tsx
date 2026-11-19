@@ -93,6 +93,9 @@ describe("ResultView", () => {
     );
     expect(container.textContent).toMatch(/NO TABLE IN RANGE/i);
     expect(container.textContent).toContain("Cote");
+    // Offers a watch, but opens no form (and loads nothing) until asked.
+    expect(screen.getByRole("button", { name: /WATCH FOR AN OPENING/ })).toBeTruthy();
+    expect(screen.queryByLabelText("VENUE")).toBeNull();
   });
 
   it("CLARIFICATION_REQUIRED: shows the returned question (Req 1.3)", () => {

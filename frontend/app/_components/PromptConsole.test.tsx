@@ -1,13 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { act, render, screen, fireEvent } from "@testing-library/react";
 
 // Mock the API boundary so the console's state machine is tested in isolation.
-vi.mock("@/lib/api", () => ({ parseAndBook: vi.fn() }));
+vi.mock("@/lib/api", () => ({
+  parseAndBook: vi.fn(),
+  createWatch: vi.fn(),
+  listVenues: vi.fn(),
+}));
 
-import { parseAndBook, type ApiResult } from "@/lib/api";
+import { createWatch, listVenues, parseAndBook, type ApiResult } from "@/lib/api";
+import { venueToday } from "@/lib/watch-form";
 import type { PromptExecutionResult } from "@/types/api";
 import { PromptConsole } from "./PromptConsole";
-import { makeResult } from "./testFixtures";
+import { makeResult, makeWatch } from "./testFixtures";
 
 describe("PromptConsole", () => {
   beforeEach(() => {
@@ -79,5 +84,65 @@ describe("PromptConsole", () => {
     fireEvent.click(screen.getByRole("button", { name: /ACQUIRE/i }));
     await screen.findByText(/SIGNAL LOST/i);
     expect(screen.getByText(/Couldn't reach the server/i)).toBeTruthy();
+  });
+
+  it("turns a no-table result into a watch without a second model call", async () => {
+    const [y, m, d] = venueToday().split("-").map(Number);
+    const date = new Date(Date.UTC(y, m - 1, d + 3)).toISOString().slice(0, 10);
+    vi.mocked(parseAndBook).mockResolvedValue({
+      ok: true,
+      data: makeResult({
+        status: "NO_AVAILABILITY",
+        message: "No availability matched the request.",
+        intent: {
+          venue_name: "The Bauer Kitchen",
+          venue_type: "RESTAURANT",
+          party_size: 4,
+          date,
+          preferred_time: null,
+          time_window: { start: "18:00", end: "21:00" },
+          duration_minutes: null,
+          special_requests: ["window seat"],
+        },
+      }),
+    });
+    vi.mocked(listVenues).mockResolvedValue({ ok: true, data: [] });
+    vi.mocked(createWatch).mockResolvedValue({
+      ok: true,
+      data: makeWatch({ auto_book: true }),
+    });
+
+    render(<PromptConsole />);
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "book bauer for 4 this weekend 6 to 9" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /ACQUIRE/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /WATCH FOR AN OPENING/ }));
+    await act(async () => {});
+
+    // Prefilled from the parsed intent; the visitor picks auto-book.
+    expect((screen.getByLabelText("VENUE") as HTMLInputElement).value).toBe(
+      "The Bauer Kitchen",
+    );
+    fireEvent.click(screen.getByRole("radio", { name: /Auto-book/ }));
+    fireEvent.click(screen.getByRole("button", { name: /WATCH & AUTO-BOOK/ }));
+
+    expect(await screen.findByText(/WATCH CREATED · AUTO-BOOK ON/)).toBeTruthy();
+    expect(createWatch).toHaveBeenCalledWith(
+      {
+        venue_name: "The Bauer Kitchen",
+        venue_type: "RESTAURANT",
+        market: "Kitchener-Waterloo-Cambridge, ON",
+        party_size: 4,
+        date,
+        preferred_time: null,
+        time_window: { start: "18:00", end: "21:00" },
+        duration_minutes: null,
+        special_requests: ["window seat"],
+      },
+      true,
+    );
+    // The prompt was parsed once; the watch reused that result.
+    expect(parseAndBook).toHaveBeenCalledTimes(1);
   });
 });
