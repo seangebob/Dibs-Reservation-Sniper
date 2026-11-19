@@ -22,7 +22,7 @@ from backend.api.dependencies import (
     get_prompt_router,
     get_watch_service,
 )
-from backend.api.routes import auth_router, watches_router
+from backend.api.routes import auth_router, venues_router, watches_router
 from backend.config import (
     DEFAULT_MAX_POLL_ATTEMPTS,
     DEFAULT_MOCK_BOOKING_RETENTION_SECONDS,
@@ -880,6 +880,7 @@ def create_app() -> FastAPI:
         app.add_exception_handler(_exc_cls, _auth_error_handler(_code))
 
     app.include_router(auth_router)
+    app.include_router(venues_router)
     app.include_router(watches_router)
 
     return app
