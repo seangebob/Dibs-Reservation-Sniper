@@ -35,6 +35,7 @@ def test_availability_slot_matches_frontend_type() -> None:
         "party_size",
         "max_party_size",
         "available",
+        "booking_url",
     }
 
 

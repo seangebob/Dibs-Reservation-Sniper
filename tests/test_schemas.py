@@ -1,6 +1,7 @@
 from pydantic import ValidationError
 import pytest
 
+from backend.models.reservation import AvailabilitySlot
 from backend.orchestrator.schemas import (
     IntentAction,
     ReservationExtraction,
@@ -110,3 +111,45 @@ def test_absent_date_is_not_treated_as_valid() -> None:
     )
 
     assert extraction.has_valid_date is False
+
+
+# --- a slot's link to the provider's booking page ---------------------------
+
+
+_SLOT = dict(
+    slot_id="slot_1",
+    provider="kw-tables",
+    venue_name="The Bauer Kitchen",
+    venue_type="RESTAURANT",
+    date="2026-12-01",
+    start_time="19:00",
+    end_time=None,
+    party_size=2,
+    max_party_size=4,
+)
+
+
+def test_a_slot_needs_no_booking_url() -> None:
+    assert AvailabilitySlot(**_SLOT).booking_url is None
+
+
+def test_a_slot_keeps_an_https_booking_url() -> None:
+    url = "https://book.example.com/r/42?party=2"
+
+    assert AvailabilitySlot(**_SLOT, booking_url=url).booking_url == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "javascript:alert(1)",
+        "data:text/html,hi",
+        "http://book.example.com/r/42",
+        "https://user:secret@book.example.com/r/42",
+        "https:///no-host",
+        "https://book.example.com/a b",
+    ],
+)
+def test_a_slot_rejects_anything_but_a_plain_https_booking_url(url: str) -> None:
+    with pytest.raises(ValueError):
+        AvailabilitySlot(**_SLOT, booking_url=url)

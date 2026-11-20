@@ -3,8 +3,16 @@
 from datetime import date, datetime
 from enum import Enum
 from typing import Annotated, Literal
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 from typing_extensions import Self
 
 from backend.orchestrator.schemas import (
@@ -22,6 +30,24 @@ from backend.orchestrator.schemas import (
 #: a slug instead of anything a provider response could smuggle through.
 ProviderName = Annotated[
     str, Field(min_length=1, max_length=40, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+]
+
+
+def _https_only(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        raise ValueError("booking_url must be a plain https:// address")
+    return value
+
+
+#: Where a diner finishes booking a slot on the provider's own site. It comes
+#: from a provider response and ends up as a link in the browser and in email,
+#: so only a plain https:// address is accepted: never javascript:, data:, or
+#: a URL carrying credentials.
+BookingUrl = Annotated[
+    str,
+    Field(min_length=12, max_length=2000, pattern=r"^\S+$"),
+    AfterValidator(_https_only),
 ]
 
 
@@ -82,6 +108,9 @@ class AvailabilitySlot(BaseModel):
     party_size: int = Field(ge=1, le=100)
     max_party_size: int = Field(ge=1, le=100)
     available: Literal[True] = True
+    #: The provider's page for finishing this booking, when it has one. The
+    #: mock has none. Optional, so watches stored before it existed still load.
+    booking_url: BookingUrl | None = None
 
     @model_validator(mode="after")
     def validate_capacity(self) -> Self:

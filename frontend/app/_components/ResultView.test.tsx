@@ -39,6 +39,29 @@ describe("ResultView", () => {
     expect(container.querySelector('a[href="/watches"]')).not.toBeNull();
   });
 
+  it("AVAILABILITY_FOUND: links each slot to the provider's booking page", () => {
+    render(
+      <ResultView
+        state={{
+          phase: "result",
+          result: makeResult({
+            status: "AVAILABILITY_FOUND",
+            slots: [
+              makeSlot({ provider: "kw-tables", booking_url: "https://book.example.com/r/1" }),
+              makeSlot({ slot_id: "slot-2", provider: "kw-tables" }),
+            ],
+            message: "Found 2 slots.",
+          }),
+        }}
+        onRetry={noop}
+      />,
+    );
+    const links = screen.getAllByRole("link", { name: /BOOK IT/i });
+    expect(links).toHaveLength(1);
+    expect(links[0].getAttribute("href")).toBe("https://book.example.com/r/1");
+    expect(links[0].getAttribute("rel")).toBe("noopener noreferrer");
+  });
+
   it("AVAILABILITY_FOUND: lists slots and never implies a booking (Req 1.4)", () => {
     const { container } = render(
       <ResultView

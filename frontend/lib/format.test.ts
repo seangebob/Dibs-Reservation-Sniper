@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  bookingLink,
   readIntentView,
   formatDate,
   formatClock,
@@ -133,5 +134,27 @@ describe("formatCheckCount", () => {
     expect(formatCheckCount(0)).toBe("not checked yet");
     expect(formatCheckCount(1)).toBe("checked once");
     expect(formatCheckCount(9)).toBe("checked 9 times");
+  });
+});
+
+describe("bookingLink", () => {
+  it("keeps a plain https address", () => {
+    expect(bookingLink("https://book.example.com/r/1?p=2")).toBe(
+      "https://book.example.com/r/1?p=2",
+    );
+  });
+
+  it("drops anything else", () => {
+    for (const url of [
+      null,
+      undefined,
+      "",
+      "javascript:alert(1)",
+      "http://book.example.com/r/1",
+      "https://user:pw@book.example.com/r/1",
+      "not a url",
+    ]) {
+      expect(bookingLink(url)).toBeNull();
+    }
   });
 });

@@ -136,3 +136,20 @@ export function formatCheckCount(attempts: number): string {
   if (attempts <= 0) return "not checked yet";
   return attempts === 1 ? "checked once" : `checked ${attempts} times`;
 }
+
+/**
+ * A slot's provider booking page, or null. The backend only accepts https://
+ * addresses; this checks again so a bad value can never become a
+ * javascript: link in the page.
+ */
+export function bookingLink(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" && !parsed.username && !parsed.password
+      ? parsed.href
+      : null;
+  } catch {
+    return null;
+  }
+}

@@ -497,6 +497,7 @@ a:hover {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
   background: var(--panel-inset);
   border: 1px solid var(--line-soft);
   border-radius: 5px;

@@ -8,6 +8,7 @@
 
 import type { Watch, WatchStatus } from "@/types/api";
 import {
+  bookingLink,
   formatCheckCount,
   formatClock,
   formatCountdown,
@@ -47,6 +48,7 @@ export function WatchCard({
   const nextCheck = isActive ? formatCountdown(watch.next_check_at, now) : null;
   const lastChecked = formatSince(watch.last_checked_at, now);
   const foundSlot = watch.status === "FOUND" ? watch.found_slots[0] : undefined;
+  const foundLink = bookingLink(foundSlot?.booking_url);
   const isMockAvailability =
     watch.status === "FOUND" &&
     watch.found_slots.length > 0 &&
@@ -103,6 +105,16 @@ export function WatchCard({
               <span className="watch-found">
                 · table at {formatClock(foundSlot.start_time)}
               </span>
+            )}
+            {foundLink && (
+              <a
+                className="result-link"
+                href={foundLink}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                BOOK IT ▸
+              </a>
             )}
             {nextCheck && (
               <span className="watch-next">· next {nextCheck}</span>

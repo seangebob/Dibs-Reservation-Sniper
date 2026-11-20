@@ -13,6 +13,7 @@ import type {
   PromptExecutionResult,
 } from "@/types/api";
 import {
+  bookingLink,
   formatDate,
   formatClock,
   formatTimeBand,
@@ -192,6 +193,7 @@ function AvailabilityFound({ result }: { result: PromptExecutionResult }) {
 }
 
 function SlotRow({ slot }: { slot: AvailabilitySlot }) {
+  const link = bookingLink(slot.booking_url);
   const band = slot.end_time
     ? `${formatClock(slot.start_time)}–${formatClock(slot.end_time)}`
     : formatClock(slot.start_time);
@@ -201,6 +203,11 @@ function SlotRow({ slot }: { slot: AvailabilitySlot }) {
         {formatDate(slot.date)} · {band}
       </span>
       <span>PARTY {slot.party_size}</span>
+      {link && (
+        <a className="result-link" href={link} target="_blank" rel="noopener noreferrer">
+          BOOK IT ▸
+        </a>
+      )}
     </div>
   );
 }

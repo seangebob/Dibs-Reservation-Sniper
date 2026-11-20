@@ -109,6 +109,12 @@ def compose(watch: Watch, event: WatchEvent, dashboard_base_url: str) -> Compose
             "This watch was set to notify rather than book, so the table is "
             "not held. Move quickly."
         )
+        if slot is not None and slot.booking_url is not None:
+            opening += (
+                f"\n\nBook it here: {slot.booking_url}\n\n"
+                "Dibs checks periodically, and openings go fast, so this table "
+                "may be gone by the time you get there."
+            )
         if watch.found_slots and all(slot.provider == "mock" for slot in watch.found_slots):
             subject = f"Mock availability: {venue} on {reservation_date}"
             opening = (

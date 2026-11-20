@@ -59,6 +59,8 @@ export interface AvailabilitySlot {
   party_size: number;
   max_party_size: number;
   available: true;
+  /** The provider's page for finishing this booking; always https://. */
+  booking_url?: string | null;
 }
 
 export interface BookingConfirmation {

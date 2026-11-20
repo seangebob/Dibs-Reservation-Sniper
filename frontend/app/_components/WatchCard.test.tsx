@@ -34,6 +34,42 @@ describe("WatchCard", () => {
     expect(screen.getByRole("button", { name: /CANCEL WATCH/i })).toBeTruthy();
   });
 
+  it("FOUND: links to the provider's booking page when there is one", () => {
+    render(
+      <WatchCard
+        watch={makeWatch({
+          status: "FOUND",
+          next_check_at: null,
+          found_slots: [
+            makeSlot({ provider: "kw-tables", booking_url: "https://book.example.com/r/9" }),
+          ],
+        })}
+        now={NOW}
+        cancelling={false}
+        onCancel={noop}
+      />,
+    );
+    const link = screen.getByRole("link", { name: /BOOK IT/i });
+    expect(link.getAttribute("href")).toBe("https://book.example.com/r/9");
+    expect(link.getAttribute("target")).toBe("_blank");
+  });
+
+  it("FOUND: never renders a link that isn't https", () => {
+    render(
+      <WatchCard
+        watch={makeWatch({
+          status: "FOUND",
+          next_check_at: null,
+          found_slots: [makeSlot({ booking_url: "javascript:alert(1)" })],
+        })}
+        now={NOW}
+        cancelling={false}
+        onCancel={noop}
+      />,
+    );
+    expect(screen.queryByRole("link", { name: /BOOK IT/i })).toBeNull();
+  });
+
   it("FOUND: surfaced distinctly and offers no cancel action (Req 4.4)", () => {
     const { container } = render(
       <WatchCard

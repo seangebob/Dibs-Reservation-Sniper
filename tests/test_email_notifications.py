@@ -121,6 +121,32 @@ def test_a_found_message_says_the_table_is_not_held() -> None:
     assert "not held" in email.body
 
 
+def test_a_found_message_links_to_the_providers_booking_page() -> None:
+    slot = _slot().model_copy(
+        update={"provider": "kw-tables", "booking_url": "https://book.example.com/r/42"}
+    )
+    email = compose(
+        _watch(status=WatchStatus.FOUND, slots=[slot]),
+        WatchEvent.AVAILABILITY_FOUND,
+        DASHBOARD,
+    )
+
+    assert "Book it here: https://book.example.com/r/42" in email.body
+    assert "may be gone" in email.body
+    assert "not held" in email.body
+
+
+def test_a_found_message_without_a_booking_page_has_no_link() -> None:
+    slot = _slot().model_copy(update={"provider": "kw-tables"})
+    email = compose(
+        _watch(status=WatchStatus.FOUND, slots=[slot]),
+        WatchEvent.AVAILABILITY_FOUND,
+        DASHBOARD,
+    )
+
+    assert "Book it here" not in email.body
+
+
 def test_a_booked_message_carries_the_confirmation_id() -> None:
     """Requirement 1.3: actionable without opening the app."""
 
