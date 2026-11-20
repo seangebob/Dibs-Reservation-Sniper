@@ -14,7 +14,8 @@ describe("WatchCard", () => {
         watch={makeWatch({
           status: "ACTIVE",
           attempts: 3,
-          max_attempts: 100,
+          max_attempts: 11116,
+          last_checked_at: "2026-09-02T11:56:00Z",
           next_check_at: "2026-09-02T12:05:00Z",
         })}
         now={NOW}
@@ -25,7 +26,9 @@ describe("WatchCard", () => {
     const text = container.textContent ?? "";
     expect(text).toContain("Cote");
     expect(text).toMatch(/PARTY 4/);
-    expect(text).toMatch(/3 \/ 100 checks/);
+    expect(text).toMatch(/checked 3 times, last 4 min ago/);
+    // The attempt ceiling means nothing to a diner and isn't shown.
+    expect(text).not.toMatch(/11116/);
     expect(text).toMatch(/next in 5 min/);
     expect(text).toMatch(/TRACKING/);
     expect(screen.getByRole("button", { name: /CANCEL WATCH/i })).toBeTruthy();

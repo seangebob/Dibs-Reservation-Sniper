@@ -7,7 +7,14 @@
  */
 
 import type { Watch, WatchStatus } from "@/types/api";
-import { formatClock, formatCountdown, formatDate, formatTimeBand } from "@/lib/format";
+import {
+  formatCheckCount,
+  formatClock,
+  formatCountdown,
+  formatDate,
+  formatSince,
+  formatTimeBand,
+} from "@/lib/format";
 
 type Tone = "amber" | "green" | "muted";
 
@@ -38,6 +45,7 @@ export function WatchCard({
     (watch.booking?.status === "MOCK_CONFIRMED" || watch.booking?.provider === "mock");
   const isActive = watch.status === "ACTIVE";
   const nextCheck = isActive ? formatCountdown(watch.next_check_at, now) : null;
+  const lastChecked = formatSince(watch.last_checked_at, now);
   const foundSlot = watch.status === "FOUND" ? watch.found_slots[0] : undefined;
   const isMockAvailability =
     watch.status === "FOUND" &&
@@ -85,8 +93,11 @@ export function WatchCard({
             <span className="watch-mode" data-auto={watch.auto_book}>
               {watch.auto_book ? "AUTO-BOOK" : "NOTIFY ME"}
             </span>
-            <span>
-              · {watch.attempts} / {watch.max_attempts} checks
+            {/* The attempt ceiling (often thousands) means nothing to a diner,
+                so the card says how often and how recently Dibs looked. */}
+            <span className="watch-checks">
+              · {formatCheckCount(watch.attempts)}
+              {lastChecked && watch.attempts > 0 && <>, last {lastChecked}</>}
             </span>
             {foundSlot && (
               <span className="watch-found">
