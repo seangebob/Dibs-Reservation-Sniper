@@ -7,10 +7,12 @@ vi.mock("@/lib/api", () => ({
   signup: vi.fn(),
   me: vi.fn(),
   forgotPassword: vi.fn(),
+  changePassword: vi.fn(),
 }));
 vi.mock("@/lib/auth", () => ({ getSessionToken: vi.fn(() => null) }));
 
-import { forgotPassword, login, signup } from "@/lib/api";
+import { changePassword, forgotPassword, login, me, signup } from "@/lib/api";
+import { getSessionToken } from "@/lib/auth";
 import { AuthProvider } from "./AuthProvider";
 import { AuthForm } from "./AuthForm";
 
@@ -150,5 +152,27 @@ describe("AuthForm", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /Back to sign in/i }));
     expect(screen.getByRole("button", { name: /SIGN IN/i })).toBeTruthy();
+  });
+
+  it("changes the password when signed in, and says other devices are signed out", async () => {
+    vi.mocked(getSessionToken).mockReturnValue("tok");
+    vi.mocked(me).mockResolvedValue({ ok: true, data: USER });
+    vi.mocked(changePassword)
+      .mockResolvedValueOnce({ ok: false, status: 422, message: "Your current password is incorrect." })
+      .mockResolvedValueOnce(OK);
+    renderForm();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Change password/i }));
+    fireEvent.change(screen.getByLabelText(/CURRENT PASSWORD/), { target: { value: "wrong" } });
+    fireEvent.change(screen.getByLabelText(/^NEW PASSWORD/), { target: { value: "new-password" } });
+    fireEvent.click(screen.getByRole("button", { name: /CHANGE PASSWORD/ }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/current password is incorrect/);
+
+    fireEvent.change(screen.getByLabelText(/CURRENT PASSWORD/), { target: { value: "old-password" } });
+    fireEvent.click(screen.getByRole("button", { name: /CHANGE PASSWORD/ }));
+
+    expect(await screen.findByText(/Other devices are signed out/)).toBeTruthy();
+    expect(changePassword).toHaveBeenLastCalledWith("old-password", "new-password");
+    vi.mocked(getSessionToken).mockReturnValue(null);
   });
 });

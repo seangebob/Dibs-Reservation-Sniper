@@ -279,6 +279,24 @@ export async function resetPassword(
   return result;
 }
 
+/**
+ * Change the signed-in account's password. The server signs out every
+ * session, so the fresh one it returns replaces this browser's token.
+ */
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<ApiResult<AuthResponse>> {
+  const result = await apiFetch<AuthResponse>("/api/auth/password/change", {
+    method: "POST",
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+  if (result.ok) {
+    setSessionToken(result.data.token);
+  }
+  return result;
+}
+
 /** GET the signed-in account, used to hydrate on load. 401 → logged out. */
 export function me(): Promise<ApiResult<User>> {
   return apiFetch<User>("/api/auth/me", { method: "GET" });

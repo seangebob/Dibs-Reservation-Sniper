@@ -222,3 +222,28 @@ async def reset_password(body: ResetPasswordRequest, service: AuthServiceDep) ->
 
     user, token = await service.reset_password(body.token, body.password)
     return AuthResponse(token=token, user=user)
+
+
+# -- password change -----------------------------------------------------------
+
+
+class ChangePasswordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    current_password: str = Field(min_length=1, max_length=1024)
+    new_password: str = Field(min_length=1, max_length=1024)
+
+
+@router.post("/password/change", response_model=AuthResponse)
+async def change_password(
+    body: ChangePasswordRequest,
+    service: AuthServiceDep,
+    authorization: Annotated[str | None, Header()] = None,
+) -> AuthResponse:
+    """Change the signed-in account's password. Signs out every session and
+    returns a fresh one for this browser."""
+
+    user, token = await service.change_password(
+        bearer_token(authorization), body.current_password, body.new_password
+    )
+    return AuthResponse(token=token, user=user)

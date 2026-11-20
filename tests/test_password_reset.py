@@ -309,3 +309,93 @@ def test_reset_rejects_a_short_password_with_the_policy_message(api: Any) -> Non
 
     assert response.status_code == 422
     assert "at least 8" in response.json()["detail"]
+
+
+# --- changing the password while signed in -----------------------------------
+
+from backend.services.auth_service import (  # noqa: E402
+    AuthenticationRequiredError,
+    TooManyPasswordAttemptsError,
+    WrongCurrentPasswordError,
+)
+
+
+def test_change_needs_the_current_password_and_signs_out_everywhere_else() -> None:
+    service, *_ = _service()
+    _, here = _run(service.signup("diner@example.com", "old-password"))
+    _, elsewhere = _run(service.login("diner@example.com", "old-password"))
+
+    user, fresh = _run(service.change_password(here, "old-password", "new-password"))
+
+    assert user.email == "diner@example.com"
+    assert _run(service.authenticate(here)) is None
+    assert _run(service.authenticate(elsewhere)) is None
+    assert _run(service.authenticate(fresh)) == user
+    assert _run(service.login("diner@example.com", "new-password"))[0] == user
+
+
+def test_a_wrong_current_password_changes_nothing() -> None:
+    service, *_ = _service()
+    _, session = _run(service.signup("diner@example.com", "old-password"))
+
+    with pytest.raises(WrongCurrentPasswordError):
+        _run(service.change_password(session, "not-it", "new-password"))
+
+    assert _run(service.authenticate(session)) is not None
+    assert _run(service.login("diner@example.com", "old-password"))
+
+
+def test_change_rejects_a_too_short_new_password() -> None:
+    service, *_ = _service()
+    _, session = _run(service.signup("diner@example.com", "old-password"))
+
+    with pytest.raises(PasswordPolicyError):
+        _run(service.change_password(session, "old-password", "short"))
+
+
+def test_change_needs_a_session() -> None:
+    service, *_ = _service()
+
+    with pytest.raises(AuthenticationRequiredError):
+        _run(service.change_password(None, "old-password", "new-password"))
+
+
+def test_five_wrong_guesses_lock_changes_for_a_while() -> None:
+    service, *_ = _service()
+    _, session = _run(service.signup("diner@example.com", "old-password"))
+    for _ in range(5):
+        with pytest.raises(WrongCurrentPasswordError):
+            _run(service.change_password(session, "guess", "new-password"))
+
+    with pytest.raises(TooManyPasswordAttemptsError):
+        _run(service.change_password(session, "old-password", "new-password"))
+
+
+def test_the_change_api_returns_a_fresh_session_and_a_wrong_password_is_not_a_401(api: Any) -> None:
+    client, service, _ = api
+    _, session = _run(service.signup("diner@example.com", "old-password"))
+    auth = {"Authorization": f"Bearer {session}"}
+
+    wrong = client.post(
+        "/api/auth/password/change",
+        headers=auth,
+        json={"current_password": "nope", "new_password": "new-password"},
+    )
+    assert wrong.status_code == 422
+    assert wrong.json()["detail"] == "Your current password is incorrect."
+
+    ok = client.post(
+        "/api/auth/password/change",
+        headers=auth,
+        json={"current_password": "old-password", "new_password": "new-password"},
+    )
+    assert ok.status_code == 200
+    fresh = ok.json()["token"]
+    assert client.get("/api/auth/me", headers=auth).status_code == 401
+    assert client.get("/api/auth/me", headers={"Authorization": f"Bearer {fresh}"}).status_code == 200
+
+    anonymous = client.post(
+        "/api/auth/password/change",
+        json={"current_password": "x", "new_password": "new-password"},
+    )
+    assert anonymous.status_code == 401

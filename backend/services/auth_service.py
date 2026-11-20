@@ -45,6 +45,8 @@ __all__ = [
     "InvalidAccountLinkError",
     "PasswordPolicyError",
     "TooManyAccountEmailsError",
+    "TooManyPasswordAttemptsError",
+    "WrongCurrentPasswordError",
     "hash_token",
     "normalize_email",
 ]
@@ -84,6 +86,21 @@ class InvalidEmailError(AuthValidationError):
 
 class PasswordPolicyError(AuthValidationError):
     """A password failing the length policy at signup (-> 422)."""
+
+
+class WrongCurrentPasswordError(AuthValidationError):
+    """The current password given to change it is wrong (-> 422, not 401: the
+    session is fine, and a 401 would sign the browser out)."""
+
+    def __init__(self) -> None:
+        super().__init__("Your current password is incorrect.")
+
+
+class TooManyPasswordAttemptsError(RateLimitedError):
+    """Too many wrong current passwords for one account (-> 429)."""
+
+    def __init__(self) -> None:
+        super().__init__("Too many wrong passwords. Try again in a few minutes.")
 
 
 class InvalidAccountLinkError(AuthError):
@@ -181,6 +198,14 @@ class AuthService:
             on_limit=TooManyAccountEmailsError,
             clock=throttle_clock,
         )
+        # Wrong current passwords per account: a stolen session must not be
+        # enough to guess the password and take the account over.
+        self._change_throttle = SlidingWindowThrottle(
+            max_events=5,
+            window_seconds=300,
+            on_limit=TooManyPasswordAttemptsError,
+            clock=throttle_clock,
+        )
         # Bound Argon2's CPU/memory use while keeping the API loop responsive.
         self._password_slots = asyncio.Semaphore(4)
 
@@ -249,6 +274,38 @@ class AuthService:
         if session is None or session.expires_at <= self._clock():
             return None
         return await self._accounts.get_by_id(session.user_id)
+
+    # -- password change -----------------------------------------------------
+
+    async def change_password(
+        self, raw_token: str | None, current_password: str, new_password: str
+    ) -> tuple[User, str]:
+        """Change a signed-in account's password.
+
+        Needs the current password. Every session -- including this one -- is
+        signed out and a fresh one is returned for this browser, so anyone
+        else signed in to the account is locked out.
+        """
+
+        user = await self.authenticate(raw_token)
+        if user is None:
+            raise AuthenticationRequiredError()
+        key = f"change:{user.id}"
+        self._change_throttle.check(key)
+        self._check_password(new_password)
+        stored = await self._accounts.get_by_email(user.email)
+        if stored is None:
+            raise AuthenticationRequiredError()
+        if not await self._password_work(
+            self._hasher.verify, stored.password_hash, current_password
+        ):
+            self._change_throttle.record(key)
+            raise WrongCurrentPasswordError()
+        password_hash = await self._password_work(self._hasher.hash, new_password)
+        await self._accounts.update_password(user.id, password_hash)
+        await self._sessions.revoke_all_for_user(user.id)
+        self._change_throttle.reset(key)
+        return user, await self._issue_session(user.id)
 
     # -- password reset ------------------------------------------------------
 

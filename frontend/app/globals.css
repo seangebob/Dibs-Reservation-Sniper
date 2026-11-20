@@ -1217,3 +1217,11 @@ a:hover {
 .dash-alerts:not(:empty) + .watch-list {
   margin-top: 0;
 }
+
+/* ---- change password (signed-in account panel) ------------------------- */
+
+.change-password {
+  margin-top: 26px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line-soft);
+}

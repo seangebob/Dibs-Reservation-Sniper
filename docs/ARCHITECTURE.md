@@ -224,6 +224,7 @@ POST /api/auth/logout      # Revoke the presented session (idempotent)
 GET  /api/auth/me          # id · email · created_at
 POST /api/auth/password/forgot  # Email a reset link if the account exists (always 202)
 POST /api/auth/password/reset   # Use the link: new password, other sessions signed out
+POST /api/auth/password/change  # Signed in: current + new password; fresh session returned
 ```
 
 **Password reset.** `forgot` answers `202` before looking the address up and sends the
@@ -232,6 +233,12 @@ Each address may be sent 3 reset emails an hour. The link works once, expires in
 and only its sha256 is stored (`account_links`). Using it checks the new password first
 (a too-short one doesn't spend the link), signs out every session, cancels older reset
 links, and returns a fresh session. With no SMTP relay the link is written to the API log.
+
+**Password change.** Needs a session and the current password. A wrong current password
+is a `422`, not a `401`, because the session is still good and the browser drops its
+token on a `401`. Five wrong guesses per account in 5 minutes return `429`, so a stolen
+session isn't enough to guess the password. On success every session is revoked and a
+fresh one is returned for the browser that made the change.
 
 Passwords are argon2id. A session is an **opaque bearer token whose sha256 is all the
 server stores**, sent as `Authorization: Bearer <token>`.

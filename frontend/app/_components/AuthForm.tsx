@@ -9,7 +9,7 @@
  */
 
 import { useState } from "react";
-import { forgotPassword } from "@/lib/api";
+import { changePassword, forgotPassword } from "@/lib/api";
 import { useAuth } from "./AuthProvider";
 
 type Mode = "login" | "signup";
@@ -56,6 +56,7 @@ export function AuthForm() {
         <a className="empty-cta" href="/watches">
           SEE YOUR WATCHES ▸
         </a>
+        <ChangePassword />
       </div>
     );
   }
@@ -241,5 +242,93 @@ function ForgotPassword({
         </button>
       </p>
     </div>
+  );
+}
+
+/**
+ * Change the password while signed in. Needs the current one; on success every
+ * other device is signed out and this browser keeps going on a fresh session.
+ */
+function ChangePassword() {
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  if (!open) {
+    return (
+      <p className="auth-alt">
+        <button type="button" className="result-link" onClick={() => setOpen(true)}>
+          Change password
+        </button>
+        {done && (
+          <span className="auth-note" role="status">
+            {" "}
+            Password changed. Other devices are signed out.
+          </span>
+        )}
+      </p>
+    );
+  }
+
+  async function onSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    if (busy || current.length === 0 || next.length === 0) return;
+    setBusy(true);
+    setError(null);
+    const result = await changePassword(current, next);
+    setBusy(false);
+    if (result.ok) {
+      setCurrent("");
+      setNext("");
+      setDone(true);
+      setOpen(false);
+      return;
+    }
+    setError(result.message);
+  }
+
+  return (
+    <form className="auth-form change-password" onSubmit={onSubmit} data-busy={busy}>
+      <label className="auth-label" htmlFor="current-password">
+        CURRENT PASSWORD
+      </label>
+      <input
+        id="current-password"
+        type="password"
+        autoComplete="current-password"
+        className="auth-input"
+        value={current}
+        disabled={busy}
+        onChange={(e) => setCurrent(e.target.value)}
+      />
+      <label className="auth-label" htmlFor="changed-password">
+        NEW PASSWORD
+      </label>
+      <input
+        id="changed-password"
+        type="password"
+        autoComplete="new-password"
+        className="auth-input"
+        value={next}
+        disabled={busy}
+        onChange={(e) => setNext(e.target.value)}
+      />
+      {error && (
+        <div className="auth-error" role="alert">
+          {error}
+        </div>
+      )}
+      <button
+        type="submit"
+        className="acquire"
+        disabled={busy || current.length === 0 || next.length === 0}
+      >
+        {busy ? "SAVING…" : "CHANGE PASSWORD ▸"}
+      </button>
+      <p className="auth-note">This signs out every other device.</p>
+    </form>
   );
 }
