@@ -63,7 +63,7 @@ There are two ways to get a provider that agrees. Pursue both; the first yes win
 
 **Complete when** a guest can create a watch, sign up, verify their email, see the same watch on their account, and receive a test alert. Verify password reset and password changes on the deployed site. [Account routes](../backend/api/routes/auth.py)
 
-**Status (Nov 20, 2026): guest email alerts done.** A guest can give an email address from the watch-created card or the dashboard, confirm it with a single-use link that expires in 24 hours, and then get alerts for that browser's watches; tested in Chrome at phone width against PostgreSQL. SMS alerts are out of scope for now (per-message billing). Still to do: cookie sessions with CSRF protection, email verification for accounts, password reset, and password changes.
+**Status (Nov 20, 2026): built; final check on the live site is part of step 4.** Guests get alerts by confirming an email address (no account needed). Accounts confirm their email by link, and alerts go only to confirmed addresses. "Forgot password?" emails a single-use link that expires in 1 hour; password changes need the current password; both sign out every other session. Browser sessions are an HttpOnly `SameSite=Lax` cookie, and cookie-authenticated writes must carry a CSRF header. Each piece was tested in Chrome against PostgreSQL. SMS alerts are out of scope for now (per-message billing). On the deployed site: verify sign-up, login, logout, reset and change, and host the frontend and API on the same site so the cookie works.
 
 ## 4. Launch an invite-only alert pilot
 
