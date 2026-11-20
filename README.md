@@ -161,7 +161,6 @@ docker compose -f infra/docker-compose.yml up -d
 source .venv/bin/activate
 export OPENAI_API_KEY="sk-..."
 export POSTGRES_URL="postgresql://dibs:dibs@localhost:5432/dibs"
-export FRONTEND_ORIGINS="http://localhost:3000"
 uvicorn backend.main:app --reload
 
 # Terminal 3 — Celery worker (polling happens here instead of in-process)
@@ -180,7 +179,6 @@ npm run dev                                    # http://localhost:3000
 .\.venv\Scripts\Activate.ps1
 $env:OPENAI_API_KEY = "sk-..."
 $env:POSTGRES_URL = "postgresql://dibs:dibs@localhost:5432/dibs"
-$env:FRONTEND_ORIGINS = "http://localhost:3000"
 uvicorn backend.main:app --reload
 
 # Terminal 3 on Windows — Celery's default pool doesn't run on Windows; use solo
@@ -193,8 +191,11 @@ The worker needs `POSTGRES_URL` too: it does the polling and booking, so without
 what it finds never reaches the `/watches` dashboard, and no email goes out — the
 dashboard shows the watch stuck at whatever the API last recorded.
 
-Migrations apply themselves at startup. `FRONTEND_ORIGINS` is required or the browser
-is blocked by CORS — unset, the API sends no CORS headers at all.
+Migrations apply themselves at startup. `npm run dev` forwards the website's `/api`
+requests to the API at `localhost:8000`, so the browser never calls the API
+cross-origin and `FRONTEND_ORIGINS` isn't needed. It is needed when the browser calls
+the API directly — Docker (mode 4), a deployment, or `NEXT_PUBLIC_API_BASE_URL` set —
+because unset, the API sends no CORS headers at all.
 
 To get email instead of logged notifications, set `SMTP_HOST` and `SMTP_FROM` (plus
 `SMTP_USERNAME`/`SMTP_PASSWORD` if your relay needs them) in **both** terminal 2 and

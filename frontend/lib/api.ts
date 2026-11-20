@@ -27,11 +27,14 @@ const DEFAULT_BASE_URL = "http://localhost:8000";
 
 /**
  * The backend base URL. Reads `NEXT_PUBLIC_API_BASE_URL` (inlined at build
- * time) and falls back to localhost for zero-config local development.
+ * time). Without it, `next dev` forwards same-origin `/api/*` to the backend
+ * (see next.config.mjs), so the base is empty and local development needs no
+ * CORS setup; any other build falls back to localhost.
  */
 export function apiBaseUrl(): string {
   const configured = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
-  return configured && configured.length > 0 ? configured : DEFAULT_BASE_URL;
+  if (configured && configured.length > 0) return configured;
+  return process.env.NODE_ENV === "development" ? "" : DEFAULT_BASE_URL;
 }
 
 async function errorMessage(response: Response): Promise<string> {

@@ -285,7 +285,7 @@ full reference. The frontend ships `frontend/.env.local.example`.
 | `LOCAL_LLM_MODEL` | `qwen3.5:9b` | Local model name; `:` tags and `/` namespaces are allowed. |
 | `RESERVATION_TIMEZONE` | `America/Toronto` | Any IANA zone. |
 | `REDIS_URL` | `redis://localhost:6379/0` | `redis://`, `rediss://`, or `unix://`. Safe to leave unset. |
-| `FRONTEND_ORIGINS` | unset | Comma-separated CORS origins. Unset ⇒ zero CORS headers sent. |
+| `FRONTEND_ORIGINS` | unset | Comma-separated CORS origins. Unset ⇒ zero CORS headers sent. Not needed for `npm run dev`, which forwards `/api` to `localhost:8000`. |
 
 ### Watch engine
 

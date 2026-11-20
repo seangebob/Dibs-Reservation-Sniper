@@ -1,8 +1,9 @@
 # Dibs Web
 
 The Next.js frontend for Dibs. It is pure client-side code calling the FastAPI
-backend directly over CORS — no Next API routes, no server actions — so the
-backend runs fine without it, and it deploys anywhere that serves Next.js.
+backend — no Next API routes, no server actions — so the backend runs fine
+without it, and it deploys anywhere that serves Next.js. Deployed builds call the
+API directly over CORS; the dev server forwards to it instead (below).
 
 ## Local development
 
@@ -10,18 +11,22 @@ Requires Node 20+ (CI and the Docker image use Node 22). From `frontend/`:
 
 ```bash
 npm install
-cp .env.local.example .env.local   # points at http://localhost:8000 by default
 npm run dev                        # http://localhost:3000
 ```
 
-Run the backend separately so the browser has something to call, and allow the
-frontend origin through CORS — without `FRONTEND_ORIGINS` the browser blocks
-every request:
+Run the backend separately so the browser has something to call:
 
 ```bash
 # from the repo root, in another terminal (venv activated)
-FRONTEND_ORIGINS=http://localhost:3000 uvicorn backend.main:app --reload
+uvicorn backend.main:app --reload
 ```
+
+The dev server forwards `/api/*` to the backend at `http://localhost:8000`, so the
+browser only ever talks to its own origin: no CORS setup, and a phone on the same
+Wi-Fi can open `http://<this computer's IP>:3000` and reach the API through it.
+To call a backend somewhere else instead, set `NEXT_PUBLIC_API_BASE_URL` (see
+`.env.local.example`); the browser then calls it directly, and that backend needs
+`FRONTEND_ORIGINS` set to this site's origin.
 
 What works depends on the backend's setup (see the root README):
 

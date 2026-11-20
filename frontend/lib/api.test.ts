@@ -26,9 +26,26 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("apiBaseUrl", () => {
-  it("falls back to localhost when unset", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("falls back to localhost when unset outside the dev server", () => {
     // NEXT_PUBLIC_API_BASE_URL is not set in the test environment.
     expect(apiBaseUrl()).toBe("http://localhost:8000");
+  });
+
+  it("is same-origin under the dev server, which forwards /api to the backend", () => {
+    vi.stubEnv("NODE_ENV", "development");
+
+    expect(apiBaseUrl()).toBe("");
+  });
+
+  it("uses NEXT_PUBLIC_API_BASE_URL whenever it is set", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", " https://api.example.com ");
+
+    expect(apiBaseUrl()).toBe("https://api.example.com");
   });
 });
 
