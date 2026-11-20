@@ -337,6 +337,8 @@ see [Deploying a change](docs/ARCHITECTURE.md#deploying-a-change).
 
 ## Docs
 
+- **[Project roadmap](docs/ROADMAP.md)** — implementation milestones from Ollama through
+  a real availability pilot and auto-booking
 - **[Architecture and reference](docs/ARCHITECTURE.md)** — layout, the watch engine, API,
   configuration, health, deploying
 - **[docs/specs/](docs/specs/)** — requirements, design, and task packages per milestone
