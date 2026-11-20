@@ -24,7 +24,8 @@ DEFAULT_MODEL = "gpt-4o-mini"
 #: the OpenAI-compatible Chat Completions API (Ollama, LM Studio, llama.cpp).
 LLM_PROVIDER_OPENAI = "openai"
 LLM_PROVIDER_LOCAL = "local"
-DEFAULT_LLM_PROVIDER = LLM_PROVIDER_OPENAI
+#: A free local model by default; OpenAI only when asked for by name.
+DEFAULT_LLM_PROVIDER = LLM_PROVIDER_LOCAL
 #: Accepted spellings. "ollama" is the name people reach for first.
 _LLM_PROVIDER_ALIASES = {
     "openai": LLM_PROVIDER_OPENAI,
@@ -745,7 +746,11 @@ def _dashboard_base_url() -> str:
 
 
 def _llm_provider() -> str:
-    """`LLM_PROVIDER`, normalized. Unset means OpenAI, as before it existed."""
+    """`LLM_PROVIDER`, normalized. Unset means the local model (Ollama).
+
+    OpenAI is never picked just because an `OPENAI_API_KEY` happens to be in
+    the environment; it takes `LLM_PROVIDER=openai`.
+    """
 
     raw = os.environ.get("LLM_PROVIDER", "")
     value = raw.strip().lower()

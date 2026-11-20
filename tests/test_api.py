@@ -443,6 +443,7 @@ def test_language_model_rate_limit_maps_to_503() -> None:
 def test_missing_api_key_is_reported_as_503_with_a_clear_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     fresh = create_app()
 
@@ -460,6 +461,7 @@ def test_missing_api_key_is_reported_as_503_with_a_clear_message(
 def test_invalid_model_name_is_detected_at_startup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("OPENAI_MODEL", "not a model")
     fresh = create_app()
@@ -977,13 +979,13 @@ def test_redis_available_preserves_repository_queue_and_client_lifecycle(
     ("environment", "expected_error"),
     [
         pytest.param(
-            {"OPENAI_API_KEY": None},
+            {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": None},
             "OPENAI_API_KEY is not configured. Set it in the environment "
             "before starting the service.",
             id="missing-openai-api-key",
         ),
         pytest.param(
-            {"OPENAI_MODEL": "not a model"},
+            {"LLM_PROVIDER": "openai", "OPENAI_MODEL": "not a model"},
             "Invalid OPENAI_MODEL name: 'not a model'. Expected an identifier "
             "such as 'gpt-4o-mini'.",
             id="invalid-openai-model",

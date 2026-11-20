@@ -34,9 +34,10 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def test_defaults_apply_when_only_the_key_is_set(
+def test_openai_defaults_apply_when_only_the_key_is_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "  sk-test  ")
 
     settings = Settings.from_environment()
@@ -51,6 +52,7 @@ def test_missing_api_key_names_the_variable(
     monkeypatch: pytest.MonkeyPatch,
     value: str,
 ) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", value)
 
     with pytest.raises(ConfigurationError) as error:
@@ -60,7 +62,10 @@ def test_missing_api_key_names_the_variable(
     assert "environment" in str(error.value)
 
 
-def test_absent_api_key_is_reported_the_same_way() -> None:
+def test_absent_api_key_is_reported_the_same_way(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
     with pytest.raises(ConfigurationError, match="OPENAI_API_KEY"):
         Settings.from_environment()
 
@@ -73,6 +78,7 @@ def test_invalid_model_names_are_rejected(
     monkeypatch: pytest.MonkeyPatch,
     model: str,
 ) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("OPENAI_MODEL", model)
 
@@ -88,6 +94,7 @@ def test_plausible_model_names_are_accepted(
     monkeypatch: pytest.MonkeyPatch,
     model: str,
 ) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("OPENAI_MODEL", model)
 
@@ -97,12 +104,21 @@ def test_plausible_model_names_are_accepted(
 # --- prompt-parsing provider: OpenAI or a local model -----------------------
 
 
-def test_openai_stays_the_default_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_local_model_is_the_default_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A key that happens to be in the environment does not switch to OpenAI.
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
     settings = Settings.from_environment()
 
-    assert settings.llm_provider == "openai"
+    assert settings.llm_provider == "local"
+    assert settings.local_llm_model == "qwen3.5:9b"
+
+
+def test_openai_is_used_only_when_named(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    assert Settings.from_environment().llm_provider == "openai"
 
 
 @pytest.mark.parametrize("value", ["local", "LOCAL", " local ", "ollama", "Ollama"])
@@ -132,11 +148,10 @@ def test_unknown_provider_names_the_variable_and_the_choices(
     assert "'openai' or 'local'" in str(error.value)
 
 
-def test_empty_provider_means_openai(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_empty_provider_means_the_local_model(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_PROVIDER", "  ")
 
-    with pytest.raises(ConfigurationError, match="OPENAI_API_KEY"):
-        Settings.from_environment()
+    assert Settings.from_environment().llm_provider == "local"
 
 
 def test_local_provider_ignores_openai_model_settings(
@@ -199,6 +214,7 @@ def test_invalid_local_base_url_names_the_variable(
 def test_local_settings_are_not_validated_for_openai(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("LOCAL_LLM_BASE_URL", "not a url")
 

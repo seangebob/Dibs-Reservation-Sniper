@@ -30,9 +30,9 @@ To call a backend somewhere else instead, set `NEXT_PUBLIC_API_BASE_URL` (see
 
 What works depends on the backend's setup (see the root README):
 
-- **The prompt box** needs a model on the backend — `OPENAI_API_KEY`, or a local
-  model with `LLM_PROVIDER=local`; without either, every prompt shows
-  "OPENAI_API_KEY is not configured".
+- **The prompt box** needs the backend's model — Ollama running with `qwen3.5:9b`
+  downloaded (or OpenAI, if the backend sets `LLM_PROVIDER=openai`); without it,
+  every prompt says the assistant is temporarily unavailable.
 - **The "Fill in a form" tab** needs no model at all: it posts the watch straight
   to `POST /api/watches`.
 - **The watch dashboard and sign-in** need `POSTGRES_URL`; without it the

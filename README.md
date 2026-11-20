@@ -48,7 +48,7 @@ polling chains, and books idempotently so a redelivered job can't reserve twice.
 
 | Layer | State |
 | --- | --- |
-| Intent extraction and validation | **Real** — OpenAI (needs a key with credit) or a free local model via Ollama |
+| Intent extraction and validation | **Real** — a free local model via Ollama by default; OpenAI optional |
 | Watch engine: scheduling, fencing, recovery, retention | **Real** |
 | Accounts and sessions | **Real** — argon2id + opaque bearer tokens |
 | Email notification | **Real** — any SMTP relay |
@@ -93,7 +93,6 @@ installs the same set minus mypy.
 # macOS / Linux
 source .venv/bin/activate
 pip install -e ".[worker,test,dev]"
-export OPENAI_API_KEY="sk-..."
 uvicorn backend.main:app --reload
 ```
 
@@ -101,18 +100,17 @@ uvicorn backend.main:app --reload
 # Windows PowerShell
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[worker,test,dev]"
-$env:OPENAI_API_KEY = "sk-..."
 uvicorn backend.main:app --reload
 ```
 
 Open <http://localhost:8000/docs> for the interactive API, or
 <http://localhost:8000/health> to see which store and queue actually got bound.
 
-No OpenAI key? Prompts can be read by a free model on your own machine instead — see
-[Reading prompts with a local model](#reading-prompts-with-a-local-model-no-openai-key).
+Prompts are read by a free model on your own machine through Ollama — install it and
+download the model first; see [Reading prompts](#reading-prompts-ollama-by-default-openai-optional).
 
-Without `OPENAI_API_KEY` (or a local model) the server still starts — only the two
-prompt endpoints return `503`. Everything else, including creating watches through
+Without Ollama running the server still starts — only the two prompt endpoints
+return `503`. Everything else, including creating watches through
 `POST /api/watches`, works without it:
 
 ```bash
@@ -159,7 +157,6 @@ docker compose -f infra/docker-compose.yml up -d
 
 # Terminal 2 — API
 source .venv/bin/activate
-export OPENAI_API_KEY="sk-..."
 export POSTGRES_URL="postgresql://dibs:dibs@localhost:5432/dibs"
 uvicorn backend.main:app --reload
 
@@ -177,7 +174,6 @@ npm run dev                                    # http://localhost:3000
 ```powershell
 # Terminal 2 on Windows
 .\.venv\Scripts\Activate.ps1
-$env:OPENAI_API_KEY = "sk-..."
 $env:POSTGRES_URL = "postgresql://dibs:dibs@localhost:5432/dibs"
 uvicorn backend.main:app --reload
 
@@ -212,7 +208,6 @@ curl http://localhost:8000/health
 ### 4. Everything in Docker
 
 ```bash
-export OPENAI_API_KEY="sk-..."
 docker compose -f infra/docker-compose.yml --profile app up --build
 # web → http://localhost:3000    api → http://localhost:8000
 ```
@@ -221,7 +216,7 @@ The `app` profile adds `api`, `worker`, and `web` on top of the datastores. A ba
 `up` with no profile starts **only** Redis and PostgreSQL, which is what you want for
 mode 3.
 
-Compose takes `OPENAI_API_KEY`, the `SMTP_*` settings, and the rest from your shell.
+Compose takes the `SMTP_*` settings and the rest from your shell.
 It does **not** read the repo-root `.env` on its own (it only looks in `infra/`); to
 use that file, pass it explicitly:
 
@@ -229,35 +224,31 @@ use that file, pass it explicitly:
 docker compose --env-file .env -f infra/docker-compose.yml --profile app up --build
 ```
 
-### Reading prompts with a local model (no OpenAI key)
+### Reading prompts: Ollama by default, OpenAI optional
 
-Prompts can be read by a model running on your own machine instead of OpenAI: free,
-and nothing leaves your computer. The cost is a few seconds per prompt and a one-time
-download of several GB. Any server with an OpenAI-compatible Chat Completions API
-works — Ollama, LM Studio, llama.cpp, vLLM. With [Ollama](https://ollama.com/download):
+Prompts are read by a model running on your own machine: free, and nothing leaves
+your computer. It takes about 2–3 seconds per prompt and a one-time download of about
+8 GB. Any server with an OpenAI-compatible Chat Completions API works — Ollama, LM
+Studio, llama.cpp, vLLM. With [Ollama](https://ollama.com/download):
 
 ```bash
 # once, after installing Ollama
 ollama pull qwen3.5:9b
-
-# in the API terminal, instead of exporting OPENAI_API_KEY
-export LLM_PROVIDER=local
-uvicorn backend.main:app --reload
 ```
 
-The API logs `Prompts are read by local model 'qwen3.5:9b' at http://localhost:11434/v1`
-at startup. For another model or server, set `LOCAL_LLM_MODEL` and `LOCAL_LLM_BASE_URL`
-(LM Studio serves `http://localhost:1234/v1`). Only the API reads prompts; the worker
-needs none of this.
+Keep the Ollama app running; the API needs no setting for it. It logs
+`Prompts are read by local model 'qwen3.5:9b' at http://localhost:11434/v1` at startup.
+For another model or server, set `LOCAL_LLM_MODEL` and `LOCAL_LLM_BASE_URL` (LM Studio
+serves `http://localhost:1234/v1`). Only the API reads prompts; the worker needs none
+of this.
 
 In Docker (mode 4), Ollama keeps running on your machine and the `api` container
-reaches it at `host.docker.internal`, which is the compose default:
+reaches it at `host.docker.internal`, which is the compose default. On Linux, start
+Ollama with `OLLAMA_HOST=0.0.0.0` so the container can connect.
 
-```bash
-LLM_PROVIDER=local docker compose -f infra/docker-compose.yml --profile app up --build
-```
-
-On Linux, start Ollama with `OLLAMA_HOST=0.0.0.0` so the container can connect.
+To use OpenAI instead, set `LLM_PROVIDER=openai` and `OPENAI_API_KEY` (a key with
+credit) for the API; `OPENAI_MODEL` defaults to `gpt-4o-mini`. A key on its own does
+nothing: Dibs uses OpenAI only when `LLM_PROVIDER` names it.
 
 If the server isn't running or the model hasn't finished downloading, the prompt box
 says the assistant is temporarily unavailable and the API log says why — for a

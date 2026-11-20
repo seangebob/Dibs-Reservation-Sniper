@@ -62,15 +62,14 @@ services:
       FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://localhost:3000}
       # Passed through from the host shell, or from the repo-root .env when you
       # add `--env-file .env` -- Compose only looks for a .env next to this file
-      # (infra/), so the root one is ignored without the flag. Required for
-      # prompt parsing; if unset, parse-and-book returns 503 but the service
-      # still boots.
+      # (infra/), so the root one is ignored without the flag.
+      # Prompts are read by a model served on the host (Ollama by default); no
+      # key needed. host.docker.internal is the host machine from inside this
+      # container (see extra_hosts below). LLM_PROVIDER=openai plus
+      # OPENAI_API_KEY switches to OpenAI instead.
+      LLM_PROVIDER: ${LLM_PROVIDER:-local}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
-      # LLM_PROVIDER=local reads prompts with a model served on the host (e.g.
-      # Ollama) instead of OpenAI; no key needed. host.docker.internal is the
-      # host machine from inside this container (see extra_hosts below).
-      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
       LOCAL_LLM_BASE_URL: ${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
       LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-qwen3.5:9b}
       RESERVATION_TIMEZONE: ${RESERVATION_TIMEZONE:-America/Toronto}

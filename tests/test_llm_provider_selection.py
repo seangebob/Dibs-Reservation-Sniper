@@ -94,7 +94,8 @@ def test_local_provider_books_through_parse_and_book(
     assert response.json()["status"] == "MOCK_BOOKED"
 
 
-def test_openai_remains_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_openai_is_built_when_named(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     app = create_app()
 
@@ -156,7 +157,7 @@ def test_invalid_provider_setting_reports_a_config_error(
             "Prompts are read by local model 'qwen3.5:9b' at http://localhost:11434/v1",
         ),
         (
-            {"OPENAI_API_KEY": "sk-test"},
+            {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "sk-test"},
             "Prompts are read by OpenAI model 'gpt-4o-mini'",
         ),
     ],

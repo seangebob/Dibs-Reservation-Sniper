@@ -278,9 +278,9 @@ full reference. The frontend ships `frontend/.env.local.example`.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `LLM_PROVIDER` | `openai` | Which model reads prompts: `openai`, or `local` (alias `ollama`) for a self-hosted OpenAI-compatible server. |
-| `OPENAI_API_KEY` | unset | Required for prompt parsing unless `LLM_PROVIDER=local`; without it those endpoints return `503`. |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Must be a valid model identifier. Ignored when `LLM_PROVIDER=local`. |
+| `LLM_PROVIDER` | `local` | Which model reads prompts: `local` (alias `ollama`) for a self-hosted OpenAI-compatible server, or `openai`. An `OPENAI_API_KEY` alone never selects OpenAI. |
+| `OPENAI_API_KEY` | unset | Required only with `LLM_PROVIDER=openai`; without it those endpoints return `503`. |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Must be a valid model identifier. Ignored unless `LLM_PROVIDER=openai`. |
 | `LOCAL_LLM_BASE_URL` | `http://localhost:11434/v1` | Chat Completions base URL of the local server (Ollama's default). LM Studio: `http://localhost:1234/v1`. |
 | `LOCAL_LLM_MODEL` | `qwen3.5:9b` | Local model name; `:` tags and `/` namespaces are allowed. |
 | `RESERVATION_TIMEZONE` | `America/Toronto` | Any IANA zone. |
