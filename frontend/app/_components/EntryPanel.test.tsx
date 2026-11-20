@@ -7,7 +7,7 @@ vi.mock("@/lib/api", () => ({
   listVenues: vi.fn(),
 }));
 
-import { listVenues } from "@/lib/api";
+import { listVenues, parseAndBook } from "@/lib/api";
 import { EntryPanel } from "./EntryPanel";
 
 /** Render, then let the venue-list load settle inside act(). */
@@ -56,5 +56,28 @@ describe("EntryPanel", () => {
     expect((screen.getByRole("textbox") as HTMLInputElement).value).toBe(
       "watch bauer for 4",
     );
+  });
+
+  it("sends the visitor to the form when the model is down, keeping the prompt", async () => {
+    vi.mocked(parseAndBook).mockResolvedValue({
+      ok: false,
+      message: "The reservation assistant is temporarily unavailable.",
+      status: 503,
+    });
+    await renderSettled(<EntryPanel />);
+    const prompt = screen.getByRole("textbox") as HTMLInputElement;
+    fireEvent.change(prompt, { target: { value: "watch bauer for 4" } });
+    fireEvent.click(screen.getByRole("button", { name: /ACQUIRE/i }));
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /FILL IN A FORM INSTEAD/i }),
+    );
+
+    const formTab = screen.getByRole("tab", { name: "FILL IN A FORM" });
+    expect(formTab.getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(formTab);
+    const venue = screen.getByLabelText("VENUE");
+    expect((venue.closest('[role="tabpanel"]') as HTMLElement).hidden).toBe(false);
+    expect(prompt.value).toBe("watch bauer for 4");
   });
 });

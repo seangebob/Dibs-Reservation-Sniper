@@ -565,6 +565,15 @@ a:hover {
   color: var(--amber-bright);
 }
 
+/* error card: retry, and the form when the model is down */
+.error-actions {
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px 28px;
+  flex-wrap: wrap;
+}
+
 .mono-id {
   font-family: var(--font-mono);
   font-size: 10.5px;

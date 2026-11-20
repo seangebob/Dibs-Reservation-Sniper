@@ -32,9 +32,12 @@ type Tone = "amber" | "green" | "muted" | "red";
 export function ResultView({
   state,
   onRetry,
+  onUseForm,
 }: {
   state: ConsoleState;
   onRetry: () => void;
+  /** Switches to the manual form, offered when the model can't read prompts. */
+  onUseForm?: () => void;
 }) {
   if (state.phase === "idle") return null;
 
@@ -58,6 +61,7 @@ export function ResultView({
         message={state.message}
         status={state.status}
         onRetry={onRetry}
+        onUseForm={onUseForm}
       />
     );
   }
@@ -312,10 +316,12 @@ function ErrorCard({
   message,
   status,
   onRetry,
+  onUseForm,
 }: {
   message: string;
   status?: number;
   onRetry: () => void;
+  onUseForm?: () => void;
 }) {
   // A dropped connection (no status), a 502, or a 503 (the model rate-limited
   // or out of credits) all mean "the spotter is offline for a moment" —
@@ -323,6 +329,10 @@ function ErrorCard({
   // already sends the human-readable reason as `message`; this only frames it.
   const serviceDown =
     status === undefined || status === 502 || status === 503;
+  // A 502 or 503 means the API answered but the model couldn't read the
+  // prompt; the form needs no model, so it still works. With no status the
+  // API itself is unreachable, and the form would fail the same way.
+  const offerForm = onUseForm !== undefined && (status === 502 || status === 503);
   return (
     <Card tone="red" live>
       <div className="kicker" data-tone="red">
@@ -330,15 +340,22 @@ function ErrorCard({
       </div>
       <div className="result-title sm">{message}</div>
       <div className="result-text">
-        {serviceDown
-          ? "The spotter dropped the feed — no watch was created. Your prompt is still loaded; take the shot again in a moment."
-          : "No watch was created. Adjust the prompt and try again."}
+        {offerForm
+          ? "The spotter dropped the feed — no watch was created. Your prompt is still loaded; take the shot again in a moment, or set up the watch with the form, which doesn't need the spotter."
+          : serviceDown
+            ? "The spotter dropped the feed — no watch was created. Your prompt is still loaded; take the shot again in a moment."
+            : "No watch was created. Adjust the prompt and try again."}
       </div>
-      <div style={{ marginTop: 18 }}>
+      <div className="error-actions">
         <button type="button" className="result-link" onClick={onRetry}>
           <RetryIcon />
           RETRY
         </button>
+        {offerForm ? (
+          <button type="button" className="result-link" onClick={onUseForm}>
+            FILL IN A FORM INSTEAD ▸
+          </button>
+        ) : null}
       </div>
     </Card>
   );

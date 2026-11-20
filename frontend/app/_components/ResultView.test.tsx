@@ -136,6 +136,37 @@ describe("ResultView", () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
+  it.each([502, 503])(
+    "error (%i, the model can't read prompts): offers the form, which needs no model",
+    (status) => {
+      const onUseForm = vi.fn();
+      render(
+        <ResultView
+          state={{ phase: "error", message: "Temporarily unavailable.", status }}
+          onRetry={noop}
+          onUseForm={onUseForm}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /FILL IN A FORM INSTEAD/i }));
+      expect(onUseForm).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("button", { name: /RETRY/i })).toBeTruthy();
+    },
+  );
+
+  it("error (API unreachable): no form offer, since the form needs the API too", () => {
+    render(
+      <ResultView
+        state={{ phase: "error", message: "Couldn't reach the server." }}
+        onRetry={noop}
+        onUseForm={noop}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: /FORM/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /RETRY/i })).toBeTruthy();
+  });
+
   it("error (422 client): uses the distinct non-service framing", () => {
     const { container } = render(
       <ResultView

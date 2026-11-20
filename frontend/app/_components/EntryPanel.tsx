@@ -7,7 +7,7 @@
  * never throws away a half-typed prompt or form.
  */
 
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { PromptConsole } from "./PromptConsole";
 import { WatchForm } from "./WatchForm";
 
@@ -21,6 +21,15 @@ const TABS: { key: Tab; label: string }[] = [
 export function EntryPanel() {
   const id = useId();
   const [tab, setTab] = useState<Tab>("prompt");
+  const formTab = useRef<HTMLButtonElement>(null);
+
+  // From the prompt's error card. The button that was clicked is about to be
+  // hidden with its panel, so focus moves to the form's tab rather than
+  // dropping back to the top of the page.
+  function switchToForm() {
+    setTab("form");
+    formTab.current?.focus();
+  }
 
   return (
     <div className="entry">
@@ -28,6 +37,7 @@ export function EntryPanel() {
         {TABS.map(({ key, label }) => (
           <button
             key={key}
+            ref={key === "form" ? formTab : undefined}
             id={`${id}-tab-${key}`}
             type="button"
             role="tab"
@@ -47,7 +57,7 @@ export function EntryPanel() {
         aria-labelledby={`${id}-tab-prompt`}
         hidden={tab !== "prompt"}
       >
-        <PromptConsole />
+        <PromptConsole onUseForm={switchToForm} />
       </div>
       <div
         id={`${id}-panel-form`}

@@ -18,7 +18,12 @@ const PRESETS = [
   "brunch for 3 at Bhima's Warung on Sunday",
 ];
 
-export function PromptConsole() {
+export function PromptConsole({
+  onUseForm,
+}: {
+  /** Offered on the error card when the model can't read prompts. */
+  onUseForm?: () => void;
+} = {}) {
   const [prompt, setPrompt] = useState("");
   const [state, setState] = useState<ConsoleState>({ phase: "idle" });
   const inputRef = useRef<HTMLInputElement>(null);
@@ -94,7 +99,11 @@ export function PromptConsole() {
         ))}
       </div>
 
-      <ResultView state={state} onRetry={() => void run(prompt)} />
+      <ResultView
+        state={state}
+        onRetry={() => void run(prompt)}
+        onUseForm={onUseForm}
+      />
     </div>
   );
 }
