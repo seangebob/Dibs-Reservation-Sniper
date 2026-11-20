@@ -23,6 +23,8 @@ The watch engine, dashboard, accounts, and email integration already exist. Prom
 
 **Complete when** someone can create a watch manually with the model offline, turn a no-availability result into a watch, and see an opted-in watch complete a simulated booking in the dashboard. [Watch API helper](../frontend/lib/api.ts)
 
+**Status (Nov 20, 2026): complete.** Checked in Chrome at phone width (390 px) against PostgreSQL. The form fits without sideways scrolling, shows the booking criteria when Auto-book is chosen, and creates the watch without calling the model. That watch made a simulated booking on its first check, and the dashboard shows it as MOCK CONFIRMED · AUTO-BOOK with the simulation label. A long booking ID used to run off the card on a phone; it now wraps. Turning a no-table result into a watch, and sending visitors to the form when the model is offline, are covered by frontend tests.
+
 ## 3. Prepare real availability and pilot accounts
 
 ### Connect one authorized reservation provider

@@ -580,6 +580,8 @@ a:hover {
   color: var(--text-ghost);
   text-align: right;
   line-height: 1.5;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* ---- watch dashboard -------------------------------------------------- */
@@ -663,6 +665,7 @@ a:hover {
   flex-wrap: wrap;
 }
 .watch-stats {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -676,6 +679,9 @@ a:hover {
 }
 .watch-booking {
   color: var(--green-soft);
+  /* A booking id is one long token; on a phone it must wrap, not overflow. */
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .watch-mode {
   letter-spacing: 1px;
