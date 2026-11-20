@@ -3,6 +3,7 @@ and password reset by emailed link (roadmap 3b)."""
 
 import logging
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -93,10 +94,14 @@ async def signup(
     request: Request,
     body: Credentials,
     service: AuthServiceDep,
+    background: BackgroundTasks,
     x_dibs_client_id: ClientIdHeader = None,
 ) -> AuthResponse:
     user, token = await service.signup(body.email, body.password)
     await _claim_anonymous_watches(request, user, x_dibs_client_id)
+    # The confirmation email goes out after the response, so a slow relay
+    # never slows sign-up down.
+    background.add_task(_send_email_confirmation, service, user.id)
     return AuthResponse(token=token, user=user)
 
 
@@ -247,3 +252,41 @@ async def change_password(
         bearer_token(authorization), body.current_password, body.new_password
     )
     return AuthResponse(token=token, user=user)
+
+
+# -- email confirmation ----------------------------------------------------------
+
+
+class ConfirmEmailRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=1, max_length=200)
+
+
+async def _send_email_confirmation(service: AuthService, user_id: UUID) -> None:
+    # Runs after the response; a failure is logged without the address.
+    try:
+        await service.send_email_confirmation(user_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Confirmation email failed: %s", type(exc).__name__)
+
+
+@router.post("/email/confirm", response_model=User)
+async def confirm_email(body: ConfirmEmailRequest, service: AuthServiceDep) -> User:
+    """Use a confirmation link; the account's address can now get alerts."""
+
+    return await service.confirm_email(body.token)
+
+
+@router.post("/email/resend", status_code=status.HTTP_202_ACCEPTED)
+async def resend_confirmation(
+    service: AuthServiceDep,
+    background: BackgroundTasks,
+    authorization: Annotated[str | None, Header()] = None,
+) -> Response:
+    """Send the signed-in account another confirmation link (3 an hour). A
+    no-op once the address is confirmed."""
+
+    user = await service.prepare_confirmation_resend(bearer_token(authorization))
+    background.add_task(_send_email_confirmation, service, user.id)
+    return Response(status_code=status.HTTP_202_ACCEPTED)

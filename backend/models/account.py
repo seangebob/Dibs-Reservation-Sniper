@@ -20,6 +20,9 @@ class User(BaseModel):
     id: UUID
     email: str
     created_at: datetime
+    #: Confirmed by an emailed link (or a password reset). Alerts go only to
+    #: confirmed addresses.
+    email_verified: bool = False
 
 
 class StoredUser(User):
@@ -32,7 +35,12 @@ class StoredUser(User):
     password_hash: str
 
     def to_public(self) -> User:
-        return User(id=self.id, email=self.email, created_at=self.created_at)
+        return User(
+            id=self.id,
+            email=self.email,
+            created_at=self.created_at,
+            email_verified=self.email_verified,
+        )
 
 
 class Session(BaseModel):

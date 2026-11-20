@@ -105,6 +105,8 @@ export interface User {
   id: string;
   email: string;
   created_at: string;
+  /** Confirmed by an emailed link; alerts go only to confirmed addresses. */
+  email_verified: boolean;
 }
 
 /** Signup/login: the raw bearer token, returned exactly once. */

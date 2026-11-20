@@ -225,6 +225,8 @@ GET  /api/auth/me          # id · email · created_at
 POST /api/auth/password/forgot  # Email a reset link if the account exists (always 202)
 POST /api/auth/password/reset   # Use the link: new password, other sessions signed out
 POST /api/auth/password/change  # Signed in: current + new password; fresh session returned
+POST /api/auth/email/confirm     # Use a confirmation link; the account's email is confirmed
+POST /api/auth/email/resend      # Signed in: send another confirmation link (202)
 ```
 
 **Password reset.** `forgot` answers `202` before looking the address up and sends the
@@ -239,6 +241,12 @@ is a `422`, not a `401`, because the session is still good and the browser drops
 token on a `401`. Five wrong guesses per account in 5 minutes return `429`, so a stolen
 session isn't enough to guess the password. On success every session is revoked and a
 fresh one is returned for the browser that made the change.
+
+**Email confirmation.** Sign-up emails a link (after the response) that works once and
+expires in 24 hours. `GET /api/auth/me` reports `email_verified`. **Alerts go only to a
+confirmed account address**, so a typo at sign-up never sends someone else's alerts to a
+stranger; accounts created before migration 0006 start unconfirmed. Using a password
+reset link also confirms the address. Resending is limited to 3 links an hour.
 
 Passwords are argon2id. A session is an **opaque bearer token whose sha256 is all the
 server stores**, sent as `Authorization: Bearer <token>`.

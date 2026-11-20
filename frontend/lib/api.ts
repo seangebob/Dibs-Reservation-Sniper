@@ -297,6 +297,20 @@ export async function changePassword(
   return result;
 }
 
+/** Use an account confirmation link's token; returns the confirmed account. */
+export function confirmEmail(token: string): Promise<ApiResult<User>> {
+  return apiFetch<User>(
+    "/api/auth/email/confirm",
+    { method: "POST", body: JSON.stringify({ token }) },
+    { omitSession: true },
+  );
+}
+
+/** Email the signed-in account another confirmation link (202). */
+export function resendConfirmation(): Promise<ApiResult<void>> {
+  return apiFetch<void>("/api/auth/email/resend", { method: "POST" });
+}
+
 /** GET the signed-in account, used to hydrate on load. 401 → logged out. */
 export function me(): Promise<ApiResult<User>> {
   return apiFetch<User>("/api/auth/me", { method: "GET" });

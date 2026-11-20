@@ -71,7 +71,8 @@ def test_signup_returns_201_with_token_and_public_user(stub_client) -> None:
     assert resp.status_code == 201
     body = resp.json()
     assert body["token"] == "tok-signup"
-    assert set(body["user"]) == {"id", "email", "created_at"}
+    assert set(body["user"]) == {"id", "email", "created_at", "email_verified"}
+    assert body["user"]["email_verified"] is False
     assert "password_hash" not in body["user"]
 
 

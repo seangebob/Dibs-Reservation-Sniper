@@ -277,7 +277,7 @@ def test_a_guest_without_a_verified_address_gets_nothing() -> None:
 
 
 def test_an_account_watch_still_goes_to_the_account() -> None:
-    user = User(id=uuid4(), email="owner@example.com", created_at=NOW)
+    user = User(id=uuid4(), email="owner@example.com", created_at=NOW, email_verified=True)
     store = FakeStore()
     store.emails[CLIENT] = "diner@example.com"
     history = FakeHistory(account=user.id, guest=CLIENT)

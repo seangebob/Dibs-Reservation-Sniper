@@ -14,7 +14,7 @@ import { getSessionToken } from "@/lib/auth";
 import { AuthProvider } from "./AuthProvider";
 import { AccountBadge } from "./AccountBadge";
 
-const USER = { id: "u1", email: "scout@example.com", created_at: "2026-09-03T12:00:00Z" };
+const USER = { id: "u1", email: "scout@example.com", created_at: "2026-09-03T12:00:00Z", email_verified: true };
 
 function renderBadge() {
   return render(

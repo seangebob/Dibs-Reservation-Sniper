@@ -31,7 +31,7 @@ describe("ResetPassword", () => {
   it("sets the new password with the link's code, then goes to the watches", async () => {
     vi.mocked(resetPassword).mockResolvedValue({
       ok: true,
-      data: { token: "tok", user: { id: "u1", email: "a@x.com", created_at: "2026-11-20T12:00:00Z" } },
+      data: { token: "tok", user: { id: "u1", email: "a@x.com", created_at: "2026-11-20T12:00:00Z", email_verified: true } },
     });
     await renderAt("?token=abc123");
 

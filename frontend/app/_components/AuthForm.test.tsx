@@ -8,15 +8,16 @@ vi.mock("@/lib/api", () => ({
   me: vi.fn(),
   forgotPassword: vi.fn(),
   changePassword: vi.fn(),
+  resendConfirmation: vi.fn(),
 }));
 vi.mock("@/lib/auth", () => ({ getSessionToken: vi.fn(() => null) }));
 
-import { changePassword, forgotPassword, login, me, signup } from "@/lib/api";
+import { changePassword, forgotPassword, login, me, resendConfirmation, signup } from "@/lib/api";
 import { getSessionToken } from "@/lib/auth";
 import { AuthProvider } from "./AuthProvider";
 import { AuthForm } from "./AuthForm";
 
-const USER = { id: "u1", email: "a@x.com", created_at: "2026-09-03T12:00:00Z" };
+const USER = { id: "u1", email: "a@x.com", created_at: "2026-09-03T12:00:00Z", email_verified: true };
 const OK = { ok: true as const, data: { token: "tok", user: USER } };
 
 function renderForm() {
@@ -173,6 +174,30 @@ describe("AuthForm", () => {
 
     expect(await screen.findByText(/Other devices are signed out/)).toBeTruthy();
     expect(changePassword).toHaveBeenLastCalledWith("old-password", "new-password");
+    vi.mocked(getSessionToken).mockReturnValue(null);
+  });
+
+  it("asks an unconfirmed account to confirm its email, and can resend the link", async () => {
+    vi.mocked(getSessionToken).mockReturnValue("tok");
+    vi.mocked(me).mockResolvedValue({ ok: true, data: { ...USER, email_verified: false } });
+    vi.mocked(resendConfirmation).mockResolvedValue({ ok: true, data: undefined });
+    renderForm();
+
+    expect((await screen.findByText(/to get email alerts/)).textContent).toMatch(/a@x\.com/);
+    fireEvent.click(screen.getByRole("button", { name: /RESEND LINK/ }));
+
+    expect(await screen.findByText(/Sent a new link/)).toBeTruthy();
+    expect(resendConfirmation).toHaveBeenCalledTimes(1);
+    vi.mocked(getSessionToken).mockReturnValue(null);
+  });
+
+  it("shows no confirmation notice once the email is confirmed", async () => {
+    vi.mocked(getSessionToken).mockReturnValue("tok");
+    vi.mocked(me).mockResolvedValue({ ok: true, data: USER });
+    renderForm();
+
+    await screen.findByText(/SIGNED IN/);
+    expect(screen.queryByRole("button", { name: /RESEND LINK/ })).toBeNull();
     vi.mocked(getSessionToken).mockReturnValue(null);
   });
 });

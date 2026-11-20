@@ -58,6 +58,12 @@ class FakeAccounts:
         stored = self.by_id.get(user_id)
         return stored.to_public() if stored is not None else None
 
+    async def set_email_verified(self, user_id: UUID, verified_at: datetime) -> None:
+        stored = self.by_id[user_id]
+        updated = stored.model_copy(update={"email_verified": True})
+        self.by_id[user_id] = updated
+        self.by_email[stored.email] = updated
+
     async def update_password(self, user_id: UUID, password_hash: str) -> None:
         stored = self.by_id[user_id]
         updated = stored.model_copy(update={"password_hash": password_hash})
@@ -399,3 +405,112 @@ def test_the_change_api_returns_a_fresh_session_and_a_wrong_password_is_not_a_40
         json={"current_password": "x", "new_password": "new-password"},
     )
     assert anonymous.status_code == 401
+
+
+# --- confirming an account's email --------------------------------------------
+
+
+def _confirm_token(email: ComposedEmail) -> str:
+    marker = "/confirm-email?token="
+    return email.body[email.body.index(marker) + len(marker):].split()[0]
+
+
+def test_a_new_account_starts_unconfirmed_and_its_link_confirms_it() -> None:
+    mailer = FakeMailer()
+    service, *_ = _service(mailer)
+    user, _ = _run(service.signup("diner@example.com", "a-password"))
+    assert user.email_verified is False
+
+    _run(service.send_email_confirmation(user.id))
+
+    [(recipient, email)] = mailer.sent
+    assert recipient == "diner@example.com"
+    assert "expires in 24 hours" in email.body
+    confirmed = _run(service.confirm_email(_confirm_token(email)))
+    assert confirmed.email_verified is True
+    with pytest.raises(InvalidAccountLinkError):
+        _run(service.confirm_email(_confirm_token(email)))
+
+
+def test_a_confirmed_address_gets_no_more_confirmation_emails() -> None:
+    mailer = FakeMailer()
+    service, *_ = _service(mailer)
+    user, _ = _run(service.signup("diner@example.com", "a-password"))
+    _run(service.send_email_confirmation(user.id))
+    _run(service.confirm_email(_confirm_token(mailer.sent[0][1])))
+
+    _run(service.send_email_confirmation(user.id))
+
+    assert len(mailer.sent) == 1
+
+
+def test_a_confirmation_link_expires_after_a_day() -> None:
+    mailer = FakeMailer()
+    service, _, _, _, clock = _service(mailer)
+    user, _ = _run(service.signup("diner@example.com", "a-password"))
+    _run(service.send_email_confirmation(user.id))
+    clock.now = NOW + timedelta(hours=24, seconds=1)
+
+    with pytest.raises(InvalidAccountLinkError):
+        _run(service.confirm_email(_confirm_token(mailer.sent[0][1])))
+
+
+def test_a_reset_link_and_a_confirmation_link_are_not_interchangeable() -> None:
+    mailer = FakeMailer()
+    service, *_ = _service(mailer)
+    user, _ = _run(service.signup("diner@example.com", "a-password"))
+    _run(service.send_email_confirmation(user.id))
+
+    with pytest.raises(InvalidAccountLinkError):
+        _run(service.reset_password(_confirm_token(mailer.sent[0][1]), "new-password"))
+
+
+def test_resetting_the_password_also_confirms_the_address() -> None:
+    mailer = FakeMailer()
+    service, *_ = _service(mailer)
+    _run(service.signup("diner@example.com", "old-password"))
+    _ask_for_reset(service, "diner@example.com")
+
+    user, _ = _run(service.reset_password(_token_from(mailer.sent[0][1]), "new-password"))
+
+    assert user.email_verified is True
+
+
+def test_resending_needs_a_session_and_is_rate_limited() -> None:
+    service, *_ = _service(FakeMailer())
+    _, session = _run(service.signup("diner@example.com", "a-password"))
+    with pytest.raises(AuthenticationRequiredError):
+        _run(service.prepare_confirmation_resend(None))
+    for _ in range(3):
+        _run(service.prepare_confirmation_resend(session))
+
+    with pytest.raises(TooManyAccountEmailsError):
+        _run(service.prepare_confirmation_resend(session))
+
+
+def test_signing_up_through_the_api_sends_the_confirmation(api: Any) -> None:
+    client, _, mailer = api
+
+    signed_up = client.post("/api/auth/signup", json={"email": "diner@example.com", "password": "a-password"})
+    assert signed_up.json()["user"]["email_verified"] is False
+    [(_, email)] = mailer.sent
+
+    confirmed = client.post("/api/auth/email/confirm", json={"token": _confirm_token(email)})
+    assert confirmed.status_code == 200
+    assert confirmed.json()["email_verified"] is True
+    me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {signed_up.json()['token']}"})
+    assert me.json()["email_verified"] is True
+
+    reused = client.post("/api/auth/email/confirm", json={"token": _confirm_token(email)})
+    assert reused.status_code == 400
+
+
+def test_the_resend_api(api: Any) -> None:
+    client, service, mailer = api
+    _, session = _run(service.signup("diner@example.com", "a-password"))
+
+    assert client.post("/api/auth/email/resend").status_code == 401
+    resent = client.post("/api/auth/email/resend", headers={"Authorization": f"Bearer {session}"})
+
+    assert resent.status_code == 202
+    assert [recipient for recipient, _ in mailer.sent] == ["diner@example.com"]

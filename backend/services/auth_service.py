@@ -124,8 +124,23 @@ logger = logging.getLogger(__name__)
 #: A reset link is a key to the account, so it lives briefly.
 PASSWORD_RESET_TTL = timedelta(hours=1)
 PURPOSE_PASSWORD_RESET = "password_reset"
-#: Account emails (reset links) one address may be sent per hour.
+#: Long enough to find the email the next day; it only confirms an address.
+EMAIL_CONFIRMATION_TTL = timedelta(hours=24)
+PURPOSE_EMAIL_VERIFY = "email_verify"
+#: Account emails (reset or confirmation links) one address may be sent per hour.
 ACCOUNT_EMAILS_PER_HOUR = 3
+
+
+def compose_email_confirmation(link: str) -> ComposedEmail:
+    return ComposedEmail(
+        subject="Confirm your email for Dibs",
+        body=(
+            "Confirm this address for your Dibs account so it can get alerts when "
+            f"a table opens:\n\n{link}\n\n"
+            "It works once and expires in 24 hours. If you didn't create a Dibs "
+            "account, ignore this email.\n\n-- Dibs\n"
+        ),
+    )
 
 
 def compose_password_reset(link: str) -> ComposedEmail:
@@ -275,6 +290,54 @@ class AuthService:
             return None
         return await self._accounts.get_by_id(session.user_id)
 
+    # -- email confirmation --------------------------------------------------
+
+    async def send_email_confirmation(self, user_id: UUID) -> None:
+        """Email a confirmation link, unless the address is already confirmed."""
+
+        if self._links is None:
+            return
+        user = await self._accounts.get_by_id(user_id)
+        if user is None or user.email_verified:
+            return
+        raw = secrets.token_urlsafe(32)
+        await self._links.add(
+            token_hash=hash_token(raw),
+            user_id=user.id,
+            purpose=PURPOSE_EMAIL_VERIFY,
+            expires_at=self._clock() + EMAIL_CONFIRMATION_TTL,
+        )
+        link = f"{self._base_url}/confirm-email?token={raw}"
+        await self._deliver(user.email, compose_email_confirmation(link), link)
+
+    async def prepare_confirmation_resend(self, raw_token: str | None) -> User:
+        """The signed-in user asking for another link, after the rate limit."""
+
+        user = await self.authenticate(raw_token)
+        if user is None:
+            raise AuthenticationRequiredError()
+        key = f"confirm:{user.id}"
+        self._email_throttle.check(key)
+        self._email_throttle.record(key)
+        return user
+
+    async def confirm_email(self, raw_token: str) -> User:
+        """Use a confirmation link: the account's address is confirmed."""
+
+        if self._links is None:
+            raise InvalidAccountLinkError()
+        now = self._clock()
+        user_id = await self._links.consume(
+            hash_token(raw_token.strip()), PURPOSE_EMAIL_VERIFY, now
+        )
+        if user_id is None:
+            raise InvalidAccountLinkError()
+        await self._accounts.set_email_verified(user_id, now)
+        user = await self._accounts.get_by_id(user_id)
+        if user is None:
+            raise InvalidAccountLinkError()
+        return user
+
     # -- password change -----------------------------------------------------
 
     async def change_password(
@@ -359,6 +422,8 @@ class AuthService:
             raise InvalidAccountLinkError()
         password_hash = await self._password_work(self._hasher.hash, new_password)
         await self._accounts.update_password(user_id, password_hash)
+        # Opening the emailed link proved the inbox is theirs.
+        await self._accounts.set_email_verified(user_id, now)
         await self._sessions.revoke_all_for_user(user_id)
         await self._links.cancel_unused(user_id, PURPOSE_PASSWORD_RESET, now)
         user = await self._accounts.get_by_id(user_id)

@@ -53,7 +53,7 @@ def _resolver(owners=None, users=None) -> AccountRecipientResolver:
 
 def test_an_account_owned_watch_resolves_to_its_owners_address() -> None:
     user_id = uuid4()
-    user = User(id=user_id, email="scout@example.com", created_at=NOW)
+    user = User(id=user_id, email="scout@example.com", created_at=NOW, email_verified=True)
 
     resolver = _resolver({"watch_1": user_id}, {user_id: user})
 
@@ -86,8 +86,8 @@ def test_a_deleted_account_resolves_to_nobody_rather_than_raising() -> None:
 def test_only_the_owning_account_is_consulted() -> None:
     mine, theirs = uuid4(), uuid4()
     users = {
-        mine: User(id=mine, email="mine@example.com", created_at=NOW),
-        theirs: User(id=theirs, email="theirs@example.com", created_at=NOW),
+        mine: User(id=mine, email="mine@example.com", created_at=NOW, email_verified=True),
+        theirs: User(id=theirs, email="theirs@example.com", created_at=NOW, email_verified=True),
     }
     resolver = _resolver({"watch_1": mine, "watch_2": theirs}, users)
 
@@ -104,3 +104,15 @@ def test_an_underlying_failure_propagates_for_the_caller_to_isolate() -> None:
 
     with pytest.raises(RuntimeError, match="postgres is unreachable"):
         _run(resolver.email_for_watch("watch_1"))
+
+
+def test_an_unconfirmed_account_address_gets_no_alerts() -> None:
+    """Roadmap 3b: a typo at sign-up must not send a stranger the alerts."""
+
+    user_id = uuid4()
+    resolver = _resolver(
+        {"watch_1": user_id},
+        {user_id: User(id=user_id, email="typo@example.com", created_at=NOW)},
+    )
+
+    assert _run(resolver.email_for_watch("watch_1")) is None

@@ -87,7 +87,9 @@ class AccountRecipientResolver:
         if user_id is None:
             return await self._guest_email(watch_id)
         user = await self._accounts.get_by_id(user_id)
-        if user is None:
+        if user is None or not user.email_verified:
+            # Alerts go only to a confirmed address (roadmap 3b), so a typo at
+            # sign-up never sends someone else a stranger's alerts.
             return None
         return user.email
 

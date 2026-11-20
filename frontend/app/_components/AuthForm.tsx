@@ -9,7 +9,7 @@
  */
 
 import { useState } from "react";
-import { changePassword, forgotPassword } from "@/lib/api";
+import { changePassword, forgotPassword, resendConfirmation } from "@/lib/api";
 import { useAuth } from "./AuthProvider";
 
 type Mode = "login" | "signup";
@@ -53,6 +53,7 @@ export function AuthForm() {
         <p className="auth-note">
           Your watches now follow this account on any device you sign in from.
         </p>
+        {!user.email_verified && <ConfirmNotice email={user.email} />}
         <a className="empty-cta" href="/watches">
           SEE YOUR WATCHES ▸
         </a>
@@ -330,5 +331,52 @@ function ChangePassword() {
       </button>
       <p className="auth-note">This signs out every other device.</p>
     </form>
+  );
+}
+
+/**
+ * Shown until the account's address is confirmed: alerts go only to a
+ * confirmed address, and the link from sign-up may have been missed.
+ */
+function ConfirmNotice({ email }: { email: string }) {
+  const [state, setState] = useState<"idle" | "busy" | "sent">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  async function resend() {
+    setState("busy");
+    setError(null);
+    const result = await resendConfirmation();
+    if (result.ok) {
+      setState("sent");
+    } else {
+      setState("idle");
+      setError(result.message);
+    }
+  }
+
+  return (
+    <div className="confirm-notice" role="status">
+      <p className="auth-note">
+        Confirm <strong>{email}</strong> to get email alerts: open the link we
+        sent when you signed up.
+      </p>
+      {state === "sent" ? (
+        <p className="auth-note">Sent a new link. It expires in 24 hours.</p>
+      ) : (
+        <button
+          type="button"
+          className="result-link"
+          disabled={state === "busy"}
+          onClick={() => void resend()}
+        >
+          {state === "busy" ? "SENDING…" : "RESEND LINK"}
+        </button>
+      )}
+      {error && (
+        <div className="auth-error" role="alert">
+          {error}
+        </div>
+      )}
+    </div>
   );
 }

@@ -9,6 +9,7 @@ token hashes are read or written here; no recoverable secret is stored.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -36,18 +37,36 @@ class DuplicateEmailError(Exception):
 _INSERT_USER_SQL = """
 INSERT INTO users (email, password_hash)
 VALUES ($1, $2)
-RETURNING id, email, created_at
+RETURNING id, email, created_at, email_verified_at IS NOT NULL AS email_verified
 """.strip()
 
 _SELECT_USER_BY_EMAIL_SQL = (
-    "SELECT id, email, created_at, password_hash FROM users WHERE email = $1"
+    "SELECT id, email, created_at, password_hash, "
+    "email_verified_at IS NOT NULL AS email_verified FROM users WHERE email = $1"
 )
 
-_SELECT_USER_BY_ID_SQL = "SELECT id, email, created_at FROM users WHERE id = $1"
+_SELECT_USER_BY_ID_SQL = (
+    "SELECT id, email, created_at, email_verified_at IS NOT NULL AS email_verified "
+    "FROM users WHERE id = $1"
+)
+
+_SET_EMAIL_VERIFIED_SQL = (
+    "UPDATE users SET email_verified_at = COALESCE(email_verified_at, $2), "
+    "updated_at = now() WHERE id = $1"
+)
 
 _UPDATE_PASSWORD_SQL = (
     "UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1"
 )
+
+
+def _user(row: Any) -> User:
+    return User(
+        id=row["id"],
+        email=row["email"],
+        created_at=row["created_at"],
+        email_verified=bool(row.get("email_verified", False)),
+    )
 
 
 class AccountRepository:
@@ -68,8 +87,7 @@ class AccountRepository:
                 rows = await conn.fetch(_INSERT_USER_SQL, email, password_hash)
             except asyncpg.UniqueViolationError as exc:
                 raise DuplicateEmailError(email) from exc
-        row = rows[0]
-        return User(id=row["id"], email=row["email"], created_at=row["created_at"])
+        return _user(rows[0])
 
     async def get_by_email(self, email: str) -> StoredUser | None:
         """Return the account for `email` including its hash (for login), or None."""
@@ -84,6 +102,7 @@ class AccountRepository:
             email=row["email"],
             created_at=row["created_at"],
             password_hash=row["password_hash"],
+            email_verified=bool(row.get("email_verified", False)),
         )
 
     async def get_by_id(self, user_id: UUID) -> User | None:
@@ -93,8 +112,13 @@ class AccountRepository:
             rows = await conn.fetch(_SELECT_USER_BY_ID_SQL, user_id)
         if not rows:
             return None
-        row = rows[0]
-        return User(id=row["id"], email=row["email"], created_at=row["created_at"])
+        return _user(rows[0])
+
+    async def set_email_verified(self, user_id: UUID, verified_at: datetime) -> None:
+        """Mark the address confirmed (keeping the first confirmation time)."""
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(_SET_EMAIL_VERIFIED_SQL, user_id, verified_at)
 
     async def update_password(self, user_id: UUID, password_hash: str) -> None:
         """Replace an account's argon2 hash."""
