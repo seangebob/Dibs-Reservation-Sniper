@@ -18,6 +18,7 @@ import pytest
 from openai import (
     APIConnectionError,
     APITimeoutError,
+    BadRequestError,
     InternalServerError,
     NotFoundError,
 )
@@ -156,6 +157,54 @@ def test_request_asks_the_server_to_enforce_a_self_contained_schema() -> None:
     assert "$ref" not in json.dumps(schema)
     assert "$defs" not in schema
     assert set(schema["required"]) == set(ReservationExtraction.model_fields)
+
+
+def test_request_switches_the_models_thinking_off() -> None:
+    provider, completions = provider_for(completion(VALID_REPLY))
+
+    extract(provider)
+
+    assert completions.calls[0]["reasoning_effort"] == "none"
+
+
+def bad_request() -> BadRequestError:
+    return BadRequestError(
+        "invalid reasoning_effort",
+        response=httpx.Response(400, request=REQUEST),
+        body=None,
+    )
+
+
+def test_server_that_rejects_reasoning_effort_is_asked_again_without_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider, completions = provider_for(
+        bad_request(), completion(VALID_REPLY), completion(VALID_REPLY)
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert extract(provider) == EXPECTED
+
+    first, retry = completions.calls
+    assert first["reasoning_effort"] == "none"
+    assert "reasoning_effort" not in retry
+    assert retry["messages"] == first["messages"]
+    assert "rejected reasoning_effort" in caplog.text
+
+    # Remembered: later prompts don't pay for a rejected request first.
+    assert extract(provider) == EXPECTED
+    assert len(completions.calls) == 3
+    assert "reasoning_effort" not in completions.calls[2]
+
+
+def test_bad_request_without_reasoning_effort_is_a_provider_error() -> None:
+    provider, completions = provider_for(bad_request(), bad_request())
+
+    with pytest.raises(ProviderError, match="provider request failed") as error:
+        extract(provider)
+
+    assert len(completions.calls) == 2
+    assert not isinstance(error.value, ProviderUnavailableError)
 
 
 def test_inlined_schema_keeps_nested_definitions() -> None:

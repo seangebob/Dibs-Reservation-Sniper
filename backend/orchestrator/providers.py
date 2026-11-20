@@ -9,6 +9,7 @@ from openai import (
     APIConnectionError,
     APITimeoutError,
     AsyncOpenAI,
+    BadRequestError,
     NotFoundError,
     OpenAIError,
     RateLimitError,
@@ -172,6 +173,11 @@ DEFAULT_LOCAL_TIMEOUT_SECONDS = 120.0
 #: An extraction is ~150 tokens; the cap only stops a degenerate model from
 #: generating until the timeout.
 _LOCAL_MAX_TOKENS = 2048
+#: Reasoning models such as Qwen 3.5 think before answering by default: on a
+#: laptop that is ~1,300 extra tokens and turns a 3-second extraction into 35+.
+#: Extraction doesn't need it. Ollama's OpenAI-compatible endpoint switches it
+#: off with `reasoning_effort="none"` (it ignores `think: false` there).
+_NO_REASONING = "none"
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
@@ -256,6 +262,8 @@ class LocalIntentProvider:
         self._base_url = base_url or "the configured server"
         self._timeout_seconds = timeout_seconds
         self._max_attempts = max_attempts
+        # Cleared for good if the server rejects the field (see `_complete`).
+        self._send_reasoning_effort = True
         self._response_format = {
             "type": "json_schema",
             "json_schema": {
@@ -316,6 +324,9 @@ class LocalIntentProvider:
         raise ProviderError("The language model returned invalid structured data")
 
     async def _complete(self, messages: list[dict[str, str]]) -> str:
+        options: dict[str, Any] = {}
+        if self._send_reasoning_effort:
+            options["reasoning_effort"] = _NO_REASONING
         try:
             completion = await self._client.chat.completions.create(
                 model=self._model,
@@ -323,7 +334,23 @@ class LocalIntentProvider:
                 response_format=self._response_format,
                 temperature=0,
                 max_tokens=_LOCAL_MAX_TOKENS,
+                **options,
             )
+        except BadRequestError as exc:
+            if not self._send_reasoning_effort:
+                raise ProviderError("The language model provider request failed") from exc
+            # Not every OpenAI-compatible server accepts the field or "none".
+            # Without it the model may think first: slower, but still correct.
+            logger.warning(
+                "Local server at %s rejected reasoning_effort=%r; sending "
+                "requests without it, so the model may think before answering "
+                "(slower). %s",
+                self._base_url,
+                _NO_REASONING,
+                exc,
+            )
+            self._send_reasoning_effort = False
+            return await self._complete(messages)
         except APITimeoutError as exc:
             # Checked before APIConnectionError, its superclass.
             logger.warning(
