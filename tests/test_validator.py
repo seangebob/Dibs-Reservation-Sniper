@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from backend.orchestrator.schemas import (
@@ -341,3 +341,65 @@ def test_malformed_window_is_dropped_when_a_valid_time_exists() -> None:
     assert result.is_ready is True
     assert result.time_window is None
     assert result.preferred_time == "19:00"
+
+
+# --- dates named by weekday (worked out by `dates_for_weekday`) --------------
+
+SAT_AUG_22 = date(2026, 8, 22)
+SAT_AUG_29 = date(2026, 8, 29)
+
+
+def test_a_clear_weekday_date_replaces_the_models_date() -> None:
+    result = IntentValidator().validate(
+        extraction(date="2026-08-29"),
+        REFERENCE_TIME,
+        weekday_dates=(SAT_AUG_22,),
+    )
+
+    assert result.is_ready is True
+    assert result.date == "2026-08-22"
+
+
+def test_a_clear_weekday_date_fills_in_a_date_the_model_left_out() -> None:
+    result = IntentValidator().validate(
+        extraction(date=None),
+        REFERENCE_TIME,
+        weekday_dates=(SAT_AUG_22,),
+    )
+
+    assert result.is_ready is True
+    assert result.date == "2026-08-22"
+
+
+def test_next_weekday_asks_which_of_the_two_dates() -> None:
+    result = IntentValidator().validate(
+        extraction(date="2026-08-22"),
+        REFERENCE_TIME,
+        weekday_dates=(SAT_AUG_22, SAT_AUG_29),
+    )
+
+    assert result.status is IntentStatus.NEEDS_CLARIFICATION
+    assert result.route is OrchestratorRoute.CLARIFICATION
+    assert result.missing_fields == [MissingField.DATE]
+    assert result.date is None
+    assert result.clarification_question == (
+        "Did you mean Saturday, August 22 or Saturday, August 29?"
+    )
+    # Everything else the visitor said is kept.
+    assert result.venue_name == "Cote"
+    assert result.party_size == 4
+    assert result.preferred_time == "19:00"
+
+
+def test_next_weekday_question_follows_any_other_missing_detail() -> None:
+    result = IntentValidator().validate(
+        extraction(party_size=None),
+        REFERENCE_TIME,
+        weekday_dates=(SAT_AUG_22, SAT_AUG_29),
+    )
+
+    assert result.missing_fields == [MissingField.PARTY_SIZE, MissingField.DATE]
+    assert result.clarification_question == (
+        "How many guests or participants are there? "
+        "Did you mean Saturday, August 22 or Saturday, August 29?"
+    )

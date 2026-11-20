@@ -22,6 +22,7 @@ backend/
 │   ├── providers.py            # OpenAI and local-model (Ollama etc.) extraction adapters
 │   ├── engine.py               # Extraction → validation coordination
 │   ├── validator.py            # Deterministic completeness and routing rules
+│   ├── weekdays.py             # "Saturday" / "next Saturday" → dates, in code
 │   ├── router.py               # Ready intent → booking or watch
 │   └── schemas.py              # Strict provider and public contracts
 ├── integrations/

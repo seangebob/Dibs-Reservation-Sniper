@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from backend.orchestrator.providers import IntentProvider
 from backend.orchestrator.schemas import ReservationIntent
 from backend.orchestrator.validator import IntentValidator
+from backend.orchestrator.weekdays import dates_for_weekday
 
 
 Clock = Callable[[], datetime]
@@ -38,7 +39,11 @@ class OrchestratorEngine:
             reference_time = reference_time.astimezone(self._timezone)
 
         extraction = await self._provider.extract(prompt, reference_time)
-        return self._validator.validate(extraction, reference_time)
+        return self._validator.validate(
+            extraction,
+            reference_time,
+            weekday_dates=dates_for_weekday(prompt, reference_time.date()),
+        )
 
     async def close(self) -> None:
         """Release resources held by the configured provider."""

@@ -32,11 +32,30 @@ class IntentValidator:
         self,
         extraction: ReservationExtraction,
         reference_time: datetime,
+        *,
+        weekday_dates: tuple[date, ...] = (),
     ) -> ReservationIntent:
+        """Check an extraction and route it.
+
+        `weekday_dates` is what `dates_for_weekday` made of the prompt: one
+        date replaces the model's, two mean the prompt is ambiguous ("next
+        Saturday") and the visitor is asked which.
+        """
+
         today = reference_time.date()
         venue_name, venue_type, venue_candidates = self._resolve_venue(extraction)
 
+        date_choices: tuple[date, ...] = ()
+        if len(weekday_dates) == 1:
+            extraction = extraction.model_copy(
+                update={"date": weekday_dates[0].isoformat()}
+            )
+        elif weekday_dates:
+            date_choices = weekday_dates
+
         target_date, date_problem = self._resolve_date(extraction, today)
+        if date_choices:
+            target_date, date_problem = None, None
         preferred_time, time_window, time_problem = self._resolve_time(
             extraction,
             reference_time,
@@ -80,6 +99,7 @@ class IntentValidator:
                     date_problem=date_problem,
                     time_problem=time_problem,
                     venue_candidates=venue_candidates,
+                    date_choices=date_choices,
                 ),
             )
 
@@ -204,8 +224,27 @@ class IntentValidator:
         date_problem: str | None,
         time_problem: str | None,
         venue_candidates: tuple[str, ...],
+        date_choices: tuple[date, ...] = (),
     ) -> str:
         """Ask about the specific problem rather than restating the schema."""
+
+        if date_choices:
+            # The visitor did give a date, so ask which one they meant rather
+            # than listing "date" among the missing details.
+            listed = " or ".join(f"{day:%A}, {day:%B} {day.day}" for day in date_choices)
+            date_question = f"Did you mean {listed}?"
+            others: list[MissingField] = [
+                field for field in missing_fields if field is not MissingField.DATE
+            ]
+            if not others:
+                return date_question
+            rest = cls._build_question(
+                others,
+                date_problem=None,
+                time_problem=time_problem,
+                venue_candidates=venue_candidates,
+            )
+            return f"{rest} {date_question}"
 
         specific = cls._specific_question(
             missing_fields,
