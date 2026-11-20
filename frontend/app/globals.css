@@ -1172,3 +1172,48 @@ a:hover {
   margin-top: 0;
   background: var(--panel-inset);
 }
+
+/* ---- email alerts for guests ------------------------------------------- */
+
+.guest-alerts {
+  margin-top: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.guest-alerts-row {
+  display: flex;
+  align-items: center;
+  gap: 12px 18px;
+  flex-wrap: wrap;
+}
+.guest-alerts-row .form-input {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.guest-alerts-text,
+.guest-alerts-note {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.guest-alerts-text strong {
+  color: var(--text-strong);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.dash-alerts {
+  margin-top: 30px;
+  margin-bottom: 14px;
+  max-width: 780px;
+  padding: 2px 18px 18px;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+}
+.dash-alerts:empty {
+  display: none;
+}
+.dash-alerts:not(:empty) + .watch-list {
+  margin-top: 0;
+}

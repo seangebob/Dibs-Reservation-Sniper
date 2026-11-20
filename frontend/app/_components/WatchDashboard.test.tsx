@@ -4,6 +4,10 @@ import { act, render, screen, fireEvent } from "@testing-library/react";
 vi.mock("@/lib/api", () => ({
   listMyWatches: vi.fn(),
   cancelWatch: vi.fn(),
+  // The guest email box asks for this browser's address; "unavailable" hides it.
+  getAlertEmail: vi.fn(async () => ({ ok: false, status: 503, message: "" })),
+  requestAlertEmail: vi.fn(),
+  removeAlertEmail: vi.fn(),
 }));
 
 import { listMyWatches, cancelWatch } from "@/lib/api";

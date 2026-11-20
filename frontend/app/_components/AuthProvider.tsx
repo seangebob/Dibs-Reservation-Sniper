@@ -92,6 +92,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 }
 
+/** Like `useAuth`, but null outside an AuthProvider instead of throwing. */
+export function useOptionalAuth(): AuthValue | null {
+  return useContext(AuthContext);
+}
+
 export function useAuth(): AuthValue {
   const value = useContext(AuthContext);
   if (value === null) {

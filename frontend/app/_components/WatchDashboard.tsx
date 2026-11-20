@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { cancelWatch, listMyWatches } from "@/lib/api";
 import type { Watch } from "@/types/api";
 import { WatchCard } from "./WatchCard";
+import { GuestAlerts } from "./GuestAlerts";
 
 type DashState =
   | { phase: "loading" }
@@ -151,6 +152,9 @@ export function WatchDashboard() {
     return (
       <>
       {refreshBanner}
+      <div className="dash-alerts">
+        <GuestAlerts />
+      </div>
       <div className="empty">
         <div className="empty-title">No watches on the board.</div>
         <p className="empty-text">
@@ -173,6 +177,9 @@ export function WatchDashboard() {
           {cancelError}
         </div>
       )}
+      <div className="dash-alerts">
+        <GuestAlerts />
+      </div>
       <div className="watch-list">
         {state.watches.map((watch) => (
           <WatchCard

@@ -120,7 +120,12 @@ async function apiFetch<T>(
     return { ok: true, data: undefined as T };
   }
   try {
-    return { ok: true, data: (await response.json()) as T };
+    // An empty body (204, or a 202 "accepted") carries no data.
+    const text = await response.text();
+    if (text.trim() === "") {
+      return { ok: true, data: undefined as T };
+    }
+    return { ok: true, data: JSON.parse(text) as T };
   } catch {
     return {
       ok: false,
@@ -166,6 +171,39 @@ export function createWatch(
     method: "POST",
     body: JSON.stringify(query),
   });
+}
+
+// -- email alerts for guests ------------------------------------------------
+
+/** The address this browser's alerts go to, once confirmed. */
+export interface AlertEmail {
+  email: string | null;
+}
+
+/** GET this browser's confirmed alert address (null when there is none). */
+export function getAlertEmail(): Promise<ApiResult<AlertEmail>> {
+  return apiFetch("/api/alerts/email", { method: "GET" });
+}
+
+/** POST an address; the server emails a single-use confirmation link (202). */
+export function requestAlertEmail(email: string): Promise<ApiResult<void>> {
+  return apiFetch("/api/alerts/email", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+}
+
+/** POST a confirmation link's token; its address starts getting alerts. */
+export function verifyAlertEmail(token: string): Promise<ApiResult<AlertEmail>> {
+  return apiFetch("/api/alerts/email/verify", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+}
+
+/** DELETE this browser's alert address: no more alert emails. */
+export function removeAlertEmail(): Promise<ApiResult<void>> {
+  return apiFetch("/api/alerts/email", { method: "DELETE" });
 }
 
 // -- accounts ---------------------------------------------------------------

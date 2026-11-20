@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
-vi.mock("@/lib/api", () => ({ createWatch: vi.fn(), listVenues: vi.fn() }));
+vi.mock("@/lib/api", () => ({
+  createWatch: vi.fn(),
+  listVenues: vi.fn(),
+  // The guest email box asks for this browser's address; "unavailable" hides it.
+  getAlertEmail: vi.fn(async () => ({ ok: false, status: 503, message: "" })),
+  requestAlertEmail: vi.fn(),
+  removeAlertEmail: vi.fn(),
+}));
 
 import { createWatch, listVenues } from "@/lib/api";
 import { venueToday } from "@/lib/watch-form";

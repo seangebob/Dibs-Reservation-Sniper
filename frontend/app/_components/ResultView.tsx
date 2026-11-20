@@ -20,6 +20,7 @@ import {
   readIntentView,
 } from "@/lib/format";
 import { formFromIntent } from "@/lib/watch-form";
+import { GuestAlerts } from "./GuestAlerts";
 import { WatchForm } from "./WatchForm";
 
 export type ConsoleState =
@@ -162,6 +163,7 @@ function WatchCreated({ result }: { result: PromptExecutionResult }) {
           TRACK IT ▸
         </a>
       </div>
+      <GuestAlerts />
     </Card>
   );
 }

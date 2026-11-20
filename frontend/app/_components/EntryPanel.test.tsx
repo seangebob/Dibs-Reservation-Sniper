@@ -5,6 +5,10 @@ vi.mock("@/lib/api", () => ({
   parseAndBook: vi.fn(),
   createWatch: vi.fn(),
   listVenues: vi.fn(),
+  // The guest email box asks for this browser's address; "unavailable" hides it.
+  getAlertEmail: vi.fn(async () => ({ ok: false, status: 503, message: "" })),
+  requestAlertEmail: vi.fn(),
+  removeAlertEmail: vi.fn(),
 }));
 
 import { listVenues, parseAndBook } from "@/lib/api";

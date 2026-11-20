@@ -20,6 +20,7 @@ import {
   type WatchFormValues,
 } from "@/lib/watch-form";
 import type { VenueSummary, VenueType, Watch } from "@/types/api";
+import { GuestAlerts } from "./GuestAlerts";
 
 type Phase =
   | { phase: "editing"; error: string | null }
@@ -305,8 +306,8 @@ export function WatchForm({
               />
               <span className="choice-title">Notify me</span>
               <span className="choice-text">
-                It shows on your watches page, and signed-in accounts get an
-                email. You book it yourself.
+                It shows on your watches page, and you get an email if
+                you&rsquo;ve added one. You book it yourself.
               </span>
             </label>
             <label className="choice" data-selected={autoBook}>
@@ -413,6 +414,7 @@ function WatchCreatedCard({
             </a>
           </div>
         </div>
+        <GuestAlerts />
       </div>
     </div>
   );

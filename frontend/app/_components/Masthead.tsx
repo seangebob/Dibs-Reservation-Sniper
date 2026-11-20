@@ -7,7 +7,7 @@
 import { AccountBadge } from "./AccountBadge";
 import { ScopeMark } from "./Scope";
 
-export function Masthead({ current }: { current: "new" | "watches" | "account" }) {
+export function Masthead({ current }: { current?: "new" | "watches" | "account" }) {
   return (
     <header className="masthead">
       <div className="brand">
