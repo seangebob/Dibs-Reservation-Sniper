@@ -69,6 +69,13 @@ DEFAULT_NOTIFY_TIMEOUT_SECONDS = 10.0
 #: slots; protected booking/tombstone/idempotency records are governed by the
 #: separate retention window, which defaults to (and never drops below) a week
 #: so idempotent replay survives across a demo.
+#: Where availability and bookings come from. Only the built-in simulation
+#: exists today; a real provider's adapter adds its name here and a branch
+#: in `backend.integrations.registry`.
+MOCK_RESERVATION_PROVIDER = "mock"
+RESERVATION_PROVIDERS: tuple[str, ...] = (MOCK_RESERVATION_PROVIDER,)
+DEFAULT_RESERVATION_PROVIDER = MOCK_RESERVATION_PROVIDER
+
 DEFAULT_MOCK_SLOT_CAPACITY = 10_000
 DEFAULT_MOCK_SLOT_IDLE_TTL_SECONDS = 3_600
 DEFAULT_MOCK_BOOKING_RETENTION_SECONDS = 604_800
@@ -179,6 +186,7 @@ class WatchSettings:
 
     timezone_name: str = DEFAULT_TIMEZONE
     redis_url: str = DEFAULT_REDIS_URL
+    reservation_provider: str = DEFAULT_RESERVATION_PROVIDER
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
     poll_jitter_seconds: int = DEFAULT_POLL_JITTER_SECONDS
     max_poll_attempts: int = DEFAULT_MAX_POLL_ATTEMPTS
@@ -207,6 +215,16 @@ class WatchSettings:
             raise ConfigurationError(
                 f"Invalid REDIS_URL: {redis_url!r}. Expected a redis://, "
                 "rediss://, or unix:// URL."
+            )
+
+        reservation_provider = (
+            os.getenv("RESERVATION_PROVIDER", "").strip().lower()
+            or DEFAULT_RESERVATION_PROVIDER
+        )
+        if reservation_provider not in RESERVATION_PROVIDERS:
+            raise ConfigurationError(
+                f"Unknown RESERVATION_PROVIDER: {reservation_provider!r}. "
+                f"Expected one of: {', '.join(RESERVATION_PROVIDERS)}."
             )
 
         interval = _bounded_int(
@@ -303,6 +321,7 @@ class WatchSettings:
         return cls(
             timezone_name=timezone_name,
             redis_url=redis_url,
+            reservation_provider=reservation_provider,
             poll_interval_seconds=interval,
             poll_jitter_seconds=jitter,
             max_poll_attempts=attempts,
@@ -798,6 +817,7 @@ class Settings:
     local_llm_model: str = DEFAULT_LOCAL_LLM_MODEL
     timezone_name: str = DEFAULT_TIMEZONE
     redis_url: str = DEFAULT_REDIS_URL
+    reservation_provider: str = DEFAULT_RESERVATION_PROVIDER
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
     poll_jitter_seconds: int = DEFAULT_POLL_JITTER_SECONDS
     max_poll_attempts: int = DEFAULT_MAX_POLL_ATTEMPTS
@@ -849,6 +869,7 @@ class Settings:
             local_llm_model=local_model,
             timezone_name=watch.timezone_name,
             redis_url=watch.redis_url,
+            reservation_provider=watch.reservation_provider,
             poll_interval_seconds=watch.poll_interval_seconds,
             poll_jitter_seconds=watch.poll_jitter_seconds,
             max_poll_attempts=watch.max_poll_attempts,

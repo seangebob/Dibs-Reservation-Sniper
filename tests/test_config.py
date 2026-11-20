@@ -16,6 +16,7 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "LLM_PROVIDER",
         "LOCAL_LLM_BASE_URL",
         "LOCAL_LLM_MODEL",
+        "RESERVATION_PROVIDER",
         "RESERVATION_TIMEZONE",
         "REDIS_URL",
         "WATCH_POLL_INTERVAL_SECONDS",
@@ -486,3 +487,31 @@ def test_recovery_bounds_outside_range_are_rejected(
 
     with pytest.raises(ConfigurationError, match=match):
         WatchSettings.from_environment()
+
+
+# --- reservation provider ---------------------------------------------------
+
+
+def test_the_simulated_provider_is_the_default() -> None:
+    assert WatchSettings.from_environment().reservation_provider == "mock"
+
+
+def test_the_provider_name_is_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RESERVATION_PROVIDER", "  Mock ")
+
+    assert WatchSettings.from_environment().reservation_provider == "mock"
+
+
+def test_an_unknown_provider_names_the_variable_and_the_choices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RESERVATION_PROVIDER", "opentable")
+
+    with pytest.raises(ConfigurationError, match="RESERVATION_PROVIDER") as error:
+        WatchSettings.from_environment()
+
+    assert "mock" in str(error.value)
+
+
+def test_the_worker_settings_carry_the_provider() -> None:
+    assert Settings.from_environment().reservation_provider == "mock"

@@ -27,6 +27,7 @@ backend/
 │   └── schemas.py              # Strict provider and public contracts
 ├── integrations/
 │   ├── base.py                 # ReservationAdapter: the provider seam
+│   ├── registry.py             # RESERVATION_PROVIDER → the adapter API and worker use
 │   ├── mock_booking.py         # Deterministic simulator (the only adapter today)
 │   └── email.py                # SMTP notifier
 ├── services/
@@ -284,6 +285,7 @@ full reference. The frontend ships `frontend/.env.local.example`.
 | `LOCAL_LLM_BASE_URL` | `http://localhost:11434/v1` | Chat Completions base URL of the local server (Ollama's default). LM Studio: `http://localhost:1234/v1`. |
 | `LOCAL_LLM_MODEL` | `qwen3.5:9b` | Local model name; `:` tags and `/` namespaces are allowed. |
 | `RESERVATION_TIMEZONE` | `America/Toronto` | Any IANA zone. |
+| `RESERVATION_PROVIDER` | `mock` | Where availability and bookings come from. Only `mock` (the simulation) exists so far; the API and the worker build their adapter from this one setting. |
 | `REDIS_URL` | `redis://localhost:6379/0` | `redis://`, `rediss://`, or `unix://`. Safe to leave unset. |
 | `FRONTEND_ORIGINS` | unset | Comma-separated CORS origins. Unset ⇒ zero CORS headers sent. Not needed for `npm run dev`, which forwards `/api` to `localhost:8000`. |
 

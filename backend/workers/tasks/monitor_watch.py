@@ -25,7 +25,7 @@ from backend.db.repositories.mock_booking import RedisMockBookingStateRepository
 from backend.db.repositories.watch_history import WatchHistoryRepository
 from backend.db.repositories.watches import RedisWatchRepository
 from backend.integrations.email import EmailNotificationService, SmtplibSender
-from backend.integrations.mock_booking import MockBookingAdapter
+from backend.integrations.registry import build_reservation_adapter
 from backend.services.notification_service import NotificationService
 from backend.services.recipients import AccountRecipientResolver
 from backend.services.watch_service import WatchService
@@ -159,7 +159,7 @@ def build_watch_service() -> WatchService:
             _redis_client(),
             terminal_retention_seconds=settings.terminal_retention_seconds,
         ),
-        MockBookingAdapter(state=mock_state),
+        build_reservation_adapter(settings.reservation_provider, mock_state=mock_state),
         CeleryTaskQueue(monitor_watch),
         schedule=PollSchedule(
             interval_seconds=float(settings.poll_interval_seconds),

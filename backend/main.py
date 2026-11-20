@@ -32,6 +32,7 @@ from backend.config import (
     DEFAULT_PROVIDER_BACKOFF_MAX_SECONDS,
     DEFAULT_PROVIDER_CALL_TIMEOUT_SECONDS,
     LLM_PROVIDER_LOCAL,
+    MOCK_RESERVATION_PROVIDER,
     AccountSettings,
     ConfigurationError,
     CorsSettings,
@@ -66,7 +67,7 @@ from backend.integrations.email import (
     EmailNotificationService,
     SmtplibSender,
 )
-from backend.integrations.mock_booking import MockBookingAdapter
+from backend.integrations.registry import build_reservation_adapter
 from backend.logging_config import configure_application_logging
 from backend.models.account import User
 from backend.models.reservation import PromptExecutionResult
@@ -125,6 +126,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         app.state.watch_settings = WatchSettings.from_environment()
         app.state.watch_settings_error = None
+        _log_reservation_provider(app.state.watch_settings)
     except ConfigurationError as exc:
         app.state.watch_settings = None
         app.state.watch_settings_error = exc
@@ -166,6 +168,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await engine.close()
 
 
+def _log_reservation_provider(settings: WatchSettings) -> None:
+    """Say at startup where availability and bookings come from."""
+
+    if settings.reservation_provider == MOCK_RESERVATION_PROVIDER:
+        logger.info(
+            "Availability comes from the simulated 'mock' provider (demo mode: "
+            "no real tables are found or booked)"
+        )
+    else:
+        logger.info(
+            "Availability comes from reservation provider %r",
+            settings.reservation_provider,
+        )
+
+
 def _log_intent_provider(settings: Settings) -> None:
     """Say at startup which model will read prompts.
 
@@ -183,16 +200,21 @@ def _log_intent_provider(settings: Settings) -> None:
         logger.info("Prompts are read by OpenAI model %r", settings.openai_model)
 
 
-def _bind_mock_adapter(app: FastAPI, state: MockBookingStateRepository) -> None:
-    """Bind one shared mock state to the adapter every service in the process uses.
+def _bind_adapter(
+    app: FastAPI,
+    state: MockBookingStateRepository,
+    provider: str = MOCK_RESERVATION_PROVIDER,
+) -> None:
+    """Bind the configured adapter that every service in the process uses.
 
     `BookingService` and `WatchService` both read `app.state.booking_adapter`,
     so pointing that at an adapter over `state` makes the whole process observe
     one booking/idempotency store rather than diverging per-adapter dictionaries.
+    `state` is the simulation's store; only the mock provider uses it.
     """
 
     app.state.mock_booking_state = state
-    adapter = MockBookingAdapter(state=state)
+    adapter = build_reservation_adapter(provider, mock_state=state)
     app.state.booking_adapter = adapter
     app.state.booking_service = BookingService(adapter)
 
@@ -310,13 +332,14 @@ async def _attach_redis(app: FastAPI) -> None:
 
     # Apply watch settings even when local development has no infrastructure,
     # rebuilding the shared mock state with the configured bounds.
-    _bind_mock_adapter(
+    _bind_adapter(
         app,
         in_memory_mock_state(
             capacity=settings.mock_slot_capacity,
             idle_ttl_seconds=settings.mock_slot_idle_ttl_seconds,
             retention_seconds=settings.mock_booking_retention_seconds,
         ),
+        settings.reservation_provider,
     )
     await app.state.watch_queue.close()
     app.state.watch_service = _build_watch_service(
@@ -384,7 +407,7 @@ async def _attach_redis(app: FastAPI) -> None:
     )
     # Share one Redis-backed mock state over the same client/prefix, so the API
     # and every worker child book against one store across processes.
-    _bind_mock_adapter(
+    _bind_adapter(
         app,
         RedisMockBookingStateRepository(
             client,
@@ -392,6 +415,7 @@ async def _attach_redis(app: FastAPI) -> None:
             idle_ttl_seconds=settings.mock_slot_idle_ttl_seconds,
             retention_seconds=settings.mock_booking_retention_seconds,
         ),
+        settings.reservation_provider,
     )
     app.state.watch_service = _build_watch_service(
         app,
@@ -681,7 +705,7 @@ def create_app() -> FastAPI:
     app.state.recovery_sweep_task = None
     app.state.readiness = ReadinessTracker()
 
-    _bind_mock_adapter(
+    _bind_adapter(
         app,
         in_memory_mock_state(
             capacity=DEFAULT_MOCK_SLOT_CAPACITY,
