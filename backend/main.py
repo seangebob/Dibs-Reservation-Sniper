@@ -22,7 +22,12 @@ from backend.api.dependencies import (
     get_prompt_router,
     get_watch_service,
 )
-from backend.api.routes import auth_router, venues_router, watches_router
+from backend.api.routes import (
+    alerts_router,
+    auth_router,
+    venues_router,
+    watches_router,
+)
 from backend.config import (
     DEFAULT_MAX_POLL_ATTEMPTS,
     DEFAULT_MOCK_BOOKING_RETENTION_SECONDS,
@@ -45,6 +50,7 @@ from backend.config import (
 )
 from backend.db.postgres import create_pool, run_migrations
 from backend.db.repositories.accounts import AccountRepository, SessionRepository
+from backend.db.repositories.guest_alerts import GuestAlertRepository
 from backend.db.repositories.mock_booking import (
     MockBookingStateRepository,
     RedisMockBookingStateRepository,
@@ -91,6 +97,11 @@ from backend.services.throttle import (
     throttle_key,
 )
 from backend.services.password import build_password_hasher
+from backend.services.guest_alerts import (
+    GuestAlertService,
+    InvalidVerificationLinkError,
+    VerificationEmailFailedError,
+)
 from backend.services.recipients import AccountRecipientResolver
 from backend.services.readiness import Readiness, ReadinessTracker
 from backend.services.watch_recovery import RecoveryCoordinator
@@ -295,6 +306,7 @@ async def _attach_postgres(app: FastAPI) -> None:
     # PostgreSQL there is no account to email, so the logging notifier stays.
     # Bad email settings degrade the same way accounts do -- logged, log-only
     # notifications, never a failed startup (Requirement 5.2).
+    guest_alerts_store = GuestAlertRepository(pool)
     try:
         email_settings = EmailSettings.from_environment()
     except ConfigurationError as exc:
@@ -302,11 +314,20 @@ async def _attach_postgres(app: FastAPI) -> None:
             "Email settings invalid; notifications stay log-only: %s", str(exc)
         )
         return
+    # Guests' alert addresses (roadmap 3b). Built even without an SMTP relay,
+    # so local development can try the flow: the confirmation link is logged.
+    app.state.guest_alerts = GuestAlertService(
+        store=guest_alerts_store,
+        sender=SmtplibSender(email_settings) if email_settings.enabled else None,
+        dashboard_base_url=email_settings.dashboard_base_url,
+    )
     if not email_settings.enabled:
         return
     app.state.notifier = EmailNotificationService(
         resolver=AccountRecipientResolver(
-            app.state.watch_history, AccountRepository(pool)
+            app.state.watch_history,
+            AccountRepository(pool),
+            guests=(app.state.watch_history, guest_alerts_store),
         ),
         sender=SmtplibSender(email_settings),
         dashboard_base_url=email_settings.dashboard_base_url,
@@ -681,6 +702,7 @@ def create_app() -> FastAPI:
     app.state.notifier = None
     app.state.notify_timeout_seconds = DEFAULT_NOTIFY_TIMEOUT_SECONDS
     app.state.auth_service = None
+    app.state.guest_alerts = None
     app.state.login_throttle = None
     app.state.login_ip_throttle = None
     # Unlike the login throttle, this one is always present: it caps spend on a
@@ -890,6 +912,8 @@ def create_app() -> FastAPI:
         AuthenticationRequiredError: status.HTTP_401_UNAUTHORIZED,
         AuthValidationError: status.HTTP_422_UNPROCESSABLE_CONTENT,
         AccountsUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
+        InvalidVerificationLinkError: status.HTTP_400_BAD_REQUEST,
+        VerificationEmailFailedError: status.HTTP_502_BAD_GATEWAY,
         WatchOwnershipUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
         RateLimitedError: status.HTTP_429_TOO_MANY_REQUESTS,
     }
@@ -903,6 +927,7 @@ def create_app() -> FastAPI:
     for _exc_cls, _code in _auth_error_status.items():
         app.add_exception_handler(_exc_cls, _auth_error_handler(_code))
 
+    app.include_router(alerts_router)
     app.include_router(auth_router)
     app.include_router(venues_router)
     app.include_router(watches_router)

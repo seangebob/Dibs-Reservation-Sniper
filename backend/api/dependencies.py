@@ -25,6 +25,7 @@ from backend.orchestrator.providers import (
 from backend.orchestrator.router import PromptRouter
 from backend.services.auth_service import AuthenticationRequiredError, AuthService
 from backend.services.booking_service import BookingService
+from backend.services.guest_alerts import GuestAlertService
 from backend.services.watch_service import WatchService
 
 
@@ -76,6 +77,17 @@ def get_auth_service(request: Request) -> AuthService:
     if service is None:
         raise AccountsUnavailableError(
             "Accounts are unavailable because PostgreSQL is not configured."
+        )
+    return service
+
+
+def get_guest_alerts(request: Request) -> GuestAlertService:
+    """Return the guest email-alert service, or 503 without PostgreSQL."""
+
+    service: GuestAlertService | None = getattr(request.app.state, "guest_alerts", None)
+    if service is None:
+        raise AccountsUnavailableError(
+            "Email alerts are unavailable because PostgreSQL is not configured."
         )
     return service
 

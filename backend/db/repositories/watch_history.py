@@ -85,6 +85,11 @@ _SELECT_ONE_SQL = "SELECT watch_json FROM watch_history WHERE watch_id = $1"
 
 _SELECT_ACCOUNT_OWNER_SQL = "SELECT user_id FROM watch_history WHERE watch_id = $1"
 
+_SELECT_GUEST_OWNER_SQL = (
+    "SELECT owner_client_id FROM watch_history "
+    "WHERE watch_id = $1 AND user_id IS NULL"
+)
+
 _SELECT_FOR_OWNER_SQL = """
 SELECT watch_json FROM watch_history
 WHERE owner_client_id = $1 AND user_id IS NULL
@@ -209,6 +214,17 @@ class WatchHistoryRepository:
         if not rows:
             return None
         return rows[0]["user_id"]
+
+    async def get_guest_owner(self, watch_id: str) -> str | None:
+        """Return the anonymous client that owns ``watch_id``, or None when an
+        account owns it (or nobody does, or it isn't in the projection)."""
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(_SELECT_GUEST_OWNER_SQL, watch_id)
+        if not rows:
+            return None
+        owner: str | None = rows[0]["owner_client_id"]
+        return owner
 
 
 class TrackingHistoryRecorder:

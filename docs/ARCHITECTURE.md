@@ -239,6 +239,24 @@ generates and keeps in `localStorage`; those anonymous watches are claimed by th
 account on signup or login. A malformed client id degrades to anonymous rather than
 rejecting the request.
 
+### Email alerts for guests
+
+```text
+GET    /api/alerts/email          # This browser's confirmed alert address, or null
+POST   /api/alerts/email          # Email a single-use confirmation link (202)
+POST   /api/alerts/email/verify   # Use the link's token; its address starts getting alerts
+DELETE /api/alerts/email          # Stop alerts to this browser's address
+```
+
+A guest needs no account to get alerts. They give an address, Dibs emails a link that
+works once and expires in 24 hours, and opening it makes that address receive alerts
+for the watches this browser's `X-Dibs-Client-Id` owns. Only the link token's sha256 is
+stored. Each browser, and each address, may be sent 3 links an hour (`429` beyond).
+`verify` needs only the token, so the link works from any device. A watch owned by an
+account still alerts the account's address. With no SMTP relay, the confirmation link is
+written to the API log instead, so the flow can be tried locally; with no PostgreSQL
+these routes return `503`.
+
 ### Notifications
 
 A watch that finds a table at 2am has to be able to say so. Delivery is **best-effort

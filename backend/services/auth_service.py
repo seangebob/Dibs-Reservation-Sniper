@@ -39,6 +39,8 @@ __all__ = [
     "InvalidCredentialsError",
     "InvalidEmailError",
     "PasswordPolicyError",
+    "hash_token",
+    "normalize_email",
 ]
 
 
@@ -85,6 +87,15 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 Clock = Callable[[], datetime]
 T = TypeVar("T")
+
+
+def normalize_email(email: str) -> str:
+    """Trim and lowercase an address, or raise `InvalidEmailError` if malformed."""
+
+    normalized = email.strip().lower()
+    if not _EMAIL_RE.match(normalized):
+        raise InvalidEmailError("Enter a valid email address.")
+    return normalized
 
 
 def hash_token(raw_token: str) -> str:
@@ -195,10 +206,7 @@ class AuthService:
         return raw
 
     def _normalize_email(self, email: str) -> str:
-        normalized = email.strip().lower()
-        if not _EMAIL_RE.match(normalized):
-            raise InvalidEmailError("Enter a valid email address.")
-        return normalized
+        return normalize_email(email)
 
     def _check_password(self, password: str) -> None:
         if len(password) < self._settings.password_min_length:

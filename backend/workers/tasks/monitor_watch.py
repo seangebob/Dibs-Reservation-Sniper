@@ -21,6 +21,7 @@ from backend.config import (
 from backend.db.database import create_redis_client
 from backend.db.postgres import create_pool
 from backend.db.repositories.accounts import AccountRepository
+from backend.db.repositories.guest_alerts import GuestAlertRepository
 from backend.db.repositories.mock_booking import RedisMockBookingStateRepository
 from backend.db.repositories.watch_history import WatchHistoryRepository
 from backend.db.repositories.watches import RedisWatchRepository
@@ -122,7 +123,9 @@ def _build_notifier(pool: Any) -> NotificationService | None:
         return None
     return EmailNotificationService(
         resolver=AccountRecipientResolver(
-            WatchHistoryRepository(pool), AccountRepository(pool)
+            WatchHistoryRepository(pool),
+            AccountRepository(pool),
+            guests=(WatchHistoryRepository(pool), GuestAlertRepository(pool)),
         ),
         sender=SmtplibSender(settings),
         dashboard_base_url=settings.dashboard_base_url,
