@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.config import AccountSettings
 from backend.main import create_app, get_auth_service
 from backend.models.account import User
 from backend.services.auth_service import InvalidCredentialsError
@@ -145,6 +146,9 @@ def test_throttle_key_normalizes_email_and_missing_origin() -> None:
 
 
 class _AlwaysFailsAuth:
+    # Session cookie settings the routes read (roadmap 3b).
+    settings = AccountSettings()
+
     async def login(self, email: str, password: str) -> tuple[User, str]:
         raise InvalidCredentialsError()
 
@@ -153,6 +157,9 @@ class _AlwaysFailsAuth:
 
 
 class _AlwaysSucceedsAuth:
+    # Session cookie settings the routes read (roadmap 3b).
+    settings = AccountSettings()
+
     async def login(self, email: str, password: str) -> tuple[User, str]:
         return User(id=uuid4(), email=email, created_at=NOW), "tok"
 
@@ -165,6 +172,7 @@ def failing_client():
     )
     app.dependency_overrides[get_auth_service] = lambda: _AlwaysFailsAuth()
     with TestClient(app) as client:
+        client.headers["X-Dibs-CSRF"] = "1"
         yield client
     app.dependency_overrides.clear()
 
@@ -203,6 +211,8 @@ def test_a_successful_login_clears_the_throttle() -> None:
     app.dependency_overrides[get_auth_service] = lambda: current["service"]
 
     with TestClient(app) as client:
+
+        client.headers["X-Dibs-CSRF"] = "1"
         for _ in range(2):
             client.post("/api/auth/login", json=CREDS)
         current["service"] = succeeding
@@ -221,6 +231,7 @@ def test_login_works_normally_when_no_throttle_is_configured() -> None:
     app = create_app()
     app.dependency_overrides[get_auth_service] = lambda: _AlwaysFailsAuth()
     with TestClient(app) as client:
+        client.headers["X-Dibs-CSRF"] = "1"
         for _ in range(5):
             assert client.post("/api/auth/login", json=CREDS).status_code == 401
     app.dependency_overrides.clear()
@@ -241,6 +252,7 @@ def test_a_made_up_origin_does_not_reset_the_email_limit() -> None:
     app = _login_app(email_max=3)
     app.dependency_overrides[get_auth_service] = lambda: _AlwaysFailsAuth()
     with TestClient(app) as client:
+        client.headers["X-Dibs-CSRF"] = "1"
         for n in range(3):
             client.post(
                 "/api/auth/login", json=CREDS, headers={"Origin": f"https://x{n}"}
@@ -255,6 +267,7 @@ def test_one_address_trying_many_emails_is_limited() -> None:
     app = _login_app(email_max=100, ip_max=3)
     app.dependency_overrides[get_auth_service] = lambda: _AlwaysFailsAuth()
     with TestClient(app) as client:
+        client.headers["X-Dibs-CSRF"] = "1"
         for n in range(3):
             body = {"email": f"user{n}@x.com", "password": "hunter2-secret"}
             assert client.post("/api/auth/login", json=body).status_code == 401
@@ -268,6 +281,7 @@ def test_a_successful_login_does_not_clear_the_address_limit() -> None:
     current = {"service": failing}
     app.dependency_overrides[get_auth_service] = lambda: current["service"]
     with TestClient(app) as client:
+        client.headers["X-Dibs-CSRF"] = "1"
         for n in range(2):
             body = {"email": f"victim{n}@x.com", "password": "hunter2-secret"}
             client.post("/api/auth/login", json=body)
@@ -288,6 +302,7 @@ def test_behind_an_untrusted_proxy_one_attacker_cannot_lock_everyone_out() -> No
     current = {"service": failing}
     app.dependency_overrides[get_auth_service] = lambda: current["service"]
     with TestClient(app, client=("10.0.0.5", 50000)) as client:
+        client.headers["X-Dibs-CSRF"] = "1"
         for n in range(5):
             body = {"email": f"guess{n}@x.com", "password": "wrong-password"}
             client.post("/api/auth/login", json=body)
@@ -299,6 +314,7 @@ def test_a_public_address_is_still_limited() -> None:
     app = _login_app(email_max=100, ip_max=3)
     app.dependency_overrides[get_auth_service] = lambda: _AlwaysFailsAuth()
     with TestClient(app, client=("8.8.8.8", 50000)) as client:
+        client.headers["X-Dibs-CSRF"] = "1"
         for n in range(3):
             body = {"email": f"user{n}@x.com", "password": "hunter2-secret"}
             client.post("/api/auth/login", json=body)

@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 
 from backend.db.repositories.watches import InMemoryWatchRepository
 from backend.integrations.mock_booking import MockBookingAdapter
+from backend.config import AccountSettings
 from backend.main import create_app, get_watch_service
 from backend.models.account import User
 from backend.models.watch import Watch
@@ -54,6 +55,9 @@ class _EmptyAdapter(MockBookingAdapter):
 
 
 class _StubAuth:
+    # Session cookie settings the routes read (roadmap 3b).
+    settings = AccountSettings()
+
     async def authenticate(self, raw_token: str | None) -> User | None:
         return {"sess-A": USER_A, "sess-B": USER_B}.get(raw_token or "")
 
@@ -106,6 +110,7 @@ def client():
     )
     app.dependency_overrides[get_watch_service] = lambda: service
     with TestClient(app) as test_client:
+        test_client.headers["X-Dibs-CSRF"] = "1"
         yield test_client, history
     app.dependency_overrides.clear()
 
@@ -241,6 +246,7 @@ def test_a_claimed_watch_falls_under_the_access_boundary(client) -> None:
 
     assert tc.get(f"/api/watches/{watch_id}", headers=BEARER_A).status_code == 200
     assert tc.get(f"/api/watches/{watch_id}", headers=BEARER_B).status_code == 404
+    tc.cookies.clear()  # signup also set A's session cookie; be anonymous
     assert tc.get(f"/api/watches/{watch_id}").status_code == 404
 
 
@@ -259,6 +265,7 @@ def projectionless_client():
     )
     app.dependency_overrides[get_watch_service] = lambda: service
     with TestClient(app) as test_client:
+        test_client.headers["X-Dibs-CSRF"] = "1"
         yield test_client
     app.dependency_overrides.clear()
 

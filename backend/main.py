@@ -14,6 +14,8 @@ from fastapi.responses import JSONResponse
 
 from backend.api.client_identity import extract_client_id
 from backend.api.dependencies import (
+    CSRF_HEADER,
+    SESSION_COOKIE,
     AccountsUnavailableError,
     current_user,
     get_auth_service,
@@ -658,12 +660,42 @@ def _build_watch_service(
 #: browser client can read them via `fetch()`, since custom response headers
 #: are invisible to JS unless explicitly exposed.
 _CORS_ALLOWED_METHODS = ["GET", "POST", "DELETE"]
-_CORS_ALLOWED_HEADERS = ["Content-Type", "X-Dibs-Client-Id", "Authorization"]
+_CORS_ALLOWED_HEADERS = ["Content-Type", "X-Dibs-Client-Id", "Authorization", CSRF_HEADER]
+#: Methods that change something, so a cookie-authenticated call needs CSRF_HEADER.
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _CORS_EXPOSED_HEADERS = [
     "X-Watch-Monitoring-Policy",
     "X-Watch-Max-Availability-Checks",
     "Warning",
 ]
+
+
+def _require_csrf_header(app: FastAPI) -> None:
+    """Refuse cookie-authenticated writes that lack `X-Dibs-CSRF` (roadmap 3b).
+
+    A cookie rides along with any request the browser makes, including one a
+    hostile page triggers with a form. That page cannot add a custom header
+    without a CORS preflight, which only FRONTEND_ORIGINS pass. Requests that
+    authenticate with an `Authorization` header (API clients) or carry no
+    session cookie at all have nothing to forge and are left alone.
+    """
+
+    @app.middleware("http")
+    async def csrf_guard(request: Request, call_next: Any) -> Any:
+        if (
+            request.method in _UNSAFE_METHODS
+            and SESSION_COOKIE in request.cookies
+            and not request.headers.get("authorization")
+            and not request.headers.get(CSRF_HEADER)
+        ):
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={
+                    "detail": "This request is missing its security header. "
+                    "Reload the page and try again."
+                },
+            )
+        return await call_next(request)
 
 
 def _configure_cors(app: FastAPI) -> CorsSettings:
@@ -693,7 +725,10 @@ def _configure_cors(app: FastAPI) -> CorsSettings:
             allow_origins=list(settings.origins),
             allow_methods=_CORS_ALLOWED_METHODS,
             allow_headers=_CORS_ALLOWED_HEADERS,
-            allow_credentials=False,
+            # The session is an HttpOnly cookie (roadmap 3b), so a frontend on
+            # another origin must send credentials. Only the listed origins
+            # get them -- never a wildcard.
+            allow_credentials=True,
             expose_headers=_CORS_EXPOSED_HEADERS,
         )
     return settings
@@ -711,6 +746,7 @@ def create_app() -> FastAPI:
         ),
         lifespan=lifespan,
     )
+    _require_csrf_header(app)
     app.state.cors_settings = _configure_cors(app)
     app.state.orchestrator = None
     app.state.orchestrator_lock = asyncio.Lock()

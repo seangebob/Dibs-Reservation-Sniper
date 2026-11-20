@@ -7,10 +7,10 @@ vi.mock("@/lib/api", () => ({
   signup: vi.fn(),
   me: vi.fn(),
 }));
-vi.mock("@/lib/auth", () => ({ getSessionToken: vi.fn() }));
+vi.mock("@/lib/auth", () => ({ hasSession: vi.fn() }));
 
 import { logout, me } from "@/lib/api";
-import { getSessionToken } from "@/lib/auth";
+import { hasSession } from "@/lib/auth";
 import { AuthProvider } from "./AuthProvider";
 import { AccountBadge } from "./AccountBadge";
 
@@ -30,7 +30,7 @@ describe("AccountBadge (masthead)", () => {
   beforeEach(() => {
     vi.mocked(me).mockReset();
     vi.mocked(logout).mockReset();
-    vi.mocked(getSessionToken).mockReset();
+    vi.mocked(hasSession).mockReset();
     Object.defineProperty(window, "location", {
       value: { assign },
       writable: true,
@@ -43,17 +43,17 @@ describe("AccountBadge (masthead)", () => {
   });
 
   it("logged out: offers a way in and never calls /me (Req 5.1)", async () => {
-    vi.mocked(getSessionToken).mockReturnValue(null);
+    vi.mocked(hasSession).mockReturnValue(false);
     renderBadge();
 
     const link = await screen.findByText(/sign in/i);
     expect(link.closest("a")?.getAttribute("href")).toBe("/account");
-    // No stored token means no round trip: the anonymous flow is untouched.
+    // No sign-in hint means no round trip: the anonymous flow is untouched.
     expect(me).not.toHaveBeenCalled();
   });
 
   it("logged in: shows the email and a log-out action (Req 5.1)", async () => {
-    vi.mocked(getSessionToken).mockReturnValue("tok-abc");
+    vi.mocked(hasSession).mockReturnValue(true);
     vi.mocked(me).mockResolvedValue({ ok: true, data: USER });
     renderBadge();
 
@@ -62,8 +62,8 @@ describe("AccountBadge (masthead)", () => {
     expect(screen.queryByText(/sign in/i)).toBeNull();
   });
 
-  it("a rejected token hydrates to logged out, not an error (Req 5.3)", async () => {
-    vi.mocked(getSessionToken).mockReturnValue("tok-stale");
+  it("a rejected session hydrates to logged out, not an error (Req 5.3)", async () => {
+    vi.mocked(hasSession).mockReturnValue(true);
     vi.mocked(me).mockResolvedValue({
       ok: false,
       status: 401,
@@ -76,7 +76,7 @@ describe("AccountBadge (masthead)", () => {
   });
 
   it("logging out clears the session and returns to the front door", async () => {
-    vi.mocked(getSessionToken).mockReturnValue("tok-abc");
+    vi.mocked(hasSession).mockReturnValue(true);
     vi.mocked(me).mockResolvedValue({ ok: true, data: USER });
     vi.mocked(logout).mockResolvedValue({ ok: true, data: undefined });
     renderBadge();
@@ -88,7 +88,7 @@ describe("AccountBadge (masthead)", () => {
   });
 
   it("renders nothing while hydration is still settling", () => {
-    vi.mocked(getSessionToken).mockReturnValue("tok-abc");
+    vi.mocked(hasSession).mockReturnValue(true);
     vi.mocked(me).mockReturnValue(new Promise(() => {})); // never settles
     const { container } = renderBadge();
 

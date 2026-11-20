@@ -33,6 +33,22 @@ class AccountsUnavailableError(RuntimeError):
     """Accounts require PostgreSQL, which is not configured (-> 503)."""
 
 
+#: The HttpOnly cookie that carries a browser's session (roadmap 3b). Scripts
+#: on the page can't read it, unlike the localStorage token it replaced.
+SESSION_COOKIE = "dibs_session"
+#: Cookie-authenticated writes must carry this header. Another site can't add
+#: a custom header to a cross-site request without a CORS preflight, which
+#: only FRONTEND_ORIGINS pass, so a forged form or image request is refused.
+CSRF_HEADER = "X-Dibs-CSRF"
+
+
+def session_token(request: Request, authorization: str | None) -> str | None:
+    """The caller's session: an `Authorization: Bearer` header (API clients)
+    or else the session cookie (browsers)."""
+
+    return bearer_token(authorization) or request.cookies.get(SESSION_COOKIE) or None
+
+
 def bearer_token(authorization: str | None) -> str | None:
     """Extract the raw token from an ``Authorization: Bearer <token>`` header,
     or None when absent/malformed. Shared by the auth routes and the optional
@@ -54,7 +70,7 @@ async def current_user(
     service: AuthService | None = getattr(request.app.state, "auth_service", None)
     if service is None:
         return None
-    return await service.authenticate(bearer_token(authorization))
+    return await service.authenticate(session_token(request, authorization))
 
 
 async def require_user(

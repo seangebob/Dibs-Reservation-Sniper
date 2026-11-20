@@ -50,7 +50,7 @@ polling chains, and books idempotently so a redelivered job can't reserve twice.
 | --- | --- |
 | Intent extraction and validation | **Real** — a free local model via Ollama by default; OpenAI optional |
 | Watch engine: scheduling, fencing, recovery, retention | **Real** |
-| Accounts and sessions | **Real** — argon2id + opaque bearer tokens |
+| Accounts and sessions | **Real** — argon2id, HttpOnly session cookies with CSRF protection, email confirmation, password reset and change |
 | Email notification | **Real** — any SMTP relay |
 | Durable history | **Real** — PostgreSQL |
 | **Reservation provider** | **Simulated** — mock adapter only |
@@ -296,6 +296,12 @@ Next API routes and no server actions, so Vercel is an ideal host: point it at
 `frontend/`, set `NEXT_PUBLIC_API_BASE_URL` to your deployed API's public URL, and
 deploy. Note that the variable is **inlined at build time**, so changing it requires a
 rebuild, not just an environment edit.
+
+Sign-in uses an HttpOnly cookie, which browsers only send between pages and an API on
+the **same site**: host them under one domain (for example `dibs.ca` and
+`api.dibs.ca`), list the frontend in `FRONTEND_ORIGINS`, and set
+`SESSION_COOKIE_SECURE=true`. A `*.vercel.app` frontend calling an API on another
+provider's domain would have its sign-in cookie blocked.
 
 The backend is a *stateful, long-running* system and serverless functions are the
 wrong shape for it:

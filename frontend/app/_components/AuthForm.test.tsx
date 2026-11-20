@@ -10,10 +10,10 @@ vi.mock("@/lib/api", () => ({
   changePassword: vi.fn(),
   resendConfirmation: vi.fn(),
 }));
-vi.mock("@/lib/auth", () => ({ getSessionToken: vi.fn(() => null) }));
+vi.mock("@/lib/auth", () => ({ hasSession: vi.fn(() => false) }));
 
 import { changePassword, forgotPassword, login, me, resendConfirmation, signup } from "@/lib/api";
-import { getSessionToken } from "@/lib/auth";
+import { hasSession } from "@/lib/auth";
 import { AuthProvider } from "./AuthProvider";
 import { AuthForm } from "./AuthForm";
 
@@ -156,7 +156,7 @@ describe("AuthForm", () => {
   });
 
   it("changes the password when signed in, and says other devices are signed out", async () => {
-    vi.mocked(getSessionToken).mockReturnValue("tok");
+    vi.mocked(hasSession).mockReturnValue(true);
     vi.mocked(me).mockResolvedValue({ ok: true, data: USER });
     vi.mocked(changePassword)
       .mockResolvedValueOnce({ ok: false, status: 422, message: "Your current password is incorrect." })
@@ -174,11 +174,11 @@ describe("AuthForm", () => {
 
     expect(await screen.findByText(/Other devices are signed out/)).toBeTruthy();
     expect(changePassword).toHaveBeenLastCalledWith("old-password", "new-password");
-    vi.mocked(getSessionToken).mockReturnValue(null);
+    vi.mocked(hasSession).mockReturnValue(false);
   });
 
   it("asks an unconfirmed account to confirm its email, and can resend the link", async () => {
-    vi.mocked(getSessionToken).mockReturnValue("tok");
+    vi.mocked(hasSession).mockReturnValue(true);
     vi.mocked(me).mockResolvedValue({ ok: true, data: { ...USER, email_verified: false } });
     vi.mocked(resendConfirmation).mockResolvedValue({ ok: true, data: undefined });
     renderForm();
@@ -188,16 +188,16 @@ describe("AuthForm", () => {
 
     expect(await screen.findByText(/Sent a new link/)).toBeTruthy();
     expect(resendConfirmation).toHaveBeenCalledTimes(1);
-    vi.mocked(getSessionToken).mockReturnValue(null);
+    vi.mocked(hasSession).mockReturnValue(false);
   });
 
   it("shows no confirmation notice once the email is confirmed", async () => {
-    vi.mocked(getSessionToken).mockReturnValue("tok");
+    vi.mocked(hasSession).mockReturnValue(true);
     vi.mocked(me).mockResolvedValue({ ok: true, data: USER });
     renderForm();
 
     await screen.findByText(/SIGNED IN/);
     expect(screen.queryByRole("button", { name: /RESEND LINK/ })).toBeNull();
-    vi.mocked(getSessionToken).mockReturnValue(null);
+    vi.mocked(hasSession).mockReturnValue(false);
   });
 });

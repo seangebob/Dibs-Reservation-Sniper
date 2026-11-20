@@ -8,7 +8,7 @@
  * raw fetch rejection or renders a raw error object (Requirement 1.7).
  */
 
-import { clearSessionToken, getSessionToken, setSessionToken } from "./auth";
+import { hasSession, markSignedIn, markSignedOut } from "./auth";
 import { getClientId } from "./client-id";
 import type {
   AuthResponse,
@@ -72,11 +72,19 @@ async function errorMessage(response: Response): Promise<string> {
 }
 
 /**
- * `omitSession` suppresses only the bearer token, never the client id: signup
- * and login are the calls that establish a session, and they must still send
- * `X-Dibs-Client-Id` so the backend can claim that visitor's anonymous watches.
+ * `omitSession` marks calls that start a session (signup, login, reset): a 401
+ * there is about the submitted credentials, so it must not sign the browser
+ * out. They still send `X-Dibs-Client-Id`, so the backend can claim that
+ * visitor's anonymous watches.
  */
 type FetchOptions = { omitSession?: boolean };
+
+/**
+ * Every request carries this header. The session is a cookie the browser
+ * attaches by itself, so the server refuses cookie-authenticated writes
+ * without it: another site can't add it to a forged request.
+ */
+const CSRF_HEADER = "X-Dibs-CSRF";
 
 async function apiFetch<T>(
   path: string,
@@ -91,14 +99,17 @@ async function apiFetch<T>(
   if (clientId) {
     headers.set("X-Dibs-Client-Id", clientId);
   }
-  const token = options?.omitSession ? null : getSessionToken();
-  if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
-  }
+  headers.set(CSRF_HEADER, "1");
 
   let response: Response;
   try {
-    response = await fetch(`${apiBaseUrl()}${path}`, { ...init, headers });
+    // "include" so the session cookie also goes to an API on another origin
+    // (Docker, a deployment); same-origin requests send it anyway.
+    response = await fetch(`${apiBaseUrl()}${path}`, {
+      ...init,
+      headers,
+      credentials: "include",
+    });
   } catch {
     return {
       ok: false,
@@ -107,11 +118,10 @@ async function apiFetch<T>(
   }
 
   if (!response.ok) {
-    // We presented a token and the server rejected it: the session is gone
-    // (expired or revoked), so drop to logged-out rather than retrying with a
-    // token that can never work again.
-    if (response.status === 401 && token) {
-      clearSessionToken();
+    // The session is gone (expired or revoked): drop to logged-out rather
+    // than asking again with a cookie that can never work.
+    if (response.status === 401 && !options?.omitSession && hasSession()) {
+      markSignedOut();
     }
     return { ok: false, status: response.status, message: await errorMessage(response) };
   }
@@ -216,11 +226,11 @@ async function establishSession(
   const result = await apiFetch<AuthResponse>(
     path,
     { method: "POST", body: JSON.stringify({ email, password }) },
-    // No bearer: a stale token must not turn a wrong password into a logout.
+    // A wrong password's 401 must not sign out an existing session.
     { omitSession: true },
   );
   if (result.ok) {
-    setSessionToken(result.data.token);
+    markSignedIn();
   }
   return result;
 }
@@ -242,12 +252,13 @@ export function login(
 }
 
 /**
- * End the session. The local token is cleared whatever the server says: a
- * network failure or an already-dead session must still log the user out here.
+ * End the session: the server revokes it and clears the cookie. The local
+ * hint is cleared whatever the server says, so a network failure or an
+ * already-dead session still shows the user as logged out here.
  */
 export async function logout(): Promise<ApiResult<void>> {
   const result = await apiFetch<void>("/api/auth/logout", { method: "POST" });
-  clearSessionToken();
+  markSignedOut();
   return result;
 }
 
@@ -274,27 +285,23 @@ export async function resetPassword(
     { omitSession: true },
   );
   if (result.ok) {
-    setSessionToken(result.data.token);
+    markSignedIn();
   }
   return result;
 }
 
 /**
  * Change the signed-in account's password. The server signs out every
- * session, so the fresh one it returns replaces this browser's token.
+ * session and sets a fresh session cookie for this browser.
  */
-export async function changePassword(
+export function changePassword(
   currentPassword: string,
   newPassword: string,
 ): Promise<ApiResult<AuthResponse>> {
-  const result = await apiFetch<AuthResponse>("/api/auth/password/change", {
+  return apiFetch<AuthResponse>("/api/auth/password/change", {
     method: "POST",
     body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
   });
-  if (result.ok) {
-    setSessionToken(result.data.token);
-  }
-  return result;
 }
 
 /** Use an account confirmation link's token; returns the confirmed account. */

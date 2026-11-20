@@ -9,7 +9,11 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, Request, Respon
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.api.client_identity import extract_client_id
-from backend.api.dependencies import bearer_token, get_auth_service
+from backend.api.dependencies import (
+    SESSION_COOKIE,
+    get_auth_service,
+    session_token,
+)
 from backend.models.account import User
 from backend.services.auth_service import (
     AuthenticationRequiredError,
@@ -75,6 +79,31 @@ def _warn_untrusted_proxy_once(peer: str | None) -> None:
     )
 
 
+def _set_session_cookie(
+    request: Request, response: Response, service: AuthService, token: str
+) -> None:
+    """Hand the browser its session as an HttpOnly cookie (roadmap 3b).
+
+    HttpOnly keeps it out of reach of scripts on the page; SameSite=Lax keeps
+    other sites' forms from sending it; Path=/api sends it only to the API.
+    The token is also in the JSON body for API clients that use a header.
+    """
+
+    settings = service.settings
+    secure = settings.session_cookie_secure == "true" or (
+        settings.session_cookie_secure == "auto" and request.url.scheme == "https"
+    )
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=settings.session_ttl_seconds,
+        path="/api",
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+    )
+
+
 class Credentials(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -92,12 +121,14 @@ class AuthResponse(BaseModel):
 @router.post("/signup", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 async def signup(
     request: Request,
+    response: Response,
     body: Credentials,
     service: AuthServiceDep,
     background: BackgroundTasks,
     x_dibs_client_id: ClientIdHeader = None,
 ) -> AuthResponse:
     user, token = await service.signup(body.email, body.password)
+    _set_session_cookie(request, response, service, token)
     await _claim_anonymous_watches(request, user, x_dibs_client_id)
     # The confirmation email goes out after the response, so a slow relay
     # never slows sign-up down.
@@ -108,6 +139,7 @@ async def signup(
 @router.post("/login", response_model=AuthResponse)
 async def login(
     request: Request,
+    response: Response,
     body: Credentials,
     service: AuthServiceDep,
     x_dibs_client_id: ClientIdHeader = None,
@@ -156,26 +188,31 @@ async def login(
     if ip_throttle is not None:
         await ip_throttle.arelease(ip_key, ip_token)
     await _claim_anonymous_watches(request, user, x_dibs_client_id)
+    _set_session_cookie(request, response, service, token)
     return AuthResponse(token=token, user=user)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(
+    request: Request,
     service: AuthServiceDep,
     authorization: Annotated[str | None, Header()] = None,
 ) -> Response:
-    token = bearer_token(authorization)
+    token = session_token(request, authorization)
     if token:
         await service.logout(token)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    response.delete_cookie(SESSION_COOKIE, path="/api")
+    return response
 
 
 @router.get("/me", response_model=User)
 async def me(
+    request: Request,
     service: AuthServiceDep,
     authorization: Annotated[str | None, Header()] = None,
 ) -> User:
-    user = await service.authenticate(bearer_token(authorization))
+    user = await service.authenticate(session_token(request, authorization))
     if user is None:
         raise AuthenticationRequiredError()
     return user
@@ -221,11 +258,17 @@ async def forgot_password(
 
 
 @router.post("/password/reset", response_model=AuthResponse)
-async def reset_password(body: ResetPasswordRequest, service: AuthServiceDep) -> AuthResponse:
+async def reset_password(
+    request: Request,
+    response: Response,
+    body: ResetPasswordRequest,
+    service: AuthServiceDep,
+) -> AuthResponse:
     """Use a reset link: new password, every other session signed out, and a
     fresh session returned for this browser."""
 
     user, token = await service.reset_password(body.token, body.password)
+    _set_session_cookie(request, response, service, token)
     return AuthResponse(token=token, user=user)
 
 
@@ -241,6 +284,8 @@ class ChangePasswordRequest(BaseModel):
 
 @router.post("/password/change", response_model=AuthResponse)
 async def change_password(
+    request: Request,
+    response: Response,
     body: ChangePasswordRequest,
     service: AuthServiceDep,
     authorization: Annotated[str | None, Header()] = None,
@@ -249,8 +294,9 @@ async def change_password(
     returns a fresh one for this browser."""
 
     user, token = await service.change_password(
-        bearer_token(authorization), body.current_password, body.new_password
+        session_token(request, authorization), body.current_password, body.new_password
     )
+    _set_session_cookie(request, response, service, token)
     return AuthResponse(token=token, user=user)
 
 
@@ -280,6 +326,7 @@ async def confirm_email(body: ConfirmEmailRequest, service: AuthServiceDep) -> U
 
 @router.post("/email/resend", status_code=status.HTTP_202_ACCEPTED)
 async def resend_confirmation(
+    request: Request,
     service: AuthServiceDep,
     background: BackgroundTasks,
     authorization: Annotated[str | None, Header()] = None,
@@ -287,6 +334,6 @@ async def resend_confirmation(
     """Send the signed-in account another confirmation link (3 an hour). A
     no-op once the address is confirmed."""
 
-    user = await service.prepare_confirmation_resend(bearer_token(authorization))
+    user = await service.prepare_confirmation_resend(session_token(request, authorization))
     background.add_task(_send_email_confirmation, service, user.id)
     return Response(status_code=status.HTTP_202_ACCEPTED)

@@ -275,6 +275,8 @@ def api() -> Any:
     with TestClient(app) as client:
         service, *_ = _service(mailer)
         app.state.auth_service = service
+        # Like the website: writes carry the CSRF header the session cookie needs.
+        client.headers["X-Dibs-CSRF"] = "1"
         yield client, service, mailer
 
 
@@ -400,6 +402,7 @@ def test_the_change_api_returns_a_fresh_session_and_a_wrong_password_is_not_a_40
     assert client.get("/api/auth/me", headers=auth).status_code == 401
     assert client.get("/api/auth/me", headers={"Authorization": f"Bearer {fresh}"}).status_code == 200
 
+    client.cookies.clear()
     anonymous = client.post(
         "/api/auth/password/change",
         json={"current_password": "x", "new_password": "new-password"},

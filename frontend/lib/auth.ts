@@ -1,52 +1,63 @@
 /**
- * The session token store (Milestone 5, Requirement 5.2).
+ * Whether this browser is signed in (roadmap 3b).
  *
- * Holds the opaque bearer token the backend issues at signup/login. Unlike the
- * anonymous client id in `client-id.ts`, this is never generated here — it only
- * ever comes from the server, and clearing it is exactly "log out".
+ * The session itself is an HttpOnly cookie the server sets, which scripts on
+ * the page can't read -- that is the point: a malicious script can't steal it.
+ * What's kept here is only a "signed in" hint, so the app knows whether to ask
+ * `/api/auth/me` on load instead of sending every anonymous visitor's browser
+ * a request that can only answer 401. It grants nothing; the cookie does.
  */
 
-const STORAGE_KEY = "dibs.session-token";
+const HINT_KEY = "dibs.signed-in";
+/** Where the bearer token used to live, before cookie sessions. */
+const LEGACY_TOKEN_KEY = "dibs.session-token";
 
-// Fallback for browsers where `localStorage` throws (private mode): the session
-// then lives for the tab only. A token written here but not to storage can go
-// stale if another tab logs out; that self-heals on the next 401, which clears
-// the token (see `lib/api.ts`).
-let memoryToken: string | null = null;
+// Fallback for browsers where `localStorage` throws (private mode).
+let memoryHint = false;
 
-/** The current session token, or null when logged out or server-rendering. */
-export function getSessionToken(): string | null {
+function storage(): Storage | null {
   if (typeof window === "undefined") return null;
   try {
-    return window.localStorage.getItem(STORAGE_KEY) ?? memoryToken;
+    return window.localStorage;
   } catch {
-    return memoryToken;
+    return null;
   }
 }
 
-/** Persist the token issued by signup/login. */
-export function setSessionToken(token: string): void {
-  memoryToken = token;
-  if (typeof window === "undefined") return;
+/** True when this browser signed in and hasn't signed out since. */
+export function hasSession(): boolean {
+  const store = storage();
   try {
-    window.localStorage.setItem(STORAGE_KEY, token);
+    // A token from before cookie sessions is a credential at rest; drop it.
+    store?.removeItem(LEGACY_TOKEN_KEY);
+    return store?.getItem(HINT_KEY) === "1" || memoryHint;
   } catch {
-    // Storage disabled or full: the in-memory token still covers this tab.
+    return memoryHint;
   }
 }
 
-/** Forget the session — on logout, or when the server rejects the token. */
-export function clearSessionToken(): void {
-  memoryToken = null;
-  if (typeof window === "undefined") return;
+/** Remember that the server just signed this browser in. */
+export function markSignedIn(): void {
+  memoryHint = true;
   try {
-    window.localStorage.removeItem(STORAGE_KEY);
+    storage()?.setItem(HINT_KEY, "1");
+  } catch {
+    // Storage disabled or full: the in-memory hint still covers this tab.
+  }
+}
+
+/** Forget the hint -- on logout, or when the server says the session is gone. */
+export function markSignedOut(): void {
+  memoryHint = false;
+  try {
+    storage()?.removeItem(HINT_KEY);
+    storage()?.removeItem(LEGACY_TOKEN_KEY);
   } catch {
     // Nothing to remove if storage is unavailable.
   }
 }
 
 /** Test-only: drop the in-memory fallback so each test starts clean. */
-export function __resetSessionTokenForTests(): void {
-  memoryToken = null;
+export function __resetSessionForTests(): void {
+  memoryHint = false;
 }

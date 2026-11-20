@@ -8,6 +8,7 @@ import httpx
 import pytest
 from fakeredis.aioredis import FakeRedis
 
+from backend.config import AccountSettings
 from backend.main import create_app, get_auth_service
 from backend.models.account import User
 from backend.services.auth_service import InvalidCredentialsError
@@ -29,6 +30,8 @@ def test_pending_login_attempts_count_and_success_releases_only_its_ip_slot(redi
         calls = []
         succeeds = False
         class Auth:
+            settings = AccountSettings()
+
             async def login(self, email, password):
                 calls.append(email)
                 await asyncio.sleep(0.01)
@@ -37,7 +40,9 @@ def test_pending_login_attempts_count_and_success_releases_only_its_ip_slot(redi
                 raise InvalidCredentialsError()
         app.dependency_overrides[get_auth_service] = lambda: Auth()
         transport = httpx.ASGITransport(app=app, client=("8.8.8.8", 1234))
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test", headers={"X-Dibs-CSRF": "1"}
+        ) as api:
             responses = await asyncio.gather(*(
                 api.post("/api/auth/login", json={"email": "a@example.com", "password": "wrong"})
                 for _ in range(10)

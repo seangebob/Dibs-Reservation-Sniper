@@ -224,6 +224,10 @@ class AuthService:
         # Bound Argon2's CPU/memory use while keeping the API loop responsive.
         self._password_slots = asyncio.Semaphore(4)
 
+    @property
+    def settings(self) -> AccountSettings:
+        return self._settings
+
     async def _password_work(self, operation: Callable[..., T], *args: Any) -> T:
         async with self._password_slots:
             task = asyncio.create_task(asyncio.to_thread(operation, *args))

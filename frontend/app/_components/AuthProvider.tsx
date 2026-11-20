@@ -24,7 +24,7 @@ import {
   signup as apiSignup,
   type ApiResult,
 } from "@/lib/api";
-import { getSessionToken } from "@/lib/auth";
+import { hasSession } from "@/lib/auth";
 import type { AuthResponse, User } from "@/types/api";
 
 type Credentials = (email: string, password: string) => Promise<ApiResult<AuthResponse>>;
@@ -45,7 +45,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!getSessionToken()) {
+    if (!hasSession()) {
       setLoading(false);
       return;
     }

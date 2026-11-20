@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  __resetSessionTokenForTests,
-  getSessionToken,
-  setSessionToken,
+  __resetSessionForTests,
+  hasSession,
+  markSignedIn,
 } from "./auth";
 import { __resetClientIdCacheForTests } from "./client-id";
 import {
@@ -53,7 +53,7 @@ describe("apiFetch (via typed wrappers)", () => {
   beforeEach(() => {
     window.localStorage.clear();
     __resetClientIdCacheForTests();
-    __resetSessionTokenForTests();
+    __resetSessionForTests();
   });
 
   afterEach(() => {
@@ -160,47 +160,43 @@ describe("session handling", () => {
   beforeEach(() => {
     window.localStorage.clear();
     __resetClientIdCacheForTests();
-    __resetSessionTokenForTests();
+    __resetSessionForTests();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("attaches the bearer token alongside the client id when signed in", async () => {
-    setSessionToken("tok-abc");
+  it("sends the session cookie and the CSRF header, never a bearer token", async () => {
+    markSignedIn();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([]));
 
     await listMyWatches();
 
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.credentials).toBe("include");
     const headers = headersOf(fetchMock);
-    expect(headers.get("Authorization")).toBe("Bearer tok-abc");
+    expect(headers.get("X-Dibs-CSRF")).toBe("1");
+    expect(headers.has("Authorization")).toBe(false);
     expect(headers.get("X-Dibs-Client-Id")).toMatch(/^[A-Za-z0-9_-]{1,200}$/);
   });
 
-  it("sends no Authorization header when logged out", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([]));
-
-    await listMyWatches();
-
-    expect(headersOf(fetchMock).has("Authorization")).toBe(false);
-  });
-
-  it("stores the token returned by signup", async () => {
+  it("notes the sign-in after signup, without storing the token", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(AUTH_BODY, 201));
 
     const result = await signup("a@x.com", "hunter2-secret");
 
     expect(result.ok).toBe(true);
-    expect(getSessionToken()).toBe("tok-new");
+    expect(hasSession()).toBe(true);
+    expect(JSON.stringify(window.localStorage)).not.toContain("tok-new");
   });
 
-  it("stores the token returned by login", async () => {
+  it("notes the sign-in after login", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(AUTH_BODY));
 
     await login("a@x.com", "hunter2-secret");
 
-    expect(getSessionToken()).toBe("tok-new");
+    expect(hasSession()).toBe(true);
   });
 
   it("still sends the client id on login so anonymous watches are claimed", async () => {
@@ -208,13 +204,11 @@ describe("session handling", () => {
 
     await login("a@x.com", "hunter2-secret");
 
-    const headers = headersOf(fetchMock);
-    expect(headers.get("X-Dibs-Client-Id")).toMatch(/^[A-Za-z0-9_-]{1,200}$/);
-    expect(headers.has("Authorization")).toBe(false);
+    expect(headersOf(fetchMock).get("X-Dibs-Client-Id")).toMatch(/^[A-Za-z0-9_-]{1,200}$/);
   });
 
   it("keeps an existing session when a login attempt is rejected", async () => {
-    setSessionToken("tok-abc");
+    markSignedIn();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse({ detail: "Invalid email or password." }, 401),
     );
@@ -222,12 +216,12 @@ describe("session handling", () => {
     const result = await login("a@x.com", "wrong");
 
     expect(result.ok).toBe(false);
-    // The 401 is about the submitted credentials, not the stored token.
-    expect(getSessionToken()).toBe("tok-abc");
+    // The 401 is about the submitted credentials, not the session.
+    expect(hasSession()).toBe(true);
   });
 
-  it("clears the token when the server rejects it with a 401", async () => {
-    setSessionToken("tok-stale");
+  it("signs out locally when the server says the session is gone", async () => {
+    markSignedIn();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse({ detail: "Authentication required." }, 401),
     );
@@ -235,40 +229,39 @@ describe("session handling", () => {
     const result = await me();
 
     expect(result.ok).toBe(false);
-    expect(getSessionToken()).toBeNull();
+    expect(hasSession()).toBe(false);
   });
 
-  it("keeps the token on a non-401 failure", async () => {
-    setSessionToken("tok-abc");
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ detail: "nope" }, 500),
-    );
+  it("stays signed in on a non-401 failure", async () => {
+    markSignedIn();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ detail: "nope" }, 500));
 
     await me();
 
-    expect(getSessionToken()).toBe("tok-abc");
+    expect(hasSession()).toBe(true);
   });
 
-  it("logout clears the token even when the request fails", async () => {
-    setSessionToken("tok-abc");
+  it("logout signs out locally even when the request fails", async () => {
+    markSignedIn();
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("Failed to fetch"));
 
     const result = await logout();
 
     expect(result.ok).toBe(false);
-    expect(getSessionToken()).toBeNull();
+    expect(hasSession()).toBe(false);
   });
 
-  it("logout sends the bearer so the server can revoke it", async () => {
-    setSessionToken("tok-abc");
+  it("logout asks the server to revoke the session and clear the cookie", async () => {
+    markSignedIn();
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response(null, { status: 204 }));
 
     await logout();
 
-    expect(headersOf(fetchMock).get("Authorization")).toBe("Bearer tok-abc");
-    expect(getSessionToken()).toBeNull();
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/\/api\/auth\/logout$/);
+    expect((fetchMock.mock.calls[0][1] as RequestInit).credentials).toBe("include");
+    expect(hasSession()).toBe(false);
   });
 });
 
@@ -276,7 +269,7 @@ describe("watch form calls", () => {
   beforeEach(() => {
     window.localStorage.clear();
     __resetClientIdCacheForTests();
-    __resetSessionTokenForTests();
+    __resetSessionForTests();
   });
 
   afterEach(() => {

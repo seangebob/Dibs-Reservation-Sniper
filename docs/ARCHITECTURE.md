@@ -248,8 +248,23 @@ confirmed account address**, so a typo at sign-up never sends someone else's ale
 stranger; accounts created before migration 0006 start unconfirmed. Using a password
 reset link also confirms the address. Resending is limited to 3 links an hour.
 
-Passwords are argon2id. A session is an **opaque bearer token whose sha256 is all the
-server stores**, sent as `Authorization: Bearer <token>`.
+Passwords are argon2id. A session is an **opaque token whose sha256 is all the server
+stores**. Browsers carry it in the `dibs_session` cookie: `HttpOnly` (scripts on the
+page can't read it), `SameSite=Lax`, `Path=/api`, and `Secure` over https or when
+`SESSION_COOKIE_SECURE=true`. Sign-up, login, password reset, and password change set
+it; logout revokes the session and clears it. API clients can still send
+`Authorization: Bearer <token>` (the token is also in those responses' JSON), which
+takes precedence over the cookie.
+
+**CSRF.** A write (`POST`/`PUT`/`PATCH`/`DELETE`) that carries the session cookie but no
+`Authorization` header must also send `X-Dibs-CSRF`, or it gets `403`. Another site
+can't add a custom header to a request without a CORS preflight, and only
+`FRONTEND_ORIGINS` pass one; CORS allows credentials for exactly those origins.
+
+**Same site required.** Browsers drop cookies between unrelated sites, so the frontend
+and API must share a site (e.g. `dibs.ca` and `api.dibs.ca`), or the frontend must
+forward `/api` to the API as `npm run dev` does. Set `SESSION_COOKIE_SECURE=true` in
+production; behind a TLS-terminating proxy the API may otherwise see plain http.
 
 **Authentication is an optional lens, never a gate.** A request with no `Authorization`
 header behaves exactly as it did before accounts existed. With no PostgreSQL, the
@@ -372,6 +387,7 @@ DSN.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SESSION_TTL_SECONDS` | 2,592,000 | Session lifetime (30 days) |
+| `SESSION_COOKIE_SECURE` | `auto` | `auto` (Secure when the request came over https), `true`, or `false`. Use `true` in production. |
 | `PASSWORD_MIN_LENGTH` / `PASSWORD_MAX_LENGTH` | 8 / — | Signup password policy |
 | `LOGIN_THROTTLE_MAX_ATTEMPTS` | 10 | Failed logins for one email per window before `429` |
 | `LOGIN_IP_THROTTLE_MAX_ATTEMPTS` | 50 | Failed logins from one client address (any email) per window before `429`. Skipped for private/loopback addresses — usually an untrusted proxy, where every user would share one limit (a warning is logged; set `FORWARDED_ALLOW_IPS`). |

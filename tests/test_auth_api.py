@@ -14,6 +14,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.config import AccountSettings
 from backend.main import create_app, get_auth_service
 from backend.models.account import User
 from backend.services.auth_service import (
@@ -31,6 +32,9 @@ def _user(email: str) -> User:
 
 
 class _StubAuth:
+    # Session cookie settings the routes read (roadmap 3b).
+    settings = AccountSettings()
+
     def __init__(self) -> None:
         self.logged_out: list[str] = []
 

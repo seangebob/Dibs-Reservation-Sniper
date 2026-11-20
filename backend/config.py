@@ -534,6 +534,9 @@ class AccountSettings:
     login_throttle_max_attempts: int = DEFAULT_LOGIN_THROTTLE_MAX_ATTEMPTS
     login_throttle_window_seconds: int = DEFAULT_LOGIN_THROTTLE_WINDOW_SECONDS
     login_ip_throttle_max_attempts: int = DEFAULT_LOGIN_IP_THROTTLE_MAX_ATTEMPTS
+    #: The session cookie's Secure flag: "auto" sets it when the request came
+    #: over https; production behind a TLS-terminating proxy should say "true".
+    session_cookie_secure: str = "auto"
 
     @classmethod
     def from_environment(cls) -> "AccountSettings":
@@ -553,7 +556,14 @@ class AccountSettings:
             raise ConfigurationError(
                 "PASSWORD_MAX_LENGTH must be at least PASSWORD_MIN_LENGTH"
             )
+        cookie_secure = (os.getenv("SESSION_COOKIE_SECURE") or "auto").strip().lower()
+        if cookie_secure not in {"auto", "true", "false"}:
+            raise ConfigurationError(
+                f"Invalid SESSION_COOKIE_SECURE: {cookie_secure!r}. Expected "
+                "'auto', 'true', or 'false'."
+            )
         return cls(
+            session_cookie_secure=cookie_secure,
             session_ttl_seconds=_bounded_count(
                 "SESSION_TTL_SECONDS",
                 DEFAULT_SESSION_TTL_SECONDS,

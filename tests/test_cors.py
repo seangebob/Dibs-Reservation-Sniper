@@ -156,17 +156,31 @@ def test_preflight_for_a_configured_origin_allows_the_client_id_header(
     assert "content-type" in allowed_headers
 
 
-def test_credentials_are_never_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_credentials_go_only_to_a_listed_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The session is an HttpOnly cookie (roadmap 3b), so a frontend on another
+    origin must send credentials -- but only the listed origins may, never a
+    wildcard and never an unlisted site."""
+
     _clear(monkeypatch)
     monkeypatch.setenv("FRONTEND_ORIGINS", "https://app.example.com")
     app = create_app()
 
     with TestClient(app) as client:
-        response = client.get(
-            "/health", headers={"Origin": "https://app.example.com"}
+        listed = client.get("/health", headers={"Origin": "https://app.example.com"})
+        unlisted = client.get("/health", headers={"Origin": "https://evil.example"})
+        preflight = client.options(
+            "/api/auth/logout",
+            headers={
+                "Origin": "https://app.example.com",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "x-dibs-csrf",
+            },
         )
 
-    assert "access-control-allow-credentials" not in response.headers
+    assert listed.headers["access-control-allow-credentials"] == "true"
+    assert listed.headers["access-control-allow-origin"] == "https://app.example.com"
+    assert "access-control-allow-origin" not in unlisted.headers
+    assert "x-dibs-csrf" in preflight.headers["access-control-allow-headers"].lower()
 
 
 def test_the_policy_headers_are_exposed_for_javascript_to_read(

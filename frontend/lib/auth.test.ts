@@ -1,50 +1,41 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import {
-  __resetSessionTokenForTests,
-  clearSessionToken,
-  getSessionToken,
-  setSessionToken,
-} from "./auth";
+import { __resetSessionForTests, hasSession, markSignedIn, markSignedOut } from "./auth";
 
-describe("session token store", () => {
+describe("signed-in hint", () => {
   beforeEach(() => {
     window.localStorage.clear();
-    __resetSessionTokenForTests();
+    __resetSessionForTests();
   });
 
-  it("is null before anything is stored", () => {
-    expect(getSessionToken()).toBeNull();
+  it("starts signed out", () => {
+    expect(hasSession()).toBe(false);
   });
 
-  it("returns what was set", () => {
-    setSessionToken("tok-abc");
+  it("remembers a sign-in across reloads", () => {
+    markSignedIn();
+    __resetSessionForTests(); // a reload drops memory; storage keeps the hint
 
-    expect(getSessionToken()).toBe("tok-abc");
+    expect(hasSession()).toBe(true);
   });
 
-  it("persists to localStorage so the session survives a reload", () => {
-    setSessionToken("tok-abc");
+  it("forgets it on sign-out", () => {
+    markSignedIn();
+    markSignedOut();
 
-    expect(window.localStorage.getItem("dibs.session-token")).toBe("tok-abc");
-    // A "fresh page" keeps only storage, not the in-memory fallback.
-    __resetSessionTokenForTests();
-    expect(getSessionToken()).toBe("tok-abc");
+    expect(hasSession()).toBe(false);
   });
 
-  it("clearing forgets the token everywhere", () => {
-    setSessionToken("tok-abc");
+  it("never keeps the hint in a way that holds a credential", () => {
+    markSignedIn();
 
-    clearSessionToken();
+    expect(window.localStorage.getItem("dibs.signed-in")).toBe("1");
+  });
 
-    expect(getSessionToken()).toBeNull();
+  it("removes a token left by the old localStorage sessions", () => {
+    window.localStorage.setItem("dibs.session-token", "old-bearer-token");
+
+    expect(hasSession()).toBe(false);
     expect(window.localStorage.getItem("dibs.session-token")).toBeNull();
-  });
-
-  it("replaces an existing token rather than accumulating", () => {
-    setSessionToken("tok-old");
-    setSessionToken("tok-new");
-
-    expect(getSessionToken()).toBe("tok-new");
   });
 });
