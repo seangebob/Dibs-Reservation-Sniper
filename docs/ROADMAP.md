@@ -35,6 +35,8 @@ The watch engine, dashboard, accounts, and email integration already exist. Prom
 
 **Complete when** a watch for a supported venue can detect a real opening and include a working link for the diner to finish booking. [Reservation provider interface](../backend/integrations/base.py)
 
+**Status (Nov 20, 2026): waiting on a provider.** The provider-neutral parts are built: each opening can carry the provider's `https://` booking link, which the alert email, the dashboard, and search results show as **BOOK IT**; and `RESERVATION_PROVIDER` picks the adapter for both the API and the worker. The questions to ask a provider, and what to send once there is one, are in the [provider checklist](PROVIDER_CHECKLIST.md). Still to do with a real provider: the adapter itself, mapping venue IDs and local times, and following its request limits.
+
 ### Secure accounts and deliver email alerts
 
 - Move browser sessions from local storage to server-managed cookies with `HttpOnly`, `Secure` in production, and an appropriate `SameSite` policy. Protect cookie-authenticated writes against CSRF and verify signup, login, and logout on the deployed domains.
