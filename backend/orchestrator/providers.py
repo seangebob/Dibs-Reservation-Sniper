@@ -2,7 +2,7 @@
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Protocol
 
 from openai import (
@@ -161,6 +161,46 @@ LOCAL_OUTPUT_INSTRUCTIONS = """Respond with exactly one JSON object and nothing 
  "special_requests": [string, ...]}
 """
 
+def local_examples(reference_time: datetime) -> str:
+    """Worked examples for self-hosted models.
+
+    With thinking off, a 9B model follows examples far better than rules.
+    Without them it turned "at 6pm" into a one-hour window, "Saturday evening"
+    into 17:00-23:00, and dropped the party size from "for 4 ... for 2 hours";
+    each example covers one of those, and "at 8" shows that a bare hour is
+    kept. A model copies whichever example looks most like the prompt, so the
+    no-time example is deliberately worded unlike an ordinary booking -- a
+    "Book X for 2 in the evening" example made it drop the time from "Book X
+    for 2 Saturday at 7pm". The venues are made up, and the dated example is
+    built from the reference time so its year is always right.
+    """
+
+    day = reference_time.date() + timedelta(days=12)
+    return (
+        "Examples (made-up venues; never copy them into an answer):\n"
+        f"Message: Is there a table at Cafe Pyrus for 3 on {day:%B} {day.day} at 6:30pm?\n"
+        'JSON: {"action": "SEARCH_AVAILABILITY", "venue_name": "Cafe Pyrus", '
+        '"venue_type": "RESTAURANT", "party_size": 3, '
+        f'"date": "{day.isoformat()}", "preferred_time": "18:30", '
+        '"time_window": null, "duration_minutes": null, "special_requests": []}\n'
+        "Message: Book Cafe Pyrus for 2 at 8\n"
+        'JSON: {"action": "BOOK_RESERVATION", "venue_name": "Cafe Pyrus", '
+        '"venue_type": "RESTAURANT", "party_size": 2, "date": null, '
+        '"preferred_time": "20:00", "time_window": null, "duration_minutes": null, '
+        '"special_requests": []}\n'
+        "Message: Somewhere in the evening works, Cafe Pyrus, 5 of us\n"
+        'JSON: {"action": "BOOK_RESERVATION", "venue_name": "Cafe Pyrus", '
+        '"venue_type": "RESTAURANT", "party_size": 5, "date": null, '
+        '"preferred_time": null, "time_window": null, "duration_minutes": null, '
+        '"special_requests": []}\n'
+        "Message: Watch Laser Quest for 6 from 2 to 5 for 90 minutes, wheelchair access please\n"
+        'JSON: {"action": "CREATE_WATCH", "venue_name": "Laser Quest", '
+        '"venue_type": "RECREATION", "party_size": 6, "date": null, '
+        '"preferred_time": null, "time_window": {"start": "14:00", "end": "17:00"}, '
+        '"duration_minutes": 90, "special_requests": ["wheelchair access"]}\n'
+    )
+
+
 #: The same caller-facing text OpenAI's 429 uses: the specific reason (server
 #: down, model not pulled) is logged for the operator, never shown to visitors.
 _UNAVAILABLE_MESSAGE = (
@@ -287,7 +327,8 @@ class LocalIntentProvider:
             {
                 "role": "system",
                 "content": (
-                    f"{SYSTEM_PROMPT}\n{LOCAL_OUTPUT_INSTRUCTIONS}\n{reference_context}"
+                    f"{SYSTEM_PROMPT}\n{LOCAL_OUTPUT_INSTRUCTIONS}\n"
+                    f"{local_examples(reference_time)}\n{reference_context}"
                 ),
             },
             {"role": "user", "content": prompt},

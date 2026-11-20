@@ -31,6 +31,7 @@ from backend.orchestrator.providers import (
     ProviderError,
     ProviderUnavailableError,
     extraction_json_schema,
+    local_examples,
 )
 from backend.orchestrator.schemas import (
     IntentAction,
@@ -205,6 +206,26 @@ def test_bad_request_without_reasoning_effort_is_a_provider_error() -> None:
 
     assert len(completions.calls) == 2
     assert not isinstance(error.value, ProviderUnavailableError)
+
+
+def test_request_includes_worked_examples() -> None:
+    provider, completions = provider_for(completion(VALID_REPLY))
+
+    extract(provider)
+
+    system = completions.calls[0]["messages"][0]["content"]
+    assert local_examples(REFERENCE_TIME) in system
+
+
+def test_every_worked_example_is_a_valid_extraction() -> None:
+    examples = local_examples(REFERENCE_TIME)
+    answers = [line.removeprefix("JSON: ") for line in examples.splitlines() if line.startswith("JSON: ")]
+
+    assert len(answers) == 4
+    parsed = [ReservationExtraction.model_validate_json(answer) for answer in answers]
+    # The dated example is built from the reference time, so its year is right.
+    assert parsed[0].date == "2026-12-01"
+    assert "December 1 at 6:30pm" in examples
 
 
 def test_inlined_schema_keeps_nested_definitions() -> None:

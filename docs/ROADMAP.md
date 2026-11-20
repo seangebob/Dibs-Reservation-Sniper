@@ -12,6 +12,8 @@ The watch engine, dashboard, accounts, and email integration already exist. Prom
 
 **Complete when** the example prompts work with both options and you can test a simulated watch or booking from the Dibs website with Ollama and without an OpenAI key. [Provider interface](../backend/orchestrator/providers.py)
 
+**Status (Nov 20, 2026):** With `qwen3.5:9b` on Ollama, all eleven example prompts give the expected result in about 2 seconds each: book, search, watch with a time range, "next Saturday" (Dibs asks which one), "tomorrow" in the restaurant's time zone, a missing party size, a venue name that matches two places, a vague "evening", a recreation booking with a duration, and a prompt-injection attempt. If the model is offline or unreadable, the error points to the manual form. Still to do: run the same prompts with OpenAI, which needs a working API key.
+
 ## 2. Make watches usable from the browser
 
 - Add a mobile-friendly watch form for venue, date, time or time range, and party size. Submit through the existing `createWatch()` helper so the form works without an LLM.
