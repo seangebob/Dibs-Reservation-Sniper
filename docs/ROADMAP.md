@@ -33,6 +33,24 @@ The watch engine, dashboard, accounts, and email integration already exist. Prom
 - Implement real availability through the existing provider interface. Map venue identifiers and local times, follow provider limits, and handle unavailable or stale results. Include a provider link in the alert so the diner can book directly.
 - Keep the mock adapter for local development and demos. Keep the site in clearly labeled demo mode until there is a supported source of real availability.
 
+There are two ways to get a provider that agrees. Pursue both; the first yes wins. Use the [provider checklist](PROVIDER_CHECKLIST.md) for the conversation either way.
+
+**Path A: a booking platform** (the reservation software many restaurants share)
+
+- [ ] List the booking platforms used by Kitchener–Waterloo restaurants: check each venue's "Reserve" button to see which platform it opens.
+- [ ] For each platform, look for a partner program or developer API, and note what it asks of applicants.
+- [ ] Apply to the most promising one or two, explaining the alert-only pilot: Dibs checks availability and sends diners to the platform to book.
+- [ ] Once accepted, get sandbox credentials, the list of covered venues with their IDs, and the request limits.
+- [ ] Build the adapter against the sandbox, pass the conformance tests, then switch `RESERVATION_PROVIDER` on for a few venues.
+
+**Path B: a restaurant directly** (one owner who likes the idea)
+
+- [ ] Shortlist three to five local restaurants that often book up, and note which reservation system each uses.
+- [ ] Contact the owner or manager with a one-page pitch: Dibs alerts diners when a table opens and sends them to the restaurant's own booking page, which fills cancellations.
+- [ ] Ask whether their reservation system can share availability with Dibs: a partner feature, an export, or the system's own API with their permission. Their written permission is required.
+- [ ] Agree on limits: which dates, times and party sizes, and how often Dibs may check.
+- [ ] Build the adapter for that one restaurant, run the pilot with a few diners, and ask the owner for feedback before adding a second venue.
+
 **Complete when** a watch for a supported venue can detect a real opening and include a working link for the diner to finish booking. [Reservation provider interface](../backend/integrations/base.py)
 
 **Status (Nov 20, 2026): waiting on a provider.** The provider-neutral parts are built: each opening can carry the provider's `https://` booking link, which the alert email, the dashboard, and search results show as **BOOK IT**; and `RESERVATION_PROVIDER` picks the adapter for both the API and the worker. The questions to ask a provider, and what to send once there is one, are in the [provider checklist](PROVIDER_CHECKLIST.md). Still to do with a real provider: the adapter itself, mapping venue IDs and local times, and following its request limits.
