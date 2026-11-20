@@ -6,10 +6,11 @@ vi.mock("@/lib/api", () => ({
   logout: vi.fn(),
   signup: vi.fn(),
   me: vi.fn(),
+  forgotPassword: vi.fn(),
 }));
 vi.mock("@/lib/auth", () => ({ getSessionToken: vi.fn(() => null) }));
 
-import { login, signup } from "@/lib/api";
+import { forgotPassword, login, signup } from "@/lib/api";
 import { AuthProvider } from "./AuthProvider";
 import { AuthForm } from "./AuthForm";
 
@@ -131,5 +132,23 @@ describe("AuthForm", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toMatch(/too many failed login attempts/i);
+  });
+
+  it("emails a reset link from 'Forgot password?' without saying whether the account exists", async () => {
+    vi.mocked(forgotPassword).mockResolvedValue({ ok: true, data: undefined });
+    renderForm();
+    fireEvent.change(screen.getByLabelText(/email/i), { target: { value: "a@x.com" } });
+
+    fireEvent.click(await screen.findByRole("button", { name: /Forgot password/i }));
+    expect((screen.getByLabelText(/email/i) as HTMLInputElement).value).toBe("a@x.com");
+    fireEvent.click(screen.getByRole("button", { name: /SEND RESET LINK/i }));
+
+    await screen.findByText(/CHECK YOUR INBOX/i);
+    expect(forgotPassword).toHaveBeenCalledWith("a@x.com");
+    expect(screen.getByRole("status").textContent).toMatch(
+      /If there.s an account for a@x\.com.*expires in 1 hour/,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Back to sign in/i }));
+    expect(screen.getByRole("button", { name: /SIGN IN/i })).toBeTruthy();
   });
 });

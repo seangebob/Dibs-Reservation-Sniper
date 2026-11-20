@@ -29,6 +29,7 @@ from backend.api.routes import (
     watches_router,
 )
 from backend.config import (
+    DEFAULT_DASHBOARD_BASE_URL,
     DEFAULT_MAX_POLL_ATTEMPTS,
     DEFAULT_MOCK_BOOKING_RETENTION_SECONDS,
     DEFAULT_MOCK_SLOT_CAPACITY,
@@ -49,7 +50,11 @@ from backend.config import (
     redact_dsn,
 )
 from backend.db.postgres import create_pool, run_migrations
-from backend.db.repositories.accounts import AccountRepository, SessionRepository
+from backend.db.repositories.accounts import (
+    AccountLinkRepository,
+    AccountRepository,
+    SessionRepository,
+)
 from backend.db.repositories.guest_alerts import GuestAlertRepository
 from backend.db.repositories.mock_booking import (
     MockBookingStateRepository,
@@ -86,6 +91,7 @@ from backend.services.auth_service import (
     AuthenticationRequiredError,
     AuthService,
     EmailTakenError,
+    InvalidAccountLinkError,
     InvalidCredentialsError,
 )
 from backend.services.booking_service import BookingService
@@ -275,6 +281,29 @@ async def _attach_postgres(app: FastAPI) -> None:
         app.state.watch_history, app.state.readiness
     )
 
+    # Outbound email settings are read first: account links (password reset)
+    # and guest alerts are sent with them. Bad email settings degrade the same
+    # way accounts do -- logged, never a failed startup (Requirement 5.2).
+    email_settings: EmailSettings | None
+    try:
+        email_settings = EmailSettings.from_environment()
+    except ConfigurationError as exc:
+        logger.error(
+            "Email settings invalid; notifications stay log-only: %s", str(exc)
+        )
+        email_settings = None
+    # Without a relay the links are logged, so local development can use them.
+    mailer = (
+        SmtplibSender(email_settings)
+        if email_settings is not None and email_settings.enabled
+        else None
+    )
+    base_url = (
+        email_settings.dashboard_base_url
+        if email_settings is not None
+        else DEFAULT_DASHBOARD_BASE_URL
+    )
+
     # Accounts live on the same pool. Built here so they exist only when
     # PostgreSQL does; bad account env degrades to accounts-disabled (503 on
     # /api/auth/*) rather than failing startup -- auth is an optional lens.
@@ -285,6 +314,9 @@ async def _attach_postgres(app: FastAPI) -> None:
             sessions=SessionRepository(pool),
             hasher=build_password_hasher(account_settings),
             settings=account_settings,
+            links=AccountLinkRepository(pool),
+            mailer=mailer,
+            base_url=base_url,
         )
         # In-process and best-effort by design (Req 6.4); built here because a
         # login can only happen when accounts do.
@@ -304,22 +336,15 @@ async def _attach_postgres(app: FastAPI) -> None:
     # Outbound email (Milestone 6). Also built here, because resolving a
     # recipient needs both the projection and the accounts table: with no
     # PostgreSQL there is no account to email, so the logging notifier stays.
-    # Bad email settings degrade the same way accounts do -- logged, log-only
-    # notifications, never a failed startup (Requirement 5.2).
-    guest_alerts_store = GuestAlertRepository(pool)
-    try:
-        email_settings = EmailSettings.from_environment()
-    except ConfigurationError as exc:
-        logger.error(
-            "Email settings invalid; notifications stay log-only: %s", str(exc)
-        )
+    if email_settings is None:
         return
+    guest_alerts_store = GuestAlertRepository(pool)
     # Guests' alert addresses (roadmap 3b). Built even without an SMTP relay,
     # so local development can try the flow: the confirmation link is logged.
     app.state.guest_alerts = GuestAlertService(
         store=guest_alerts_store,
-        sender=SmtplibSender(email_settings) if email_settings.enabled else None,
-        dashboard_base_url=email_settings.dashboard_base_url,
+        sender=mailer,
+        dashboard_base_url=base_url,
     )
     if not email_settings.enabled:
         return
@@ -913,6 +938,7 @@ def create_app() -> FastAPI:
         AuthValidationError: status.HTTP_422_UNPROCESSABLE_CONTENT,
         AccountsUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
         InvalidVerificationLinkError: status.HTTP_400_BAD_REQUEST,
+        InvalidAccountLinkError: status.HTTP_400_BAD_REQUEST,
         VerificationEmailFailedError: status.HTTP_502_BAD_GATEWAY,
         WatchOwnershipUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
         RateLimitedError: status.HTTP_429_TOO_MANY_REQUESTS,

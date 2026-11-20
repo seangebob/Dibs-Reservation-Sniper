@@ -251,6 +251,34 @@ export async function logout(): Promise<ApiResult<void>> {
   return result;
 }
 
+/**
+ * Ask for a password reset link. The answer is the same whether or not the
+ * account exists, so this can't be used to discover accounts.
+ */
+export function forgotPassword(email: string): Promise<ApiResult<void>> {
+  return apiFetch<void>(
+    "/api/auth/password/forgot",
+    { method: "POST", body: JSON.stringify({ email }) },
+    { omitSession: true },
+  );
+}
+
+/** Use a reset link's token to set a new password; signs this browser in. */
+export async function resetPassword(
+  token: string,
+  password: string,
+): Promise<ApiResult<AuthResponse>> {
+  const result = await apiFetch<AuthResponse>(
+    "/api/auth/password/reset",
+    { method: "POST", body: JSON.stringify({ token, password }) },
+    { omitSession: true },
+  );
+  if (result.ok) {
+    setSessionToken(result.data.token);
+  }
+  return result;
+}
+
 /** GET the signed-in account, used to hydrate on load. 401 → logged out. */
 export function me(): Promise<ApiResult<User>> {
   return apiFetch<User>("/api/auth/me", { method: "GET" });

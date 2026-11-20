@@ -1,9 +1,10 @@
-"""Account endpoints: signup, login, logout, and the current user (Milestone 5)."""
+"""Account endpoints: signup, login, logout, the current user (Milestone 5),
+and password reset by emailed link (roadmap 3b)."""
 
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.api.client_identity import extract_client_id
@@ -173,3 +174,51 @@ async def me(
     if user is None:
         raise AuthenticationRequiredError()
     return user
+
+
+# -- password reset ------------------------------------------------------------
+
+
+class ForgotPasswordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(min_length=1, max_length=320)
+
+
+class ResetPasswordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=1, max_length=200)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+async def _send_password_reset(service: AuthService, email: str) -> None:
+    # Runs after the response; a failure is logged without the address.
+    try:
+        await service.send_password_reset(email)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Password reset email failed: %s", type(exc).__name__)
+
+
+@router.post("/password/forgot", status_code=status.HTTP_202_ACCEPTED)
+async def forgot_password(
+    body: ForgotPasswordRequest,
+    service: AuthServiceDep,
+    background: BackgroundTasks,
+) -> Response:
+    """Email a reset link if the account exists. Always the same 202, sent
+    before any account lookup, so neither the answer nor its timing says
+    whether an account exists."""
+
+    normalized = service.prepare_password_reset(body.email)
+    background.add_task(_send_password_reset, service, normalized)
+    return Response(status_code=status.HTTP_202_ACCEPTED)
+
+
+@router.post("/password/reset", response_model=AuthResponse)
+async def reset_password(body: ResetPasswordRequest, service: AuthServiceDep) -> AuthResponse:
+    """Use a reset link: new password, every other session signed out, and a
+    fresh session returned for this browser."""
+
+    user, token = await service.reset_password(body.token, body.password)
+    return AuthResponse(token=token, user=user)

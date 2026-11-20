@@ -17,7 +17,12 @@ from backend.db.postgres import PoolLike
 from backend.models.account import Session, StoredUser, User
 
 
-__all__ = ["AccountRepository", "SessionRepository", "DuplicateEmailError"]
+__all__ = [
+    "AccountLinkRepository",
+    "AccountRepository",
+    "DuplicateEmailError",
+    "SessionRepository",
+]
 
 
 class DuplicateEmailError(Exception):
@@ -40,9 +45,13 @@ _SELECT_USER_BY_EMAIL_SQL = (
 
 _SELECT_USER_BY_ID_SQL = "SELECT id, email, created_at FROM users WHERE id = $1"
 
+_UPDATE_PASSWORD_SQL = (
+    "UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1"
+)
+
 
 class AccountRepository:
-    """Creates and reads `users` rows."""
+    """Creates, reads, and updates `users` rows."""
 
     def __init__(self, pool: PoolLike) -> None:
         self._pool = pool
@@ -86,6 +95,12 @@ class AccountRepository:
             return None
         row = rows[0]
         return User(id=row["id"], email=row["email"], created_at=row["created_at"])
+
+    async def update_password(self, user_id: UUID, password_hash: str) -> None:
+        """Replace an account's argon2 hash."""
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(_UPDATE_PASSWORD_SQL, user_id, password_hash)
 
 
 _INSERT_SESSION_SQL = """
@@ -158,3 +173,54 @@ class SessionRepository:
 
         async with self._pool.acquire() as conn:
             await conn.execute(_DELETE_SESSIONS_FOR_USER_SQL, user_id)
+
+
+_INSERT_LINK_SQL = """
+INSERT INTO account_links (token_hash, user_id, purpose, expires_at)
+VALUES ($1, $2, $3, $4)
+""".strip()
+
+#: Reads and spends a link in one statement, so two clicks can't both succeed.
+_CONSUME_LINK_SQL = """
+UPDATE account_links SET used_at = $3
+WHERE token_hash = $1 AND purpose = $2 AND used_at IS NULL AND expires_at > $3
+RETURNING user_id
+""".strip()
+
+_CANCEL_LINKS_SQL = """
+UPDATE account_links SET used_at = $3
+WHERE user_id = $1 AND purpose = $2 AND used_at IS NULL
+""".strip()
+
+
+class AccountLinkRepository:
+    """Single-use emailed links (password reset, email confirmation).
+
+    Only the sha256 of a link's token is stored; the raw token exists only in
+    the email.
+    """
+
+    def __init__(self, pool: PoolLike) -> None:
+        self._pool = pool
+
+    async def add(
+        self, *, token_hash: str, user_id: UUID, purpose: str, expires_at: datetime
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(_INSERT_LINK_SQL, token_hash, user_id, purpose, expires_at)
+
+    async def consume(self, token_hash: str, purpose: str, now: datetime) -> UUID | None:
+        """Use a link once: its account, or None if unknown, used, or expired."""
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(_CONSUME_LINK_SQL, token_hash, purpose, now)
+        if not rows:
+            return None
+        user_id: UUID = rows[0]["user_id"]
+        return user_id
+
+    async def cancel_unused(self, user_id: UUID, purpose: str, now: datetime) -> None:
+        """Spend every outstanding link of one kind, e.g. older reset links."""
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(_CANCEL_LINKS_SQL, user_id, purpose, now)

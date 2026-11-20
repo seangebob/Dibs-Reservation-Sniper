@@ -9,6 +9,7 @@
  */
 
 import { useState } from "react";
+import { forgotPassword } from "@/lib/api";
 import { useAuth } from "./AuthProvider";
 
 type Mode = "login" | "signup";
@@ -35,6 +36,7 @@ export function AuthForm() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [forgotten, setForgotten] = useState(false);
 
   const copy = COPY[mode];
   const ready = email.trim().length > 0 && password.length > 0;
@@ -82,6 +84,18 @@ export function AuthForm() {
     setError(null);
   }
 
+  if (forgotten) {
+    return (
+      <ForgotPassword
+        initialEmail={email}
+        onBack={() => {
+          setForgotten(false);
+          setError(null);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="auth-panel">
       <form className="auth-form" onSubmit={onSubmit} data-busy={busy}>
@@ -122,6 +136,14 @@ export function AuthForm() {
         </button>
       </form>
 
+      {mode === "login" && (
+        <p className="auth-alt">
+          <button type="button" className="result-link" onClick={() => setForgotten(true)}>
+            Forgot password?
+          </button>
+        </p>
+      )}
+
       <p className="auth-alt">
         {copy.alt}{" "}
         <button type="button" className="result-link" onClick={switchMode}>
@@ -132,6 +154,91 @@ export function AuthForm() {
       <p className="auth-note">
         Signing in claims the watches you opened on this device, so they stay
         yours on any other.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * "Forgot password?": email a reset link. The confirmation reads the same
+ * whether or not the account exists, as the server's answer does.
+ */
+function ForgotPassword({
+  initialEmail,
+  onBack,
+}: {
+  initialEmail: string;
+  onBack: () => void;
+}) {
+  const [email, setEmail] = useState(initialEmail);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sentTo, setSentTo] = useState<string | null>(null);
+
+  async function onSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    const address = email.trim();
+    if (address === "" || busy) return;
+    setBusy(true);
+    setError(null);
+    const result = await forgotPassword(address);
+    setBusy(false);
+    if (result.ok) {
+      setSentTo(address);
+    } else {
+      setError(result.message);
+    }
+  }
+
+  if (sentTo !== null) {
+    return (
+      <div className="auth-panel" role="status">
+        <div className="kicker" data-tone="green">
+          CHECK YOUR INBOX
+        </div>
+        <p className="auth-note">
+          If there&rsquo;s an account for <strong>{sentTo}</strong>, we&rsquo;ve
+          emailed it a link to choose a new password. The link works once and
+          expires in 1 hour.
+        </p>
+        <p className="auth-alt">
+          <button type="button" className="result-link" onClick={onBack}>
+            Back to sign in
+          </button>
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="auth-panel">
+      <form className="auth-form" onSubmit={onSubmit} data-busy={busy}>
+        <label className="auth-label" htmlFor="forgot-email">
+          EMAIL
+        </label>
+        <input
+          id="forgot-email"
+          type="email"
+          autoComplete="email"
+          className="auth-input"
+          value={email}
+          disabled={busy}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+        {error && (
+          <div className="auth-error" role="alert">
+            {error}
+          </div>
+        )}
+        <button type="submit" className="acquire" disabled={busy || email.trim() === ""}>
+          {busy ? "SENDING…" : "SEND RESET LINK ▸"}
+        </button>
+      </form>
+      <p className="auth-alt">
+        Remembered it?{" "}
+        <button type="button" className="result-link" onClick={onBack}>
+          Sign in
+        </button>
       </p>
     </div>
   );

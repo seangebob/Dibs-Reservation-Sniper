@@ -222,7 +222,16 @@ POST /api/auth/signup      # Create an account, open a session, claim this brows
 POST /api/auth/login       # Open a session, claim this browser's watches
 POST /api/auth/logout      # Revoke the presented session (idempotent)
 GET  /api/auth/me          # id · email · created_at
+POST /api/auth/password/forgot  # Email a reset link if the account exists (always 202)
+POST /api/auth/password/reset   # Use the link: new password, other sessions signed out
 ```
+
+**Password reset.** `forgot` answers `202` before looking the address up and sends the
+email afterwards, so neither the answer nor its timing reveals whether an account exists.
+Each address may be sent 3 reset emails an hour. The link works once, expires in 1 hour,
+and only its sha256 is stored (`account_links`). Using it checks the new password first
+(a too-short one doesn't spend the link), signs out every session, cancels older reset
+links, and returns a fresh session. With no SMTP relay the link is written to the API log.
 
 Passwords are argon2id. A session is an **opaque bearer token whose sha256 is all the
 server stores**, sent as `Authorization: Bearer <token>`.

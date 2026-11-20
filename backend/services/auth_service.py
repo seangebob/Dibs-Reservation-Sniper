@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import re
 import secrets
 from collections.abc import Callable
@@ -20,14 +21,17 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 from typing import Any, TypeVar
 
-from backend.config import AccountSettings
+from backend.config import DEFAULT_DASHBOARD_BASE_URL, AccountSettings
 from backend.db.repositories.accounts import (
+    AccountLinkRepository,
     AccountRepository,
     DuplicateEmailError,
     SessionRepository,
 )
+from backend.integrations.email import ComposedEmail, SmtpSender
 from backend.models.account import User
 from backend.services.password import PasswordHasherService
+from backend.services.throttle import RateLimitedError, SlidingWindowThrottle
 
 
 __all__ = [
@@ -38,7 +42,9 @@ __all__ = [
     "EmailTakenError",
     "InvalidCredentialsError",
     "InvalidEmailError",
+    "InvalidAccountLinkError",
     "PasswordPolicyError",
+    "TooManyAccountEmailsError",
     "hash_token",
     "normalize_email",
 ]
@@ -80,6 +86,43 @@ class PasswordPolicyError(AuthValidationError):
     """A password failing the length policy at signup (-> 422)."""
 
 
+class InvalidAccountLinkError(AuthError):
+    """An emailed link that is unknown, used, or expired (-> 400)."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "This link is invalid, already used, or expired. Ask for a new one."
+        )
+
+
+class TooManyAccountEmailsError(RateLimitedError):
+    """Too many account emails for one address this hour (-> 429)."""
+
+    def __init__(self) -> None:
+        super().__init__("Too many emails for this address. Try again in an hour.")
+
+
+logger = logging.getLogger(__name__)
+
+#: A reset link is a key to the account, so it lives briefly.
+PASSWORD_RESET_TTL = timedelta(hours=1)
+PURPOSE_PASSWORD_RESET = "password_reset"
+#: Account emails (reset links) one address may be sent per hour.
+ACCOUNT_EMAILS_PER_HOUR = 3
+
+
+def compose_password_reset(link: str) -> ComposedEmail:
+    return ComposedEmail(
+        subject="Reset your Dibs password",
+        body=(
+            "Someone asked to reset the password for your Dibs account. To choose "
+            f"a new one, open this link:\n\n{link}\n\n"
+            "It works once and expires in 1 hour. If you didn't ask for this, "
+            "ignore this email; your password stays the same.\n\n-- Dibs\n"
+        ),
+    )
+
+
 # A deliberately minimal shape check -- not full RFC 5322. Real deliverability
 # is out of scope this milestone (no email service); this only keeps obvious
 # garbage out of storage.
@@ -116,12 +159,28 @@ class AuthService:
         hasher: PasswordHasherService,
         settings: AccountSettings,
         clock: Clock | None = None,
+        links: AccountLinkRepository | None = None,
+        mailer: SmtpSender | None = None,
+        base_url: str = DEFAULT_DASHBOARD_BASE_URL,
+        throttle_clock: Callable[[], float] | None = None,
     ) -> None:
+        """`links` enables emailed links (password reset); `mailer` sends them,
+        and without one the link is logged so local development can use it."""
+
         self._accounts = accounts
         self._sessions = sessions
         self._hasher = hasher
         self._settings = settings
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._links = links
+        self._mailer = mailer
+        self._base_url = base_url.rstrip("/")
+        self._email_throttle = SlidingWindowThrottle(
+            max_events=ACCOUNT_EMAILS_PER_HOUR,
+            window_seconds=3_600,
+            on_limit=TooManyAccountEmailsError,
+            clock=throttle_clock,
+        )
         # Bound Argon2's CPU/memory use while keeping the API loop responsive.
         self._password_slots = asyncio.Semaphore(4)
 
@@ -191,7 +250,76 @@ class AuthService:
             return None
         return await self._accounts.get_by_id(session.user_id)
 
+    # -- password reset ------------------------------------------------------
+
+    def prepare_password_reset(self, email: str) -> str:
+        """Validate and rate-limit a reset request; returns the normalized email.
+
+        Cheap and identical for every address, so the response can't reveal
+        whether an account exists. `send_password_reset` does the rest after
+        the response has gone out.
+        """
+
+        normalized = self._normalize_email(email)
+        key = f"reset:{normalized}"
+        self._email_throttle.check(key)
+        self._email_throttle.record(key)
+        return normalized
+
+    async def send_password_reset(self, normalized_email: str) -> None:
+        """Email a reset link if the account exists; otherwise do nothing."""
+
+        if self._links is None:
+            return
+        stored = await self._accounts.get_by_email(normalized_email)
+        if stored is None:
+            return
+        raw = secrets.token_urlsafe(32)
+        await self._links.add(
+            token_hash=hash_token(raw),
+            user_id=stored.id,
+            purpose=PURPOSE_PASSWORD_RESET,
+            expires_at=self._clock() + PASSWORD_RESET_TTL,
+        )
+        link = f"{self._base_url}/reset-password?token={raw}"
+        await self._deliver(stored.email, compose_password_reset(link), link)
+
+    async def reset_password(self, raw_token: str, new_password: str) -> tuple[User, str]:
+        """Use a reset link: set the password, sign out everywhere, sign in here.
+
+        The new password is checked before the link is spent, so a too-short
+        password doesn't waste the link. Every older reset link stops working.
+        """
+
+        self._check_password(new_password)
+        if self._links is None:
+            raise InvalidAccountLinkError()
+        now = self._clock()
+        user_id = await self._links.consume(
+            hash_token(raw_token.strip()), PURPOSE_PASSWORD_RESET, now
+        )
+        if user_id is None:
+            raise InvalidAccountLinkError()
+        password_hash = await self._password_work(self._hasher.hash, new_password)
+        await self._accounts.update_password(user_id, password_hash)
+        await self._sessions.revoke_all_for_user(user_id)
+        await self._links.cancel_unused(user_id, PURPOSE_PASSWORD_RESET, now)
+        user = await self._accounts.get_by_id(user_id)
+        if user is None:
+            raise InvalidAccountLinkError()
+        return user, await self._issue_session(user_id)
+
     # -- internals ----------------------------------------------------------
+
+    async def _deliver(self, recipient: str, email: ComposedEmail, link: str) -> None:
+        if self._mailer is None:
+            logger.info(
+                "Email sending is off (SMTP_HOST unset); link not sent, open it "
+                "yourself: %s",
+                link,
+            )
+            return
+        await self._mailer.send(recipient=recipient, email=email)
 
     async def _issue_session(self, user_id: UUID) -> str:
         raw = secrets.token_urlsafe(32)
