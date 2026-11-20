@@ -59,9 +59,11 @@ There are two ways to get a provider that agrees. Pursue both; the first yes win
 
 - Move browser sessions from local storage to server-managed cookies with `HttpOnly`, `Secure` in production, and an appropriate `SameSite` policy. Protect cookie-authenticated writes against CSRF and verify signup, login, and logout on the deployed domains.
 - Add email verification, password reset with expiring single-use links, and password changes. Test session invalidation when credentials change.
-- Let guests create and track watches in the dashboard. Explain that they can sign up and verify their email to receive alerts, and use the existing watch-claiming flow to carry the watch into their account. Require a verified account before enabling real auto-booking.
+- Let guests create and track watches in the dashboard, and get email alerts by confirming just an email address (no account needed; decided Nov 20, 2026). Signing up still carries their watches into an account through the existing watch-claiming flow. Require a verified account before enabling real auto-booking.
 
 **Complete when** a guest can create a watch, sign up, verify their email, see the same watch on their account, and receive a test alert. Verify password reset and password changes on the deployed site. [Account routes](../backend/api/routes/auth.py)
+
+**Status (Nov 20, 2026): guest email alerts done.** A guest can give an email address from the watch-created card or the dashboard, confirm it with a single-use link that expires in 24 hours, and then get alerts for that browser's watches; tested in Chrome at phone width against PostgreSQL. SMS alerts are out of scope for now (per-message billing). Still to do: cookie sessions with CSRF protection, email verification for accounts, password reset, and password changes.
 
 ## 4. Launch an invite-only alert pilot
 
